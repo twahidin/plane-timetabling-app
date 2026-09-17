@@ -46,6 +46,12 @@ ORG_SCHEMA = _obj({
         {"id": _STR, "name": _STR, "members": _STR_LIST, "dur": _INT, "loc": _NULLABLE_STR, "t0": _NULLABLE_INT,
          "sync": _NULLABLE_STR, "eligible_locs": _NULLABLE_STR_LIST, "fixed": {"type": "boolean"}},
         ["id", "name", "members", "dur"])},
+    "groups": {"type": "array", "items": _obj(
+        {"id": _STR, "name": _STR, "classes": _STR_LIST, "band": _NULLABLE_STR, "option": _NULLABLE_STR, "size": _NULLABLE_INT},
+        ["id", "name", "classes", "band", "option"])},
+    "bands": {"type": "array", "items": _obj(
+        {"id": _STR, "name": _STR, "classes": _STR_LIST, "options": _STR_LIST},
+        ["id", "name", "classes", "options"])},
     "notes": {"type": "array", "items": _obj({"section": _STR, "source": _STR, "note": _STR}, ["section", "note"])},
 }, ["name", "locations", "persons", "events", "notes"])
 
@@ -59,6 +65,11 @@ def extraction_prompt(settings: dict) -> str:
         f"Slots are numbered from 0. The slot labels are: {', '.join(t['labels'])}. Time unit: {t['slot_minutes']} minutes.\n"
         f"Rules unless the document says otherwise: max_load: {r['max_load']}, max_run: {r['max_run']}, "
         f"mandatory_rest slots: {r['mandatory_rest']}.\n"
+        "Students take part as groups, not as persons: a group is a set of students with an id, a name and the classes it "
+        "draws from, and a lesson lists its group ids among its members next to the teachers. When a class splits by subject "
+        "at one time (Mother Tongue, electives), that is a band: name it in bands with its classes and its options (the "
+        "subjects), and give each (classes, option) its own group with band and option set. Every class also has its "
+        "whole-class group: named after the class, classes = [that class], band and option null.\n"
         "Always include one location with id \"rest\" and rest: true, and include it in every person's eligible list. "
         "Use short lowercase ids (letters, digits, hyphens). Leave loc and t0 null unless the document already fixes "
         "when and where an event happens; set fixed: true only for those. Put every uncertainty into notes, naming the "
@@ -83,13 +94,17 @@ def _ensure_rest(org: dict, settings: dict) -> None:
         l.setdefault("shared", False); l.setdefault("rest", False)
 
 
+def _names_class(g: dict, c: str) -> bool:
+    return str(g.get("name", "")).lower() == c.lower() or g["id"] == re.sub(r"[^a-z0-9-]+", "-", c.lower()).strip("-")
+
+
 def _validate(org: dict) -> dict:
     try:
         Organisation.from_dict(org)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise IntakeError(f"The extracted data is not a valid organisation: {e!r}")
-    for section in ("locations", "persons", "events"):
-        for item in org[section]:
+    for section in ("locations", "persons", "events", "groups", "bands"):
+        for item in org.get(section, []):
             if not isinstance(item.get("id"), str) or not ID_PATTERN.match(item["id"]):
                 raise IntakeError(f"{section}: id {item.get('id')!r} must be 1-31 lowercase letters, digits or hyphens")
     n = len(org["time_labels"])
@@ -102,7 +117,27 @@ def _validate(org: dict) -> dict:
         bad = [x for x in p["eligible"] if x not in ids]
         if bad:
             raise IntakeError(f"{p['id']}: unknown locations {bad}")
-    pids = {p["id"] for p in org["persons"]}
+    groups, bands = org.get("groups", []), org.get("bands", [])
+    # the whole-class group of class X is X itself: no band, classes [X], named X (or with id X's slug); those define the classes
+    classes = {g["classes"][0] for g in groups
+               if not g.get("band") and len(g["classes"]) == 1 and _names_class(g, g["classes"][0])}
+    band_ids = {b["id"] for b in bands}
+    for g in groups:
+        bad = [c for c in g["classes"] if c not in classes]
+        if bad:
+            raise IntakeError(f"group {g['id']}: unknown class {bad}: every class needs its own whole-class group, "
+                              "named after the class with no band")
+        if g.get("band") and g["band"] not in band_ids:
+            raise IntakeError(f"group {g['id']}: unknown band {g['band']}")
+    for b in bands:
+        bad = [c for c in b["classes"] if c not in classes]
+        if bad:
+            raise IntakeError(f"band {b['id']}: unknown class {bad}")
+        options = {g["option"] for g in groups if g.get("band") == b["id"]}
+        bad = [o for o in b["options"] if o not in options]
+        if bad or not b["options"]:
+            raise IntakeError(f"band {b['id']}: no group takes option {bad or '(none)'}")
+    pids = {p["id"] for p in org["persons"]} | {g["id"] for g in groups}       # groups are planes too
     for e in org["events"]:
         bad = [m for m in e["members"] if m not in pids]
         if bad:

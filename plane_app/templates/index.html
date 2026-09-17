@@ -106,6 +106,27 @@
       <label class="check"><input type="checkbox" id="classes-as-planes"> Treat classes as planes <span class="hint">(shows subject banding as clashes)</span></label>
     </div>
     <div id="notes" class="notes"></div>
+    <div id="solve-bar" class="solve-bar" hidden>
+      <button class="btn" id="build" type="button" title="The engine's greedy build: instant, no soft rules">Build <small>instant, greedy</small></button>
+      <span class="or">or</span>
+      <label for="solve-preset">Preset</label>
+      <select id="solve-preset" aria-label="Solve preset">
+        <option value="close">Keep it close</option>
+        <option value="balanced">Balanced</option>
+        <option value="quality">Best quality</option>
+        <option value="custom">Custom weights (settings)</option>
+      </select>
+      <label for="solve-time">Time limit</label>
+      <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
+      <button class="btn primary" id="solve" type="button" title="Search for the best timetable under the soft rules, up to the time limit">Solve</button>
+      <button class="btn" id="score-live" type="button" title="Score the live timetable under the current weights, without solving">Score live</button>
+    </div>
+    <div id="solve-progress" class="progress" hidden>
+      <div class="row"><span class="spinner"></span><span id="solve-label">Solving…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
+      <div class="bar"><i id="solve-fill"></i></div>
+      <div class="meta" id="solve-meta"></div>
+    </div>
+    <div id="quality" class="quality" hidden></div>
     <div id="draft" class="draft" hidden></div>
   </section>
 

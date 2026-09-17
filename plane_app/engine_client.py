@@ -50,3 +50,22 @@ class EngineClient:
 
     def usage(self) -> dict:
         return self._call("GET", "/v1/usage")
+
+    # -- solve jobs (asynchronous: submit, poll, cancel) ------------------------
+
+    def solve(self, org: dict, previous: dict | None = None, time_limit: int = 300, weights: dict | None = None,
+              hint: str = "greedy") -> dict:
+        """Queue a solve; returns {"job": id}. `hint` is "greedy" or "previous" (the placements in `previous`)."""
+        return self._call("POST", "/v1/solve", {"organisation": org, "previous": previous, "time_limit": time_limit,
+                                                "weights": weights, "hint": hint})
+
+    def job(self, jid: str) -> dict:
+        """{status, elapsed, best_objective, bound, result?, error?}; status is queued | running | done | failed | cancelled."""
+        return self._call("GET", f"/v1/jobs/{jid}")
+
+    def cancel_job(self, jid: str) -> dict:
+        return self._call("DELETE", f"/v1/jobs/{jid}")
+
+    def score(self, org: dict, previous: dict | None = None, weights: dict | None = None) -> dict:
+        """The soft-rule score of a placed organisation: {total, breakdown, ideal, worst, scores}."""
+        return self._call("POST", "/v1/score", {"organisation": org, "previous": previous, "weights": weights})

@@ -11,13 +11,28 @@ import sqlite3
 import time
 from pathlib import Path
 
+# The six soft rules and their default weights. A literal copy of plane_timetabling.model.DEFAULT_SOFT:
+# the app never imports the engine's scoring code (see tests/test_no_engine_import.py).
+RULES = ("spread", "stability", "compact", "even_days", "edge", "venue")
+DEFAULT_SOFT = {"spread": 10, "stability": 8, "compact": 6, "even_days": 3, "edge": 2, "venue": 1}
+# Solve presets: "close" keeps the new timetable near the live one (and warm-starts from it),
+# "balanced" is the engine's default, "quality" ignores stability and pushes the students' rules.
+PRESETS = {
+    "close": {"stability": 40, "spread": 6, "compact": 4, "even_days": 3, "edge": 2, "venue": 1},
+    "balanced": dict(DEFAULT_SOFT),
+    "quality": {"stability": 0, "spread": 14, "compact": 8, "even_days": 5, "edge": 3, "venue": 1},
+}
+MIN_TIME_LIMIT, MAX_TIME_LIMIT = 10, 900     # the engine clamps one solve to this range, seconds
+
 DEFAULT_SETTINGS = {
     "time": {"slot_minutes": 40, "slots_per_day": 8, "start": "07:30",
              "labels": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"], "window": "day"},
     "rules": {"max_load": 6, "max_run": 4, "mandatory_rest": []},
+    "solve": {"preset": "balanced", "time_limit": 300, "weights": dict(DEFAULT_SOFT)},
     "provider": {"kind": "anthropic", "base_url": "", "api_key": "", "model": "claude-opus-5"},
     "engine": {"url": "", "key": ""},
 }
+PER_TIMETABLE_SETTINGS = ("time", "rules", "solve")      # the rest (provider, engine) is global
 
 SCHEMA = """
 create table if not exists kv (k text primary key, v text not null);
@@ -28,7 +43,8 @@ create table if not exists uploads (id integer primary key autoincrement, sessio
 create table if not exists timetables (id text primary key, name text not null, created_at real not null);
 """
 DEFAULT_TIMETABLE = "default"
-SCOPED_KEYS = ("org:live", "org:draft", "last_check", "tt")   # kv keys that live per timetable
+SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
+PER_TIMETABLE_VALUES = ("last_check", "solve")                         # get_value/set_value keys that are scoped
 
 
 def mask_settings(settings: dict) -> dict:
@@ -111,8 +127,8 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"tt:{tid}"))
+            con.execute("delete from kv where k in (?,?,?,?,?)",
+                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}"))
             con.execute("delete from timetables where id=?", (tid,))
             if self.current_timetable() == tid:
                 other = next(i for i in ids if i != tid)
@@ -145,25 +161,27 @@ class Db:
                 con.execute("insert into kv (k, v) values (?, ?) on conflict(k) do update set v=excluded.v", (k, json.dumps(value)))
 
     def get_settings(self) -> dict:
-        """Global provider and engine settings plus the current timetable's time and rules."""
-        base = self._get("settings")
-        s = copy.deepcopy(DEFAULT_SETTINGS) if base is None else copy.deepcopy(base)
-        per = self._get(f"tt:{self._tid()}")
-        if per:
-            s["time"], s["rules"] = per.get("time", s["time"]), per.get("rules", s["rules"])
+        """Global provider and engine settings plus the current timetable's time, rules and solve settings.
+        Groups a stored document lacks (a database from before they existed) come from the defaults."""
+        base = self._get("settings") or {}
+        s = {k: copy.deepcopy(base.get(k, v)) for k, v in DEFAULT_SETTINGS.items()}
+        per = self._get(f"tt:{self._tid()}") or {}
+        for k in PER_TIMETABLE_SETTINGS:
+            if k in per:
+                s[k] = copy.deepcopy(per[k])
         return s
 
     def set_settings(self, settings: dict) -> None:
         settings = copy.deepcopy(settings)
-        per = {"time": settings.get("time", DEFAULT_SETTINGS["time"]), "rules": settings.get("rules", DEFAULT_SETTINGS["rules"])}
+        per = {k: settings.get(k, DEFAULT_SETTINGS[k]) for k in PER_TIMETABLE_SETTINGS}
         self._set(f"tt:{self._tid()}", per)
-        self._set("settings", settings)      # the global copy keeps time/rules as defaults for new timetables
+        self._set("settings", settings)      # the global copy keeps time/rules/solve as defaults for new timetables
 
     def get_value(self, key: str):
-        return self._get(f"{key}:{self._tid()}" if key == "last_check" else key)
+        return self._get(f"{key}:{self._tid()}" if key in PER_TIMETABLE_VALUES else key)
 
     def set_value(self, key: str, value) -> None:
-        self._set(f"{key}:{self._tid()}" if key == "last_check" else key, value)
+        self._set(f"{key}:{self._tid()}" if key in PER_TIMETABLE_VALUES else key, value)
 
     def get_org(self, kind: str) -> dict | None:
         assert kind in ("live", "draft")

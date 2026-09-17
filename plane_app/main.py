@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -15,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from . import auth
 from .chat import run_chat
 from .config import Config
-from .db import Db, mask_settings
+from .db import DEFAULT_SOFT, MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, RULES, Db, mask_settings
 from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
@@ -35,6 +36,27 @@ def _unlink_quietly(path: str) -> None:
         pass
 
 
+def _clean_solve_settings(given: dict, current: dict) -> dict:
+    """Keep the solve group well-formed whatever the client sent: a known preset, a time limit within the
+    engine's cap, and integer weights for the six rules (anything else falls back to the stored value)."""
+    out = {}
+    preset = given.get("preset", current.get("preset", "balanced"))
+    out["preset"] = preset if preset in PRESETS or preset == "custom" else current.get("preset", "balanced")
+    try:
+        limit = int(given.get("time_limit", current.get("time_limit", 300)))
+    except (TypeError, ValueError):
+        limit = int(current.get("time_limit", 300))
+    out["time_limit"] = min(max(limit, MIN_TIME_LIMIT), MAX_TIME_LIMIT)
+    weights = given.get("weights")
+    base = dict(current.get("weights") or DEFAULT_SOFT)
+    if isinstance(weights, dict):
+        for r in RULES:
+            v = weights.get(r, base.get(r, DEFAULT_SOFT[r]))
+            base[r] = max(int(v), 0) if isinstance(v, (int, float)) and not isinstance(v, bool) else base.get(r, DEFAULT_SOFT[r])
+    out["weights"] = {r: base.get(r, DEFAULT_SOFT[r]) for r in RULES}
+    return out
+
+
 def _default_engine_factory(config: Config):
     def factory(settings: dict) -> EngineClient:
         return EngineClient(settings["engine"]["url"] or config.engine_url, settings["engine"]["key"] or config.engine_key)
@@ -48,6 +70,12 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.state.provider_factory = provider_factory or make_provider
     app.state.chat_times: dict[str, deque] = defaultdict(deque)
     app.state.login_failures: dict[str, deque] = defaultdict(deque)     # client ip -> failed-attempt times
+    app.state.solve_locks: dict[str, threading.Lock] = {}                # timetable id -> lock around start and promotion
+    solve_locks_guard = threading.Lock()
+
+    def solve_lock() -> threading.Lock:
+        with solve_locks_guard:
+            return app.state.solve_locks.setdefault(db.current_timetable(), threading.Lock())
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     static = HERE / "static"
     static.mkdir(exist_ok=True)
@@ -130,7 +158,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         current = db.get_settings()
         if not isinstance(body, dict):
             body = {}
-        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "provider", "engine")}
+        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine")}
+        groups["solve"] = _clean_solve_settings(groups["solve"], current.get("solve", {}))
         for group, field in (("provider", "api_key"), ("engine", "key")):
             v = groups[group].get(field, "")
             if not isinstance(v, str):
@@ -341,6 +370,119 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             return engine().loads(live)
         except EngineError as e:
             raise HTTPException(502 if e.status in (0, 500) else e.status, e.detail)
+
+    # ---- solve jobs ------------------------------------------------------------
+    # One solve at a time per timetable. The record under "solve" holds the engine job id, the preset,
+    # the live timetable's score before the solve and, once the job has finished, its summary and
+    # whether it was promoted, so a finished solve is served from the db and never asks the engine again.
+    def _engine_error(e: EngineError) -> HTTPException:
+        return HTTPException(502 if e.status in (0, 500) else e.status, e.detail)
+
+    def _solve_weights(settings: dict, preset: str) -> dict:
+        return dict(PRESETS[preset]) if preset in PRESETS else dict(settings["solve"]["weights"])
+
+    def _solve_summary(job: dict, record: dict) -> dict:
+        """What the browser gets: the job's progress plus the record; the whole organisation stays server-side."""
+        result = job.get("result")
+        if result is not None:
+            result = {k: v for k, v in result.items() if k != "organisation"}
+        # `elapsed` is the solver's own clock (it starts after the model is built); `running_for` is wall time
+        # since the job was queued, measured here so the browser needs no clock of its own.
+        return {"job": record["job"], "preset": record["preset"], "time_limit": record["time_limit"], "started": record["started"],
+                "running_for": round(time.time() - record["started"], 1),
+                "before": record.get("before"), "status": job["status"], "elapsed": job.get("elapsed", 0),
+                "best_objective": job.get("best_objective"), "bound": job.get("bound"), "result": result,
+                "error": job.get("error"), "promoted": record.get("promoted", False)}
+
+    @app.post("/api/solve", status_code=202)
+    def start_solve(body: dict | None = None, sid: str = Depends(auth.require_session)):
+        d = db.get_org("draft")
+        if d is None:
+            raise HTTPException(404, "no draft to solve")
+        body = body if isinstance(body, dict) else {}
+        settings = db.get_settings()
+        preset = body.get("preset", settings["solve"]["preset"])
+        if preset not in PRESETS and preset != "custom":
+            raise HTTPException(400, f"preset must be one of {', '.join(PRESETS)} or custom")
+        try:
+            time_limit = int(body.get("time_limit", settings["solve"]["time_limit"]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "time_limit must be a whole number of seconds")
+        if not MIN_TIME_LIMIT <= time_limit <= MAX_TIME_LIMIT:
+            raise HTTPException(400, f"time_limit must be between {MIN_TIME_LIMIT} and {MAX_TIME_LIMIT} seconds")
+        eng = engine()
+        with solve_lock():                                      # two clicks at once start one job, not two
+            record = db.get_value("solve")
+            if record and "final" not in record:
+                try:
+                    if eng.job(record["job"])["status"] in ("queued", "running"):
+                        raise HTTPException(409, "a solve is already running for this timetable; wait or stop it")
+                except EngineError:
+                    pass                                        # the engine forgot it: start afresh
+            live, weights = db.get_org("live"), _solve_weights(settings, preset)
+            before = None
+            try:
+                if live is not None:
+                    before = eng.score(live, None, weights)
+                job = eng.solve(d, previous=live, time_limit=time_limit, weights=weights,
+                                hint="previous" if preset == "close" else "greedy")
+            except EngineError as e:
+                raise _engine_error(e)
+            db.set_value("solve", {"job": job["job"], "preset": preset, "time_limit": time_limit, "weights": weights,
+                                   "started": time.time(), "before": before, "promoted": False})
+        return {"job": job["job"], "preset": preset, "time_limit": time_limit}
+
+    @app.get("/api/solve")
+    def solve_status(sid: str = Depends(auth.require_session)):
+        record = db.get_value("solve")
+        if record is None:
+            raise HTTPException(404, "no solve job for this timetable")
+        if "final" in record:
+            return _solve_summary(record["final"], record)
+        try:
+            job = engine().job(record["job"])
+        except EngineError as e:
+            if e.status == 404:
+                job = {"status": "failed", "error": "the engine no longer has this job"}
+            else:
+                raise _engine_error(e)
+        if job["status"] in ("done", "failed", "cancelled"):
+            with solve_lock():                                  # concurrent polls promote once
+                record = db.get_value("solve")
+                if record is None or record["job"] != job["id"]:
+                    raise HTTPException(409, "the solve changed underneath this request; read again")
+                if "final" in record:
+                    return _solve_summary(record["final"], record)
+                # A cancelled job keeps the best solution found so far; it is promoted like a finished one.
+                if job.get("result") is not None and db.get_org("draft") is not None:
+                    record["promoted"] = promote_build(db, job["result"])
+                record["final"] = {k: v for k, v in job.items() if k != "trace"}
+                if record["final"].get("result") is not None:
+                    record["final"]["result"] = {k: v for k, v in record["final"]["result"].items() if k != "organisation"}
+                db.set_value("solve", record)
+        return _solve_summary(job, record)
+
+    @app.post("/api/solve/cancel")
+    def cancel_solve(sid: str = Depends(auth.require_session)):
+        record = db.get_value("solve")
+        if record is None or "final" in record:
+            raise HTTPException(409, "no solve is running for this timetable")
+        try:
+            return engine().cancel_job(record["job"])
+        except EngineError as e:
+            raise _engine_error(e)
+
+    @app.get("/api/score")
+    def score_live(sid: str = Depends(auth.require_session)):
+        """The live timetable's soft-rule score under the current weights (no previous: stability is trivially full)."""
+        live = db.get_org("live")
+        if live is None:
+            raise HTTPException(404, "no live timetable")
+        settings = db.get_settings()
+        try:
+            return engine().score(live, None, _solve_weights(settings, settings["solve"]["preset"]))
+        except EngineError as e:
+            raise _engine_error(e)
 
     # ---- chat ----------------------------------------------------------------
     @app.post("/api/chat")

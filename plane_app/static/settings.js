@@ -14,6 +14,13 @@
     tokenrouter: 'https://api.tokenrouter.io/v1',
   };
   const DEFAULT_MODEL = { anthropic: 'claude-opus-5' };
+  // Mirrors plane_app.db.PRESETS (the server is the authority; these fill the inputs when a preset is picked)
+  const RULES = ['spread', 'stability', 'compact', 'even_days', 'edge', 'venue'];
+  const PRESETS = {
+    close: { stability: 40, spread: 6, compact: 4, even_days: 3, edge: 2, venue: 1 },
+    balanced: { spread: 10, stability: 8, compact: 6, even_days: 3, edge: 2, venue: 1 },
+    quality: { stability: 0, spread: 14, compact: 8, even_days: 5, edge: 3, venue: 1 },
+  };
 
   let labelsEdited = false;
   const msg = (text, cls) => { const m = el('msg'); m.textContent = text; m.className = 'msg-line ' + (cls || ''); };
@@ -52,6 +59,10 @@
     el('api_key').value = p.api_key || '';
     el('engine_url').value = e.url || '';
     el('engine_key').value = e.key || '';
+    const sv = s.solve || {}, w = sv.weights || PRESETS.balanced;
+    el('solve_preset').value = sv.preset || 'balanced';
+    el('solve_time_limit').value = sv.time_limit ?? 300;
+    RULES.forEach((r) => { el('w_' + r).value = w[r] ?? PRESETS.balanced[r]; });
     labelsEdited = false;
   }
 
@@ -73,11 +84,27 @@
       rules: { max_load: ints('max_load'), max_run: ints('max_run'), mandatory_rest: rest },
       provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: el('model').value.trim() },
       engine: { url: el('engine_url').value.trim(), key: el('engine_key').value },
+      solve: { preset: el('solve_preset').value, time_limit: solveLimit(), weights: Object.fromEntries(RULES.map((r) => [r, weight(r)])) },
     };
+    function solveLimit() {
+      const n = ints('solve_time_limit');
+      if (n < 10 || n > 900) throw new Error('Time limit must be between 10 and 900 seconds');
+      return n;
+    }
+    function weight(r) {
+      const n = ints('w_' + r);
+      if (n < 0) throw new Error(el('w_' + r).parentElement.firstChild.textContent.trim() + ' must be 0 or more');
+      return n;
+    }
   }
 
   ['slot_minutes', 'slots_per_day', 'start'].forEach((id) => el(id).addEventListener('input', regenLabels));
   el('labels').addEventListener('input', () => { labelsEdited = true; });
+  el('solve_preset').addEventListener('change', () => {
+    const w = PRESETS[el('solve_preset').value];
+    if (w) RULES.forEach((r) => { el('w_' + r).value = w[r]; });
+  });
+  RULES.forEach((r) => el('w_' + r).addEventListener('input', () => { el('solve_preset').value = 'custom'; }));
   el('provider_kind').addEventListener('change', () => {
     const kind = el('provider_kind').value;
     el('base_url').value = DEFAULT_BASE_URLS[kind] || '';

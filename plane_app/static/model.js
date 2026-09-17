@@ -15,6 +15,8 @@
       rules: { maxLoad: org.rules.max_load, maxRun: org.rules.max_run, mandatoryRest: org.rules.mandatory_rest, slotsPerDay: org.rules.slots_per_day || null },
       locations: org.locations.map((l) => ({ id: l.id, name: l.name, cap: l.cap, shared: !!l.shared, rest: !!l.rest })),
       persons: org.persons.map((p) => ({ id: p.id, name: p.name, role: p.role, avail: p.avail, eligible: p.eligible.map((x) => locIndex[x]).filter((x) => x !== undefined) })),
+      // student groups are planes on the engine's side (it synthesises a person per group); here they only join the load panel
+      groups: (org.groups || []).map((g) => ({ id: g.id, name: g.name, band: g.band || null })),
       events: org.events.filter((e) => e.loc !== null && e.t0 !== null && locIndex[e.loc] !== undefined).map((e) => ({
         id: e.id, name: e.name, members: e.members.map((m) => perIndex[m]).filter((x) => x !== undefined),
         loc: locIndex[e.loc], t0: e.t0, dur: e.dur, sync: e.sync || undefined })),
@@ -330,7 +332,15 @@
     try { loads = (await api('/api/loads')).loads || {}; }     // one engine call for every plane
     catch (e) { failed = e; }
     if (gen !== loadGen) return;
-    for (const per of ds.persons) {
+    // persons by role in order of first appearance (teachers first in every dataset so far), then the groups
+    const roles = [];
+    ds.persons.forEach((p) => { if (!roles.includes(p.role)) roles.push(p.role); });
+    const rows = [];
+    roles.forEach((role) => ds.persons.filter((p) => p.role === role).forEach((p, i) => rows.push({ id: p.id, name: p.name, role, first: i === 0 })));
+    ds.groups.forEach((g, i) => rows.push({ id: g.id, name: g.name + (g.band ? ' (option)' : ''), role: 'Group', first: i === 0 }));
+    const labelled = roles.length > 1 || ds.groups.length > 0;
+    for (const per of rows) {
+      if (labelled && per.first) cell('role', per.role === 'Group' ? 'Groups' : per.role + 's');
       const rep = loads[per.id];
       if (failed || !rep) { cell('', per.name); cell('n', failed ? String(failed.message) : 'no report'); cell('', ''); cell('', ''); continue; }
       const load = rep.load || 0, maxLoad = rep.max_load ?? ds.rules.maxLoad, longest = rep.longest || 0, maxRun = rep.max_run ?? ds.rules.maxRun;

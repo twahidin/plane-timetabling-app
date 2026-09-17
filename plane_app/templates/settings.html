@@ -12,7 +12,7 @@
   <div>
     <div class="eyebrow">Settings</div>
     <h1>Plane Timetabling</h1>
-    <p class="lede">The time grid and rules shape every extraction; the model provider reads your documents and answers chat; the engine builds and checks the solid.</p>
+    <p class="lede">The time grid and rules shape every extraction; the solve weights say what a good timetable is; the model provider reads your documents and answers chat; the engine builds, solves and checks the solid.</p>
   </div>
   <div class="links">
     <a href="/">Back to the timetable</a>
@@ -34,6 +34,18 @@
     <label>Max load (slots)<input type="number" id="max_load" min="0" step="1"></label>
     <label>Max run (slots in a row)<input type="number" id="max_run" min="0" step="1"></label>
     <label>Mandatory rest slots <span class="help">comma-separated slot numbers from 0</span><input type="text" id="mandatory_rest"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Solve</legend>
+    <label>Preset <span class="help">fills the weights; editing a weight makes it custom</span><select id="solve_preset"><option value="close">Keep it close</option><option value="balanced">Balanced</option><option value="quality">Best quality</option><option value="custom">Custom</option></select></label>
+    <label>Time limit (seconds) <span class="help">10 to 900; the engine bills solve seconds</span><input type="number" id="solve_time_limit" min="10" max="900" step="1"></label>
+    <label>Spread <span class="help">a group meets a subject once a day</span><input type="number" id="w_spread" min="0" step="1"></label>
+    <label>Stability <span class="help">lessons stay where the live timetable had them</span><input type="number" id="w_stability" min="0" step="1"></label>
+    <label>Compact <span class="help">no gaps in a teacher's day</span><input type="number" id="w_compact" min="0" step="1"></label>
+    <label>Even days <span class="help">a group's load is level across days</span><input type="number" id="w_even_days" min="0" step="1"></label>
+    <label>Edge <span class="help">heavy subjects away from first and last slots</span><input type="number" id="w_edge" min="0" step="1"></label>
+    <label>Venue <span class="help">lessons in their usual room</span><input type="number" id="w_venue" min="0" step="1"></label>
   </fieldset>
 
   <fieldset>

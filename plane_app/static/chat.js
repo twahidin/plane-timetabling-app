@@ -167,7 +167,7 @@
     finally { btn.disabled = false; }
   });
 
-  window.reloadIntake = async () => { el('notes').textContent = ''; await loadMessages(); await loadDraft(); };
+  window.reloadIntake = async () => { el('notes').textContent = ''; stopFollowing(); await loadMessages(); await loadDraft(); await resumeSolve(); };
 
   el('clear-uploads').addEventListener('click', async () => {
     const btn = el('clear-uploads'); btn.disabled = true;
@@ -184,6 +184,8 @@
     { key: 'persons', title: 'Persons', fields: ['name', 'role', 'avail', 'eligible'] },
     { key: 'locations', title: 'Locations', fields: ['name', 'cap', 'shared', 'rest'] },
     { key: 'events', title: 'Events', fields: ['name', 'members', 'dur', 'eligible_locs', 'fixed'] },
+    // groups come from the import (or the chat) and are read here, not edited cell by cell
+    { key: 'groups', title: 'Groups', fields: ['name', 'classes', 'band', 'option'], readOnly: true, optional: true },
   ];
   const LIST_FIELDS = new Set(['eligible', 'members', 'eligible_locs']);
   const INT_FIELDS = new Set(['cap', 'dur']);
@@ -220,22 +222,30 @@
     const box = el('draft');
     let d;
     try { d = await api('/api/draft'); }
-    catch (e) { draft = null; box.hidden = true; box.textContent = ''; return; }
+    catch (e) { draft = null; box.hidden = true; box.textContent = ''; await showSolveBar(false); return; }
     draft = d;
     box.textContent = '';
     const head = node('div', 'head');
     head.appendChild(node('div', 'section-title', 'Draft organisation' + (d.name ? ': ' + d.name : '')));
     const placed = (d.events || []).filter((e) => e.loc != null && e.t0 != null).length;
     head.appendChild(node('div', 'summary', `${(d.persons || []).length} persons \u00b7 ${(d.locations || []).length} locations \u00b7 ${(d.events || []).length} events (${placed} fixed) \u00b7 ${(d.time_labels || []).length} slots`));
-    const buildBtn = node('button', 'btn primary', 'Build'); buildBtn.type = 'button'; buildBtn.id = 'build';
-    buildBtn.addEventListener('click', () => runBuild(buildBtn));
-    head.appendChild(buildBtn);
+    const groups = d.groups || [], bands = d.bands || [];
+    if (groups.length) head.appendChild(node('div', 'summary', `${groups.filter((g) => !g.band).length} whole-class groups \u00b7 ${groups.filter((g) => g.band).length} option groups in ${bands.length} band${bands.length === 1 ? '' : 's'}`));
     box.appendChild(head);
-    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "first, one past last".'));
-    SECTIONS.forEach((sec) => box.appendChild(renderTable(sec, d[sec.key] || [])));
+    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "first, one past last". Then Build (instant) or Solve (best under the soft rules) above.'));
+    SECTIONS.forEach((sec) => { const rows = d[sec.key] || []; if (!sec.optional || rows.length) box.appendChild(renderTable(sec, rows)); });
     box.hidden = false;
+    await showSolveBar(true);
   }
   window.loadDraft = loadDraft;
+
+  async function showSolveBar(hasDraft) {
+    let hasLive = false;
+    try { const t = await api('/api/timetables'); hasLive = !!(t.items.find((x) => x.id === t.current) || {}).has_live; } catch (e) { /* bar stays as it is */ }
+    el('solve-bar').hidden = !hasDraft && !hasLive;
+    ['build', 'solve', 'solve-preset', 'solve-time'].forEach((id) => { el(id).disabled = !hasDraft; });
+    el('score-live').disabled = !hasLive;
+  }
 
   function renderTable(sec, rows) {
     const wrap = node('div');
@@ -250,6 +260,7 @@
       r.appendChild(node('td', 'id', row.id));
       sec.fields.forEach((f) => {
         const td = node('td', null, show(f, row[f]));
+        if (sec.readOnly) { r.appendChild(td); return; }
         td.contentEditable = 'true'; td.spellcheck = false;
         td.dataset.section = sec.key; td.dataset.id = row.id; td.dataset.field = f; td.dataset.orig = td.textContent;
         td.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); td.blur(); } if (ev.key === 'Escape') { td.textContent = td.dataset.orig; td.blur(); } });
@@ -280,6 +291,8 @@
     }
   }
 
+  el('build').addEventListener('click', () => runBuild(el('build')));
+
   async function runBuild(btn) {
     if (btn) btn.disabled = true;
     const busy = startBusy(el('notes'), 'Building on the engine (no model involved; this takes well under a second)\u2026');
@@ -292,7 +305,177 @@
     finally { if (btn) btn.disabled = false; }
   }
 
+  // ---------- Solve: presets, live progress, quality ----------
+  // POST /api/solve queues a job on the engine; GET /api/solve is polled every 2 s and, once the job
+  // has finished, the server promotes the result (same rule as Build) and reports `promoted`. The
+  // progress card is the busy indicator for a solve: it names the preset, the elapsed time and the
+  // best objective so far. The quality panel compares the live timetable's score taken before the
+  // solve (`before`, recorded by the server when the job starts) with the solved one (`result.scores`).
+  const PRESET_LABELS = { close: 'keep it close', balanced: 'balanced', quality: 'best quality', custom: 'custom weights' };
+  const RULE_LABELS = {
+    spread: ['spread', 'a group meets a subject once a day'], stability: ['stability', 'lessons stay where they were'],
+    compact: ['compact', 'no gaps in a teacher\u2019s day'], even_days: ['even days', 'a group\u2019s load is level across days'],
+    edge: ['edge', 'heavy subjects away from first and last slots'], venue: ['venue', 'lessons in their usual room'],
+  };
+  let solvePoll = null;      // the setTimeout handle while a solve is being followed
+  let solveGen = 0;          // a timetable switch or a new solve makes older polls fall silent
+  let solveTick = null;      // a 1 s timer that keeps the elapsed count moving between polls
+  let solveStartedAt = 0;    // Date.now() minus the server's wall time since the job was queued
+  let solveState = null;     // the last polled state, read by the tick
+
+  function stopFollowing() {
+    if (solvePoll) clearTimeout(solvePoll);
+    if (solveTick) clearInterval(solveTick);
+    solvePoll = solveTick = null; solveGen++;
+  }
+  const fmtSec = (s) => (s < 10 ? (Math.round(s * 10) / 10).toFixed(1) : String(Math.round(s))) + 's';
+
+  // The label counts wall time since the job was queued (the engine's own `elapsed` starts only once
+  // the model is built, which can take a minute on a whole school and would read as frozen).
+  function renderProgress(st) {
+    const card = el('solve-progress');
+    const limit = st.time_limit || 1;
+    solveState = st;
+    solveStartedAt = Date.now() - Math.round((st.running_for || 0) * 1000);
+    paintSolveLabel();
+    if (!solveTick) solveTick = setInterval(paintSolveLabel, 1000);
+    const meta = el('solve-meta'); meta.textContent = '';
+    meta.appendChild(node('span', null, `status ${st.status}`));
+    meta.appendChild(node('span', null, `search ${fmtSec(st.elapsed || 0)} of ${limit}s`));
+    if (st.bound != null && st.bound > 0) {
+      meta.appendChild(node('span', null, `bound ${st.bound}`));
+      if (st.best_objective != null) meta.appendChild(node('span', null, `gap ${gapPct(st.best_objective, st.bound)}`));
+    }
+    el('solve-cancel').disabled = false;
+    card.hidden = false;
+  }
+  function paintSolveLabel() {
+    const st = solveState; if (!st) return;
+    const wall = Math.max(0, (Date.now() - solveStartedAt) / 1000);
+    const best = st.best_objective != null ? `best ${st.best_objective}`
+      : st.status === 'queued' ? 'queued' : wall > 5 ? 'building the model' : 'no solution yet';
+    el('solve-label').textContent = `Solving \u00b7 ${PRESET_LABELS[st.preset] || st.preset} \u00b7 ${Math.round(wall)}s \u00b7 ${best}`;
+    el('solve-fill').style.width = `${Math.min(100, ((st.elapsed || 0) / (st.time_limit || 1)) * 100)}%`;
+  }
+  const gapPct = (obj, bound) => `${(Math.max(0, obj - bound) / Math.max(obj, 1) * 100).toFixed(1)}%`;
+
+  function renderQuality(st) {
+    const box = el('quality'); box.textContent = '';
+    const res = st.result, after = res && res.scores, before = st.before && st.before.scores;
+    if (!after && !before) { box.hidden = true; return; }
+    const head = node('div', 'head');
+    head.appendChild(node('b', null, 'Quality'));
+    head.appendChild(node('span', 'meta', after
+      ? `${PRESET_LABELS[st.preset] || st.preset} \u00b7 ${fmtSec(st.elapsed || 0)} (limit ${st.time_limit}s) \u00b7 objective ${res.objective}` + (res.bound > 0 ? ` \u00b7 bound ${res.bound} \u00b7 gap ${gapPct(res.objective, res.bound)}` : '')
+      : `live timetable under the current weights \u00b7 objective ${st.before.total}`));
+    if (after) {
+      const chip = node('span', 'chip ' + (res.optimal ? 'ok' : ''), res.optimal ? 'proven optimal' : st.status === 'cancelled' ? 'stopped early' : 'time limit reached');
+      head.appendChild(chip);
+    }
+    box.appendChild(head);
+    const table = node('table'), thead = node('thead'), tr = node('tr');
+    ['rule', before ? 'before' : '', after ? 'after' : '', before && after ? 'change' : ''].filter((h) => h !== '').forEach((h) => tr.appendChild(node('th', null, h)));
+    thead.appendChild(tr); table.appendChild(thead);
+    const tbody = node('tbody');
+    const rules = Object.keys(RULE_LABELS);
+    rules.concat(['total']).forEach((r) => {
+      const row = node('tr');
+      const name = node('td', 'rule', r === 'total' ? 'total' : RULE_LABELS[r][0]);
+      if (r !== 'total') name.appendChild(node('small', null, RULE_LABELS[r][1]));
+      row.appendChild(name);
+      const b = before ? (r === 'total' ? st.before.total : before[r]) : null;
+      const a = after ? (r === 'total' ? res.objective : after[r]) : null;
+      if (before) row.appendChild(node('td', 'n', b == null ? '' : String(b)));
+      if (after) row.appendChild(node('td', 'n', a == null ? '' : String(a)));
+      if (before && after) {
+        const d = (a == null || b == null) ? null : a - b;
+        const better = r === 'total' ? d < 0 : d > 0;      // scores rise towards 100; the total (the objective) falls
+        row.appendChild(node('td', 'n ' + (d === 0 || d == null ? '' : better ? 'up' : 'down'), d == null ? '' : (d > 0 ? '+' : '') + d));
+      }
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody); box.appendChild(table);
+    box.appendChild(node('div', 'meta', 'Scores are 0 to 100 per rule (100 is the ideal); the total is the weighted objective, lower is better. "Before" is the live timetable before this solve.'));
+    box.hidden = false;
+  }
+
+  function finishSolve(st) {
+    stopFollowing();
+    el('solve-progress').hidden = true;
+    el('solve').disabled = false;
+    const res = st.result || {};
+    if (st.status === 'failed') showNotes([], [], [{ cls: 'error', text: `Solve failed: ${st.error || 'unknown error'}` }]);
+    else if (st.promoted) {
+      showNotes([], [], [{ cls: 'good', text: `${st.status === 'cancelled' ? 'Stopped early' : 'Solved'} (${PRESET_LABELS[st.preset] || st.preset}, ${fmtSec(st.elapsed || 0)}): ${(res.placed || []).length} events placed, objective ${res.objective}${res.optimal ? ', proven optimal' : ''}. The draft is now the live timetable.` }]);
+      if (window.reloadModel) window.reloadModel().catch(() => {});
+      loadDraft();
+    } else if (res.unplaced || res.clashes) {
+      showNotes([], [], [{ cls: 'error', text: `Solve did not settle: ${(res.unplaced || []).length} unplaced, ${(res.clashes || []).length} clashes. The draft is unchanged.` }]
+        .concat((res.clashes || []).slice(0, 20).map((c) => ({ cls: 'error', text: c.message || String(c) }))));
+      loadDraft();
+    } else showNotes([], [], [{ cls: 'warn', text: `Solve ${st.status} without a solution.` }]);
+    renderQuality(st);
+  }
+
+  async function pollSolve(gen) {
+    if (gen !== solveGen) return;
+    let st;
+    try { st = await api('/api/solve'); }
+    catch (e) {
+      if (gen !== solveGen) return;
+      el('solve-meta').textContent = `waiting: ${e.message}`;
+      solvePoll = setTimeout(() => pollSolve(gen), 4000); return;
+    }
+    if (gen !== solveGen) return;
+    if (st.status === 'queued' || st.status === 'running') {
+      renderProgress(st);
+      solvePoll = setTimeout(() => pollSolve(gen), 2000);
+    } else finishSolve(st);
+  }
+
+  async function startSolve() {
+    const btn = el('solve'); btn.disabled = true;
+    const preset = el('solve-preset').value, time_limit = Number(el('solve-time').value);
+    if (!Number.isInteger(time_limit) || time_limit < 10 || time_limit > 900) { btn.disabled = false; showNotes([], [], [{ cls: 'error', text: 'The time limit must be a whole number of seconds between 10 and 900.' }]); return; }
+    el('notes').textContent = ''; el('quality').hidden = true;
+    stopFollowing();
+    try {
+      await api('/api/solve', { method: 'POST', body: JSON.stringify({ preset, time_limit }) });
+      // remember the choice for next time (the preset select and time limit mirror the settings page)
+      api('/api/settings').then((s) => api('/api/settings', { method: 'PUT', body: JSON.stringify({ solve: { ...s.solve, preset, time_limit } }) })).catch(() => {});
+    } catch (e) { btn.disabled = false; showNotes([], [], [{ cls: 'error', text: e.message }]); return; }
+    renderProgress({ preset, time_limit, status: 'queued', elapsed: 0 });
+    pollSolve(solveGen);
+  }
+  el('solve').addEventListener('click', startSolve);
+  el('solve-cancel').addEventListener('click', async () => {
+    el('solve-cancel').disabled = true;
+    try { await api('/api/solve/cancel', { method: 'POST' }); el('solve-meta').textContent = 'stopping at the next improving solution\u2026'; }
+    catch (e) { showNotes([], [], [{ cls: 'error', text: e.message }]); el('solve-cancel').disabled = false; }
+  });
+
+  // On load (and after a timetable switch): follow a solve that is still running, or show the last one's quality.
+  async function resumeSolve() {
+    stopFollowing();
+    el('solve-progress').hidden = true; el('quality').hidden = true;
+    try {
+      const s = await api('/api/settings');
+      el('solve-preset').value = s.solve.preset; el('solve-time').value = s.solve.time_limit;
+    } catch (e) { /* the defaults in the markup stay */ }
+    let st;
+    try { st = await api('/api/solve'); } catch (e) { return; }
+    if (st.status === 'queued' || st.status === 'running') { el('solve').disabled = true; renderProgress(st); pollSolve(solveGen); }
+    else if (st.promoted || (st.result && st.result.scores)) renderQuality(st);
+  }
+  // The live timetable's quality on demand, without solving: one engine check.
+  el('score-live').addEventListener('click', async () => {
+    const btn = el('score-live'); btn.disabled = true;
+    try { renderQuality({ before: await api('/api/score'), preset: 'live', status: 'live' }); }
+    catch (e) { showNotes([], [], [{ cls: 'error', text: e.message }]); }
+    finally { btn.disabled = false; }
+  });
+
   loadModelLabel();
   loadMessages();
-  loadDraft();
+  loadDraft().then(resumeSolve);
 })();
