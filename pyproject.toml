@@ -1,0 +1,28 @@
+[project]
+name = "plane-app"
+version = "0.1.0"
+description = "Plane timetabling web app: 3D view, intake, chat, settings"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn==0.53.0",
+  "httpx==0.28.1",
+  "itsdangerous==2.2.0",
+  "python-multipart==0.0.32",
+  "jinja2==3.1.6",
+  "pypdf==6.19.0",
+  "openpyxl==3.1.5",
+  "pdfplumber==0.11.10",
+  "anthropic>=1.6",
+  "openai==3.14.1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["plane_app", "plane_app.llm", "plane_timetabling"]
+
+[tool.setuptools.package-data]
+plane_app = ["templates/*.html", "static/*"]

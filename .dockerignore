@@ -1,0 +1,11 @@
+.git
+.venv
+data/
+uploads/
+*.db
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.superpowers/
+build/
+dist/

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plane Timetabling</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="top">
+  <div>
+    <div class="eyebrow">Live timetable</div>
+    <h1>Plane Timetabling</h1>
+    <p class="lede">Every person is a plane. Time runs along it, location runs up it, and its shape is the person's contract. A lesson or shift is a prism that pierces every plane it needs at the same time and place. Rest is a row of its own.</p>
+  </div>
+  <div class="links">
+    <div class="timetables" id="timetables">
+      <label for="timetable" class="eyebrow">Timetable</label>
+      <select id="timetable" aria-label="Current timetable"></select>
+      <button class="btn" id="tt-new" type="button" title="Create an empty timetable">New</button>
+      <button class="btn" id="tt-clone" type="button" title="Copy this timetable as the starting point for another period">Clone</button>
+      <button class="btn" id="tt-rename" type="button">Rename</button>
+      <button class="btn" id="tt-delete" type="button">Delete</button>
+    </div>
+    <a href="/settings">Settings</a>
+    <form method="post" action="/logout"><button class="btn" type="submit">Log out</button></form>
+  </div>
+</header>
+
+<div class="status" id="status"></div>
+
+<div id="empty" class="empty-state" hidden>No timetable yet. Drop a PDF, CSV or Excel file below to rebuild from data, or press "Start from criteria" and describe the organisation in the chat.</div>
+
+<main class="wrap">
+  <section class="stage">
+    <div class="toolbar">
+      <div class="seg" role="group" aria-label="View direction">
+        <button id="view-orbit" class="on" data-view="orbit">Orbit</button>
+        <button id="view-P" data-view="P">Along P<small>room timetable</small></button>
+        <button id="view-L" data-view="L">Along L<small>person timetable</small></button>
+        <button id="view-T" data-view="T">Along T<small>who is where</small></button>
+      </div>
+      <div class="btns">
+        <div class="seg" role="group" aria-label="Zoom">
+          <button id="zoom-in" aria-label="Zoom in">+</button>
+          <button id="zoom-out" aria-label="Zoom out">&minus;</button>
+        </div>
+        <button class="btn" id="rebuild" title="Send the draft to the engine and reload">Rebuild</button>
+      </div>
+    </div>
+    <div class="view" id="view">
+      <canvas id="c"></canvas>
+      <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; person planes</div>
+      <div class="hint" id="hint">Drag to rotate &middot; scroll to zoom &middot; click a tile</div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <aside class="panel">
+    <section class="card">
+      <h2>Reviewer <span class="eyebrow">four projections, one integral</span></h2>
+      <div class="checks" id="checks"></div>
+      <div class="verdict"><span class="dot" id="verdict-dot"></span><span id="verdict"></span></div>
+      <ul class="clashes" id="clash-list"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Selected prism <span class="eyebrow">click a tile</span></h2>
+      <div id="selected"><p class="empty">Nothing selected. Click any tile in the model to see the prism it belongs to and what the Reviewer says about it.</p></div>
+    </section>
+
+    <section class="card">
+      <h2>Load &amp; rest agent <span class="eyebrow">per plane, along T</span></h2>
+      <div class="loads" id="loads"></div>
+    </section>
+
+    <section class="card">
+      <h2>Search agent <span class="eyebrow">routes to one dimension at a time</span></h2>
+      <div class="q">
+        <select id="q-type" aria-label="Question type">
+          <option value="where">Where is a person at a time?</option>
+          <option value="who">Who is in a location at a time?</option>
+          <option value="both_free">When are two people both free?</option>
+          <option value="load">How loaded is a person?</option>
+        </select>
+        <div class="row" id="q-args"></div>
+        <button class="btn primary" id="q-run">Ask</button>
+      </div>
+      <div class="answer" id="q-answer"></div>
+      <ul class="trace" id="q-trace"></ul>
+    </section>
+  </aside>
+</main>
+
+<div class="below">
+  <section id="intake">
+    <div class="section-title">Intake <span class="eyebrow">documents to draft to build</span> <button class="btn" id="start-criteria" type="button" title="Begin an empty draft and describe people, venues and lessons in the chat">Start from criteria</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
+    <div id="drop" class="drop">Drop files here or <input type="file" id="files" multiple accept=".pdf,.csv,.xlsx"></div>
+    <div class="import-options">
+      <label for="import-mode">If the file is a timetable export (aSc)</label>
+      <select id="import-mode" aria-label="Import mode">
+        <option value="keep" selected>Keep the existing placement, then check it</option>
+        <option value="rebuild">Rebuild: unplace every lesson and let the engine re-place it</option>
+      </select>
+      <label class="check"><input type="checkbox" id="classes-as-planes"> Treat classes as planes <span class="hint">(shows subject banding as clashes)</span></label>
+    </div>
+    <div id="notes" class="notes"></div>
+    <div id="draft" class="draft" hidden></div>
+  </section>
+
+  <section id="chat" class="chat">
+    <div class="section-title">Assistant <span class="eyebrow">asks the engine, edits the draft</span> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
+    <div id="chat-log" class="chat-log"></div>
+    <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
+  </section>
+</div>
+
+<dialog id="tt-dialog" class="dialog">
+  <form method="dialog" id="tt-form">
+    <h2 id="tt-dialog-title">New timetable</h2>
+    <p id="tt-dialog-text" class="dialog-text"></p>
+    <label id="tt-name-label" for="tt-name">Name <input id="tt-name" type="text" autocomplete="off" maxlength="80" placeholder="for example 2027 Term 1"></label>
+    <p id="tt-dialog-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="tt-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="tt-ok">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/three.min.js"></script>
+<script src="/static/model.js"></script>
+<script src="/static/chat.js"></script>
+<script src="/static/timetables.js"></script>
+</body>
+</html>

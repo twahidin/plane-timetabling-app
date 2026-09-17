@@ -1,0 +1,395 @@
+"""The app: pages, API, and the wiring between db, engine and model provider."""
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from collections import defaultdict, deque
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from . import auth
+from .chat import run_chat
+from .config import Config
+from .db import Db, mask_settings
+from .engine_client import EngineClient, EngineError
+from .extract import UnsupportedFile, extract
+from . import asc_import
+from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
+from .llm import ProviderError, make_provider
+from .promote import promote_build
+
+HERE = Path(__file__).parent
+MAX_UPLOAD = 20 * 1024 * 1024
+LOGIN_MAX_FAILURES, LOGIN_WINDOW = 10, 15 * 60      # failed logins per client ip before a 429, seconds
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _default_engine_factory(config: Config):
+    def factory(settings: dict) -> EngineClient:
+        return EngineClient(settings["engine"]["url"] or config.engine_url, settings["engine"]["key"] or config.engine_key)
+    return factory
+
+
+def create_app(config: Config, db: Db, engine_factory=None, provider_factory=None) -> FastAPI:
+    app = FastAPI(title="plane-app", docs_url=None, redoc_url=None)
+    app.state.config, app.state.db = config, db
+    app.state.engine_factory = engine_factory or _default_engine_factory(config)
+    app.state.provider_factory = provider_factory or make_provider
+    app.state.chat_times: dict[str, deque] = defaultdict(deque)
+    app.state.login_failures: dict[str, deque] = defaultdict(deque)     # client ip -> failed-attempt times
+    templates = Jinja2Templates(directory=str(HERE / "templates"))
+    static = HERE / "static"
+    static.mkdir(exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(static)), name="static")
+    (config.data_dir / "uploads").mkdir(parents=True, exist_ok=True)
+
+    def engine() -> EngineClient:
+        return app.state.engine_factory(db.get_settings())
+
+    def provider():
+        try:
+            return app.state.provider_factory(db.get_settings())
+        except ProviderError as e:
+            raise HTTPException(400, str(e))
+
+    @app.exception_handler(HTTPException)
+    async def _http_exc(request: Request, exc: HTTPException):
+        if exc.status_code == 303:
+            return RedirectResponse(exc.headers["Location"], status_code=303)
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    # ---- health and auth ---------------------------------------------------
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True}
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page(request: Request):
+        return templates.TemplateResponse(request, "login.html", {"error": None})
+
+    def _client_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        return forwarded or (request.client.host if request.client else "unknown")
+
+    @app.post("/login")
+    async def login(request: Request, password: str = Form("")):
+        ip, now = _client_ip(request), time.monotonic()
+        failures = app.state.login_failures[ip]
+        while failures and now - failures[0] > LOGIN_WINDOW:
+            failures.popleft()
+        if len(failures) >= LOGIN_MAX_FAILURES:
+            return templates.TemplateResponse(request, "login.html", {"error": "Too many attempts, try again later."}, status_code=429)
+        if not auth.constant_time_equals(password, config.admin_password):
+            failures.append(now)
+            if len(app.state.login_failures) > 1000:       # forget clients whose window has passed
+                for k in [k for k, dq in app.state.login_failures.items() if not dq or now - dq[-1] > LOGIN_WINDOW]:
+                    del app.state.login_failures[k]
+            await asyncio.sleep(1)
+            return templates.TemplateResponse(request, "login.html", {"error": "Wrong password."}, status_code=200)
+        app.state.login_failures.pop(ip, None)
+        resp = RedirectResponse("/", status_code=303)
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        secure = request.url.scheme == "https" or forwarded_proto == "https"
+        resp.set_cookie(auth.COOKIE, auth.make_session_cookie(config.secret_key, auth.new_session_id()),
+                        max_age=auth.MAX_AGE, httponly=True, samesite="lax", secure=secure)
+        return resp
+
+    @app.post("/logout")
+    def logout():
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie(auth.COOKIE)
+        return resp
+
+    # ---- pages ---------------------------------------------------------------
+    @app.get("/", response_class=HTMLResponse)
+    def index(request: Request, sid: str = Depends(auth.require_session)):
+        return templates.TemplateResponse(request, "index.html", {})
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request, sid: str = Depends(auth.require_session)):
+        return templates.TemplateResponse(request, "settings.html", {})
+
+    # ---- settings ------------------------------------------------------------
+    @app.get("/api/settings")
+    def get_settings(sid: str = Depends(auth.require_session)):
+        return mask_settings(db.get_settings())
+
+    @app.put("/api/settings")
+    def put_settings(body: dict, sid: str = Depends(auth.require_session)):
+        current = db.get_settings()
+        if not isinstance(body, dict):
+            body = {}
+        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "provider", "engine")}
+        for group, field in (("provider", "api_key"), ("engine", "key")):
+            v = groups[group].get(field, "")
+            if not isinstance(v, str):
+                groups[group].pop(field, None)
+            elif v.startswith("***"):
+                groups[group][field] = current.get(group, {}).get(field, "")
+        # A provider key belongs to one provider: switching kind without a fresh key stores no key.
+        new_kind = groups["provider"].get("kind")
+        if isinstance(new_kind, str) and new_kind != current.get("provider", {}).get("kind"):
+            submitted = body.get("provider", {}).get("api_key", "") if isinstance(body.get("provider"), dict) else ""
+            if not isinstance(submitted, str) or not submitted or submitted.startswith("***"):
+                groups["provider"]["api_key"] = ""
+        merged = {k: {**current.get(k, {}), **groups[k]} for k in groups}
+        db.set_settings(merged)
+        return mask_settings(merged)
+
+    # ---- timetable data ------------------------------------------------------
+    @app.get("/api/solid")
+    def get_solid(sid: str = Depends(auth.require_session)):
+        live, draft = db.get_org("live"), db.get_org("draft")
+        cur = db.current_timetable()
+        return {"organisation": live, "draft": summarise(draft) if draft else None, "check": db.get_value("last_check"),
+                "labels": db.get_settings()["time"]["labels"],
+                "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)}}
+
+    @app.post("/api/upload")
+    async def upload(sid: str = Depends(auth.require_session), files: list[UploadFile] = File(...),
+                     mode: str = Form("keep"), classes_as_planes: str = Form("")):
+        # Extract everything first: an UnsupportedFile in any of them must 400 before anything is stored.
+        pending = []
+        asc_pages: list[list[dict]] = []
+        asc_names: list[str] = []
+        for f in files:
+            data = await f.read()
+            if len(data) > MAX_UPLOAD:
+                raise HTTPException(400, f"{f.filename} is over 20 MB")
+            name = f.filename or "upload"
+            if name.lower().endswith(".pdf") and asc_import.is_asc_pdf(data):
+                # a timetable-software export: read the grid geometry, no model needed
+                asc_pages.extend(asc_import.read_pdf_words(data))
+                asc_names.append(name)
+                pending.append((name, data, None))
+                continue
+            try:
+                ex = extract(name, data)
+            except UnsupportedFile as e:
+                raise HTTPException(400, str(e))
+            pending.append((name, data, ex))
+        if asc_pages:
+            if mode not in ("keep", "rebuild"):
+                raise HTTPException(400, "mode must be keep or rebuild")
+            try:
+                org, notes = asc_import.build_organisation(asc_pages, mode=mode, classes_as_planes=bool(classes_as_planes))
+            except asc_import.AscFormatError as e:
+                raise HTTPException(400, str(e))
+            try:
+                org = apply_patch(org, {})            # validates like every other draft
+            except IntakeError as e:
+                raise HTTPException(400, f"The timetable export could not be turned into a draft: {e}")
+            for name, data, ex in pending:
+                for old_path in db.remove_upload_by_name(sid, name):
+                    _unlink_quietly(old_path)
+                path = config.data_dir / "uploads" / f"{auth.new_session_id()}.pdf"
+                path.write_bytes(data)
+                db.add_upload(sid, name, str(path), "asc" if ex is None else ex.kind, "" if ex is None else ex.text)
+            others = [name for name, _, ex in pending if ex is not None]
+            if others:
+                notes.append({"section": "documents", "source": ", ".join(others),
+                              "note": "Ignored alongside the timetable export; the export already holds the timetable. Upload other documents on their own to add to the draft by chat."})
+            db.set_org("draft", org)
+            s = summarise(org)
+            return {"draft": s, "notes": notes, "warnings": [], "source": "asc", "files": asc_names}
+        warnings = []
+        for name, data, ex in pending:
+            for old_path in db.remove_upload_by_name(sid, name):     # re-dropping a file replaces it
+                _unlink_quietly(old_path)
+            path = config.data_dir / "uploads" / f"{auth.new_session_id()}.{ex.kind}"
+            path.write_bytes(data)
+            db.add_upload(sid, name, str(path), ex.kind, ex.text)
+            if ex.warning:
+                warnings.append(f"{name}: {ex.warning}")
+        texts = [(u["name"], u["text"]) for u in db.uploads(sid)]
+        try:
+            org, notes = extract_organisation(provider(), db.get_settings(), texts)
+        except (IntakeError, ProviderError) as e:
+            raise HTTPException(400, str(e))
+        db.set_org("draft", org)
+        return {"draft": summarise(org), "notes": notes, "warnings": warnings}
+
+    @app.post("/api/uploads/clear")
+    def clear_uploads(sid: str = Depends(auth.require_session)):
+        for path in db.clear_uploads(sid):
+            _unlink_quietly(path)
+        return {"ok": True}
+
+    @app.post("/api/draft/new")
+    def new_draft(sid: str = Depends(auth.require_session)):
+        """An empty draft to fill from criteria, by chat or by hand."""
+        org = empty_organisation(db.get_settings())
+        db.set_org("draft", org)
+        return summarise(org)
+
+    # ---- timetable instances ---------------------------------------------------
+    def _timetables_payload() -> dict:
+        return {"current": db.current_timetable(), "items": db.timetables()}
+
+    @app.get("/api/timetables")
+    def list_timetables(sid: str = Depends(auth.require_session)):
+        return _timetables_payload()
+
+    @app.post("/api/timetables")
+    def create_timetable(body: dict, sid: str = Depends(auth.require_session)):
+        name = str(body.get("name") or "").strip() if isinstance(body, dict) else ""
+        if not name:
+            raise HTTPException(400, "give the timetable a name")
+        source = body.get("clone_from") if isinstance(body, dict) else None
+        cloned = None
+        if source:
+            known = {t["id"] for t in db.timetables()}
+            if source not in known:
+                raise HTTPException(404, f"no timetable {source}")
+            db.select_timetable(source)
+            src_settings, src_org = db.get_settings(), (db.get_org("live") or db.get_org("draft"))
+            cloned = source
+        tid = db.create_timetable(name)
+        if cloned:
+            db.set_settings(src_settings)           # time and rules travel with the clone; provider/engine are global anyway
+            if src_org:
+                db.set_org("draft", clone_for_rebuild(src_org))
+        return {"id": tid, "name": name, "cloned_from": cloned, **_timetables_payload()}
+
+    @app.post("/api/timetables/{tid}/select")
+    def select_timetable(tid: str, sid: str = Depends(auth.require_session)):
+        try:
+            db.select_timetable(tid)
+        except KeyError:
+            raise HTTPException(404, f"no timetable {tid}")
+        return _timetables_payload()
+
+    @app.patch("/api/timetables/{tid}")
+    def rename_timetable(tid: str, body: dict, sid: str = Depends(auth.require_session)):
+        name = str(body.get("name") or "").strip() if isinstance(body, dict) else ""
+        if not name:
+            raise HTTPException(400, "give the timetable a name")
+        if tid not in {t["id"] for t in db.timetables()}:
+            raise HTTPException(404, f"no timetable {tid}")
+        db.rename_timetable(tid, name)
+        return _timetables_payload()
+
+    @app.delete("/api/timetables/{tid}")
+    def delete_timetable(tid: str, sid: str = Depends(auth.require_session)):
+        try:
+            paths = db.delete_timetable(tid)
+        except KeyError:
+            raise HTTPException(404, f"no timetable {tid}")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        for path in paths:
+            _unlink_quietly(path)
+        return _timetables_payload()
+
+    @app.get("/api/draft")
+    def get_draft(sid: str = Depends(auth.require_session)):
+        d = db.get_org("draft")
+        if d is None:
+            raise HTTPException(404, "no draft")
+        return d
+
+    @app.post("/api/draft/patch")
+    def patch_draft(body: dict, sid: str = Depends(auth.require_session)):
+        d = db.get_org("draft")
+        if d is None:
+            raise HTTPException(404, "no draft")
+        try:
+            new = apply_patch(d, body.get("patch") or {})
+        except IntakeError as e:
+            raise HTTPException(400, str(e))
+        db.set_org("draft", new)
+        return summarise(new)
+
+    @app.post("/api/build")
+    def build_draft_route(sid: str = Depends(auth.require_session)):
+        d = db.get_org("draft")
+        if d is None:
+            raise HTTPException(404, "no draft to build")
+        try:
+            result = engine().build(d)
+        except EngineError as e:
+            raise HTTPException(502, e.detail)
+        return {**result, "ok": promote_build(db, result)}
+
+    @app.post("/api/query")
+    def query(body: dict, sid: str = Depends(auth.require_session)):
+        live = db.get_org("live")
+        if live is None:
+            raise HTTPException(404, "no live timetable")
+        try:
+            return engine().query(live, body.get("kind", ""), body.get("args") or {})
+        except EngineError as e:
+            raise HTTPException(502 if e.status in (0, 500) else e.status, e.detail)
+
+    @app.get("/api/loads")
+    def loads(sid: str = Depends(auth.require_session)):
+        live = db.get_org("live")
+        if live is None:
+            raise HTTPException(404, "no live timetable")
+        try:
+            return engine().loads(live)
+        except EngineError as e:
+            raise HTTPException(502 if e.status in (0, 500) else e.status, e.detail)
+
+    # ---- chat ----------------------------------------------------------------
+    @app.post("/api/chat")
+    def chat(body: dict, sid: str = Depends(auth.require_session)):
+        now = time.monotonic()
+        times = app.state.chat_times[sid]
+        while times and now - times[0] > 60:
+            times.popleft()
+        if not times:
+            app.state.chat_times.pop(sid, None)
+        if len(app.state.chat_times.get(sid, ())) >= 30:
+            raise HTTPException(429, "Slow down: 30 messages per minute.")
+        app.state.chat_times[sid].append(now)
+        if len(app.state.chat_times) > 1000:
+            stale = [k for k, dq in app.state.chat_times.items() if not dq or now - dq[-1] > 60]
+            for k in stale:
+                del app.state.chat_times[k]
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "empty message")
+        try:
+            res = run_chat(db, sid, provider(), engine(), text)
+        except ProviderError as e:
+            raise HTTPException(400, str(e))
+        return {"text": res.text, "events": res.events}
+
+    @app.get("/api/messages")
+    def messages(sid: str = Depends(auth.require_session)):
+        return db.messages(sid)
+
+    @app.post("/api/messages/clear")
+    def clear(sid: str = Depends(auth.require_session)):
+        db.clear_messages(sid)
+        return {"ok": True}
+
+    @app.get("/api/usage")
+    def usage(sid: str = Depends(auth.require_session)):
+        try:
+            return engine().usage()
+        except EngineError as e:
+            return {"error": e.detail}
+
+    return app
+
+
+def _bootstrap() -> FastAPI:
+    cfg = Config.from_env()
+    return create_app(cfg, Db(cfg.data_dir / "app.db"))
+
+
+# Set PLANE_APP_BOOT=0 (the test conftest does) to import this module without touching the filesystem.
+app = _bootstrap() if os.environ.get("PLANE_APP_BOOT", "1") == "1" else None

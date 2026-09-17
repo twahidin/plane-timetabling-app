@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in &middot; Plane Timetabling</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="login">
+  <div>
+    <div class="eyebrow">Log in</div>
+    <h1>Plane Timetabling</h1>
+  </div>
+  <form method="post" action="/login" class="card">
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <label>Password <input type="password" name="password" id="password" autofocus autocomplete="current-password"></label>
+    <div><button class="btn primary" type="submit">Log in</button></div>
+  </form>
+</main>
+</body>
+</html>

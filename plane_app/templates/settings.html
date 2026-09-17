@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings &middot; Plane Timetabling</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="top">
+  <div>
+    <div class="eyebrow">Settings</div>
+    <h1>Plane Timetabling</h1>
+    <p class="lede">The time grid and rules shape every extraction; the model provider reads your documents and answers chat; the engine builds and checks the solid.</p>
+  </div>
+  <div class="links">
+    <a href="/">Back to the timetable</a>
+    <form method="post" action="/logout"><button class="btn" type="submit">Log out</button></form>
+  </div>
+</header>
+
+<form id="settings-form" class="form" autocomplete="off">
+  <fieldset>
+    <legend>Time grid</legend>
+    <label>Slot length (minutes)<input type="number" id="slot_minutes" min="1" step="1"></label>
+    <label>Slots per day<input type="number" id="slots_per_day" min="1" max="64" step="1"></label>
+    <label>Day starts at<input type="time" id="start"></label>
+    <label class="wide">Slot labels <span class="help">comma-separated; regenerated from the grid unless you edit them</span><input type="text" id="labels"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Rules</legend>
+    <label>Max load (slots)<input type="number" id="max_load" min="0" step="1"></label>
+    <label>Max run (slots in a row)<input type="number" id="max_run" min="0" step="1"></label>
+    <label>Mandatory rest slots <span class="help">comma-separated slot numbers from 0</span><input type="text" id="mandatory_rest"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Model provider</legend>
+    <label>Provider<select id="provider_kind"><option value="anthropic">anthropic</option><option value="openai">openai</option><option value="openrouter">openrouter</option><option value="tokenrouter">tokenrouter</option></select></label>
+    <label>Model<input type="text" id="model"></label>
+    <label class="wide">Base URL <span class="help">only for OpenAI-compatible providers</span><input type="text" id="base_url"></label>
+    <label class="wide">API key <span class="help">stored server-side; shown masked</span><input type="password" id="api_key"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Engine</legend>
+    <label class="wide">Engine URL <span class="help">blank uses the deployment default</span><input type="text" id="engine_url"></label>
+    <label class="wide">Licence key<input type="password" id="engine_key"></label>
+  </fieldset>
+
+  <div class="actions">
+    <button class="btn primary" type="submit" id="save">Save</button>
+    <span class="msg-line" id="msg"></span>
+  </div>
+</form>
+
+<script src="/static/settings.js"></script>
+</body>
+</html>
