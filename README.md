@@ -3,8 +3,19 @@
 The web front end for plane timetabling: a login-gated 3D view of the timetable, staff/roster
 intake (CSV/XLSX/PDF), a chat panel backed by an LLM provider of your choice, and a Settings page
 for configuring the engine connection and LLM provider. It talks to the `plane-engine` service
-over HTTP for all algorithm work (build, check, query) — it never imports the timetabling engine
-directly.
+over HTTP for all algorithm work (build, solve, check, score, query) — it never imports the
+timetabling engine directly.
+
+## Build and Solve
+
+**Build** places a draft instantly with the engine's greedy pass. **Solve** runs the engine's
+constraint solver as a job with a preset — *keep it close* (stay near the live timetable),
+*balanced*, or *best quality* — and a time limit (10 to 900 s). The progress card shows elapsed
+time and the best objective so far, and can stop early keeping the best result. When the job
+finishes the draft is promoted and the Quality panel scores six rules (spread, stability,
+compact, even days, edge, venue) before and after. Solve time is metered against your licence
+key's monthly budget; Build is not. Timetable exports (aSc) are imported with student groups and
+bands derived from the lessons, so student-side clashes are checked as well as teachers and rooms.
 
 ## Environment variables
 
@@ -51,5 +62,5 @@ Then open `http://localhost:8080` and log in with the `ADMIN_PASSWORD` you set.
 `scripts/export-template.sh <target-dir>` produces a standalone copy of this app (plus the
 minimal `plane_timetabling.model` module it depends on) suitable for publishing as a public
 template repository. It does not include any of the timetabling engine's algorithm code
-(`solid.py`, `checks.py`, `build.py`, `search.py`, `store.py`, `loadrest.py`, or `agents/`) — the
+(`solid.py`, `checks.py`, `build.py`, `solve.py`, `score.py`, `search.py`, `store.py`, `loadrest.py`, or `agents/`) — the
 exported template talks to a separately deployed engine over HTTP, exactly as this app does.
