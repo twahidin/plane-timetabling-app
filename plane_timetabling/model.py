@@ -14,6 +14,7 @@ class Location:
     cap: int
     shared: bool = False   # several events may share it at once
     rest: bool = False     # tiles here are rest, not load
+    kind: str = ""         # "classroom" | "lab" | "studio" | "hall" | … ; "" when unset
 
 
 @dataclass(frozen=True)

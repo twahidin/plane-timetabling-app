@@ -31,8 +31,9 @@ DEFAULT_SETTINGS = {
     "solve": {"preset": "balanced", "time_limit": 300, "weights": dict(DEFAULT_SOFT)},
     "provider": {"kind": "anthropic", "base_url": "", "api_key": "", "model": "claude-opus-5"},
     "engine": {"url": "", "key": ""},
+    "calendar": {"term_start": "", "first_week": "odd", "non_teaching_dates": []},
 }
-PER_TIMETABLE_SETTINGS = ("time", "rules", "solve")      # the rest (provider, engine) is global
+PER_TIMETABLE_SETTINGS = ("time", "rules", "solve", "calendar")      # the rest (provider, engine) is global
 
 SCHEMA = """
 create table if not exists kv (k text primary key, v text not null);
@@ -44,7 +45,8 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve")                         # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending")  # get_value/set_value keys that are scoped
+CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHANGE_SNAP_PREFIX}{n}" — also scoped, by prefix
 
 
 def mask_settings(settings: dict) -> dict:
@@ -127,8 +129,9 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}"))
+            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?)",
+                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}"))
+            con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from timetables where id=?", (tid,))
             if self.current_timetable() == tid:
                 other = next(i for i in ids if i != tid)
@@ -177,11 +180,14 @@ class Db:
         self._set(f"tt:{self._tid()}", per)
         self._set("settings", settings)      # the global copy keeps time/rules/solve as defaults for new timetables
 
+    def _is_scoped(self, key: str) -> bool:
+        return key in PER_TIMETABLE_VALUES or key.startswith(CHANGE_SNAP_PREFIX)
+
     def get_value(self, key: str):
-        return self._get(f"{key}:{self._tid()}" if key in PER_TIMETABLE_VALUES else key)
+        return self._get(f"{key}:{self._tid()}" if self._is_scoped(key) else key)
 
     def set_value(self, key: str, value) -> None:
-        self._set(f"{key}:{self._tid()}" if key in PER_TIMETABLE_VALUES else key, value)
+        self._set(f"{key}:{self._tid()}" if self._is_scoped(key) else key, value)
 
     def get_org(self, kind: str) -> dict | None:
         assert kind in ("live", "draft")

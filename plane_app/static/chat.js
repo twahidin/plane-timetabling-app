@@ -47,6 +47,58 @@
     } catch (e) { appendBubble('error', e.message); }
   }
 
+  // ---------- Proposal cards ----------
+  // A card per pending option: the model's `propose`/`book`/`undo` tools only stage a change; nothing
+  // is real until Apply is clicked (or a confirm word / later `apply` call takes the same route
+  // server-side). Every card in the batch that made the id being applied or the dismiss call is
+  // greyed out together, since the server clears the whole pending list on either action.
+  function fmtDelta(delta) {
+    return Object.entries(delta || {}).filter(([, v]) => v)
+      .map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v}`).join(' · ');
+  }
+  function markBatchDone(ids) {
+    (ids || []).forEach((id) => { const c = el('proposal-' + id); if (c) c.classList.add('done'); });
+  }
+  async function applyProposal(id, batchIds) {
+    let res;
+    try { res = await api('/api/proposals/apply', { method: 'POST', body: JSON.stringify({ id }) }); }
+    catch (e) { appendBubble('error', e.message); return; }
+    markBatchDone(batchIds);
+    if (res.ok) {
+      appendBubble('assistant', 'Applied: ' + res.description);
+      if (window.reloadModel) window.reloadModel().catch(() => {});
+      loadDraft();
+    } else {
+      const clashText = (res.clashes || []).map((c) => c.message || String(c)).join('; ');
+      appendBubble('error', 'Not applied: ' + res.description + (clashText ? ' — ' + clashText : ''));
+    }
+  }
+  async function dismissProposals(batchIds) {
+    try { await api('/api/proposals/dismiss', { method: 'POST' }); }
+    catch (e) { appendBubble('error', e.message); return; }
+    markBatchDone(batchIds);
+  }
+  function appendProposals(items) {
+    const batchIds = (items || []).map((i) => i.id);
+    (items || []).forEach((item) => {
+      const card = node('div', 'proposal');
+      card.id = 'proposal-' + item.id;
+      card.appendChild(node('div', null, item.text));
+      const deltaText = fmtDelta(item.delta);
+      if (deltaText) card.appendChild(node('div', 'delta', deltaText));
+      (item.review || []).forEach((c) => card.appendChild(node('div', 'error', c.message || String(c))));
+      const actions = node('div', 'actions');
+      const applyBtn = node('button', 'btn apply', 'Apply'); applyBtn.type = 'button';
+      const dismissBtn = node('button', 'btn dismiss', 'Dismiss'); dismissBtn.type = 'button';
+      applyBtn.addEventListener('click', () => applyProposal(item.id, batchIds));
+      dismissBtn.addEventListener('click', () => dismissProposals(batchIds));
+      actions.appendChild(applyBtn); actions.appendChild(dismissBtn);
+      card.appendChild(actions);
+      log.appendChild(card);
+    });
+    scrollLog();
+  }
+
   function handleEvents(events) {
     let reload = false;
     (events || []).forEach((ev) => {
@@ -55,9 +107,33 @@
         else showNotes([], [], [{ cls: 'error', text: `Build did not settle: ${(ev.unplaced || []).length} unplaced, ${(ev.clashes || []).length} clashes.` }]
           .concat((ev.clashes || []).map((c) => ({ cls: 'error', text: c.message || String(c) }))));
       } else if (ev.kind === 'draft_updated') reload = true;
+      else if (ev.kind === 'proposals') appendProposals(ev.items);
+      else if (ev.kind === 'applied') {
+        const clashText = (ev.clashes || []).map((c) => c.message || String(c)).join('; ');
+        appendBubble(ev.ok ? 'assistant' : 'error', (ev.ok ? 'Applied: ' : 'Not applied: ') + ev.description
+          + (!ev.ok && clashText ? ' — ' + clashText : ''));
+        if (ev.ok) reload = true;
+      } else if (ev.kind === 'dismissed') {
+        document.querySelectorAll('.proposal').forEach((c) => c.classList.add('done'));
+        appendBubble('assistant', 'Dismissed.');
+      } else if (ev.kind === 'undone') reload = true;
+      else if (ev.kind === 'bookings_updated') loadBookings();
     });
     if (reload) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
   }
+
+  window.sendChat = (text) => { el('chat-text').value = text; el('chat-form').requestSubmit(); };
+  window.draftChat = (text) => { const input = el('chat-text'); input.value = text; input.focus(); };
+
+  el('undo').addEventListener('click', async () => {
+    const btn = el('undo'); btn.disabled = true;
+    try {
+      const res = await api('/api/undo', { method: 'POST' });
+      appendBubble('assistant', res.ok ? 'Undid: ' + res.undone : 'Nothing to undo');
+      if (res.ok) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
+    } catch (e) { appendBubble('error', e.message); }
+    finally { btn.disabled = false; }
+  });
 
   el('chat-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -182,7 +258,7 @@
   // ---------- Draft tables ----------
   const SECTIONS = [
     { key: 'persons', title: 'Persons', fields: ['name', 'role', 'avail', 'eligible'] },
-    { key: 'locations', title: 'Locations', fields: ['name', 'cap', 'shared', 'rest'] },
+    { key: 'locations', title: 'Locations', fields: ['name', 'cap', 'kind', 'shared', 'rest'] },
     { key: 'events', title: 'Events', fields: ['name', 'members', 'dur', 'eligible_locs', 'fixed'] },
     // groups come from the import (or the chat) and are read here, not edited cell by cell
     { key: 'groups', title: 'Groups', fields: ['name', 'classes', 'band', 'option'], readOnly: true, optional: true },
@@ -222,7 +298,7 @@
     const box = el('draft');
     let d;
     try { d = await api('/api/draft'); }
-    catch (e) { draft = null; box.hidden = true; box.textContent = ''; await showSolveBar(false); return; }
+    catch (e) { draft = null; box.hidden = true; box.textContent = ''; await showSolveBar(false); await loadBookings(); return; }
     draft = d;
     box.textContent = '';
     const head = node('div', 'head');
@@ -236,8 +312,49 @@
     SECTIONS.forEach((sec) => { const rows = d[sec.key] || []; if (!sec.optional || rows.length) box.appendChild(renderTable(sec, rows)); });
     box.hidden = false;
     await showSolveBar(true);
+    await loadBookings();
   }
   window.loadDraft = loadDraft;
+
+  // ---------- Bookings ----------
+  // Dated venue bookings, fixed and memberless, injected into every engine call. Rendered below the
+  // draft tables; a booking belongs to the live timetable, so this renders whether or not a draft exists.
+  async function loadBookings() {
+    const box = el('bookings');
+    let data;
+    try { data = await api('/api/bookings'); }
+    catch (e) { box.hidden = true; box.textContent = ''; return; }
+    const items = data.items || [];
+    box.textContent = '';
+    if (!items.length) { box.hidden = true; return; }
+    box.appendChild(node('h3', null, `Bookings (${items.length})`));
+    const tw = node('div', 'tablewrap'), table = node('table', 'grid');
+    const thead = node('thead'), htr = node('tr');
+    ['date', 'venue', 'slots', 'title', 'booked by', ''].forEach((h) => htr.appendChild(node('th', null, h)));
+    thead.appendChild(htr); table.appendChild(thead);
+    const tbody = node('tbody');
+    items.forEach((b) => {
+      const tr = node('tr');
+      tr.appendChild(node('td', null, (data.describe || {})[b.id] || b.date));
+      tr.appendChild(node('td', null, b.venue));
+      tr.appendChild(node('td', null, `${b.start}\u2013${b.start + b.dur - 1}`));
+      tr.appendChild(node('td', null, b.title));
+      tr.appendChild(node('td', null, b.booked_by || ''));
+      const del = node('button', 'btn', 'Delete');
+      del.type = 'button';
+      del.addEventListener('click', async () => {
+        del.disabled = true;
+        try { await api(`/api/bookings/${b.id}`, { method: 'DELETE' }); await loadBookings(); }
+        catch (e) { showNotes([], [], [{ cls: 'error', text: e.message }]); del.disabled = false; }
+      });
+      const tdBtn = node('td'); tdBtn.appendChild(del);
+      tr.appendChild(tdBtn);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); tw.appendChild(table); box.appendChild(tw);
+    box.hidden = false;
+  }
+  window.loadBookings = loadBookings;
 
   async function showSolveBar(hasDraft) {
     let hasLive = false;

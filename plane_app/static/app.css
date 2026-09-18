@@ -301,6 +301,12 @@
   .tool { align-self: flex-start; font-family: var(--mono); font-size: 11px; color: var(--muted); max-width: 100%; }
   .tool summary { cursor: pointer; }
   .tool pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--ink-2); max-height: 160px; overflow: auto; }
+  .proposal { border: 1px solid var(--line); border-radius: 8px; padding: .5rem .75rem; margin: .25rem 0; align-self: flex-start; max-width: 100%; }
+  .proposal .delta { font-family: var(--mono); color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .proposal .error { color: var(--bad); font-size: 12.5px; margin-top: 3px; }
+  .proposal .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .proposal.done { opacity: .6; }
+  .proposal.done .actions { display: none; }
   .chat-form { display: flex; gap: 8px; }
   .chat-form input {
     flex: 1; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);

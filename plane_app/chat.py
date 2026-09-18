@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
+import secrets
 from dataclasses import dataclass, field
 
+from . import bookings
+from . import calendar as cal_mod
+from . import names
+from . import proposals
 from .db import Db
 from .engine_client import EngineClient, EngineError
 from .intake import IntakeError, apply_patch, empty_organisation, summarise
@@ -11,6 +17,15 @@ from .llm import Provider, ProviderError, ToolCall, ToolSpec
 from .promote import promote_build
 
 MAX_ROUNDS = 8
+# A bare yes applies the first pending proposal without troubling the model.
+CONFIRM_WORDS = {"yes", "y", "ok", "okay", "apply", "go ahead", "do it", "confirm", "yes please"}
+# And a bare no drops the card, again without troubling the model: the offer is gone, not deferred.
+DECLINE_WORDS = {"no", "cancel", "dismiss", "never mind", "stop"}
+# Every user message gets a run token, and every card is stamped with the run that made it. The
+# `apply` tool refuses a card from the current run: the model may not propose and apply inside one
+# message, because the user has not seen the options yet. Consent is a later message, a confirmation
+# word, or a click on the apply route — never the model's own say-so.
+NOT_YET = "show the options and wait for the user's yes"
 
 SYSTEM_PROMPT = """You are the timetable assistant for one organisation. The timetable is a solid: every person is a
 plane, time runs along it, location runs up it, and a lesson or shift is a prism through the planes of its members.
@@ -22,7 +37,12 @@ new_draft first, then fill it with update_draft: rooms with capacities, people w
 last] and eligible rooms (always include "rest"), and events with members and duration; then ask the user to check
 the tables before building. Never claim a build
 succeeded unless build_draft returned ok: true. Quote the tool's answer and keep replies short. Slots are numbered
-from 0 and ids are short lowercase strings; if the user uses a name, look it up in the draft or ask."""
+from 0 and ids are short lowercase strings; if the user uses a name, look it up in the draft or ask.
+Changing the live timetable is done by proposals: `propose` (for an event, or every clash of a person), `book` and
+`undo` show an option and wait. Never call `apply` in the same reply that made an option — show the options, stop,
+and call `apply` with the option's id only in a later message, after the user has said yes to it. Resolve names with
+`find` before any tool that takes an id; when `find` returns several matches, ask which. `clashes` lists what the
+Reviewer found; `free_venues` lists rooms free at a slot or on a date."""
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. A null value removes the item; an unknown id appends it.")
@@ -44,6 +64,28 @@ TOOLS: list[ToolSpec] = [
              {"type": "object", "properties": {"name": {"type": "string", "description": "A name for the organisation or timetable."}}}),
     ToolSpec("build_draft", "Send the draft to the engine. On success the draft becomes the live timetable.",
              {"type": "object", "properties": {}}),
+    ToolSpec("find", "Resolve a name the user typed to ids of people, groups or rooms. Ask the user when several come back.",
+             {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+    ToolSpec("clashes", "Clashes the Reviewer finds in the live timetable, optionally only those touching one person or one venue.",
+             {"type": "object", "properties": {"person": {"type": "string"}, "venue": {"type": "string"}}}),
+    ToolSpec("propose", "Ranked options for moving a lesson, without changing anything. Give an event id, or a person "
+                        "to propose for every event they clash in. Show the options and wait for the user's yes.",
+             {"type": "object", "properties": {"event": {"type": "string"}, "person": {"type": "string"},
+                                               "prefer": {"type": "object", "description": "{\"slots\": [int], \"venues\": [id]}"},
+                                               "limit": {"type": "integer"}}}),
+    ToolSpec("free_venues", "Rooms free at one slot: either an absolute slot, or a date plus the slot's offset within that day.",
+             {"type": "object", "properties": {"slot": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+                                               "offset": {"type": "integer", "description": "slot within that day, from 0"},
+                                               "dur": {"type": "integer"}, "min_cap": {"type": "integer"}, "kind": {"type": "string"}}}),
+    ToolSpec("book", "Propose a dated booking of a venue. Nothing is booked until the user says yes and apply is called.",
+             {"type": "object", "properties": {"venue": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+                                               "start": {"type": "integer"}, "dur": {"type": "integer"}, "title": {"type": "string"},
+                                               "booked_by": {"type": "string"}, "note": {"type": "string"}},
+              "required": ["venue", "date", "start", "title"]}),
+    ToolSpec("apply", "Apply one pending proposal by its id. Only after the user has said yes to that option.",
+             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+    ToolSpec("undo", "Offer to undo the last applied change. Like every change, it waits for the user's yes.",
+             {"type": "object", "properties": {}}),
 ]
 
 
@@ -53,13 +95,88 @@ class ChatResult:
     events: list[dict] = field(default_factory=list)
 
 
-def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict]) -> str:
+def _applied_events(kind: str, res: dict) -> list[dict]:
+    out: list[dict] = [{"kind": "applied", **res}]
+    if res["ok"]:
+        if kind == "undo":
+            out.append({"kind": "undone", "description": res["description"]})
+        out.append({"kind": "bookings_updated"})
+    return out
+
+
+def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
+              session_id: str = "", run: str = "") -> str:
     try:
         if call.name in ("where", "who", "both_free", "load"):
-            live = db.get_org("live")
+            live = bookings.live_for_engine(db)
             if live is None:
                 return json.dumps({"error": "There is no live timetable yet. Upload documents and build a draft first."})
             return json.dumps(engine.query(live, call.name, call.args))
+        if call.name == "find":
+            live = db.get_org("live") or db.get_org("draft") or {"persons": [], "locations": []}
+            return json.dumps({"matches": names.find(live, str(call.args.get("query", "")))})
+        if call.name == "clashes":
+            live = bookings.live_for_engine(db)
+            if live is None:
+                return json.dumps({"error": "There is no live timetable yet."})
+            cl = engine.clashes(live, call.args.get("person"), call.args.get("venue"))["clashes"]
+            return json.dumps({"count": len(cl), "clashes": [{"type": c["type"], "message": c["message"], "event": c["event"]} for c in cl]})
+        if call.name == "propose":
+            if call.args.get("event"):
+                items = proposals.propose_for(db, engine, str(call.args["event"]), call.args.get("prefer"),
+                                              int(call.args.get("limit") or 3), session_id, run)
+            elif call.args.get("person"):
+                live = bookings.live_for_engine(db)
+                if live is None:
+                    return json.dumps({"error": "There is no live timetable yet."})
+                cl = engine.clashes(live, person=call.args.get("person"))["clashes"]
+                evs = list(dict.fromkeys(c["event"] for c in cl if c["event"]))[:3]
+                items = []
+                for ev in evs:
+                    items += proposals.propose_for(db, engine, ev, None, 2, session_id, run)
+                items = proposals.set_pending(db, items, session_id, run)   # each call replaced the list; keep them all
+            else:
+                return json.dumps({"error": "say which event or person"})
+            events.append({"kind": "proposals", "items": items})
+            return json.dumps({"proposals": [{"id": i["id"], "text": i["text"], "delta": i.get("delta"),
+                                              "clashes": [c["message"] for c in i.get("review") or []]} for i in items],
+                               "note": "Show these to the user and wait for a yes before calling apply. "
+                                       "Saying yes applies the first option; name another by its id."})
+        if call.name == "free_venues":
+            live = bookings.live_for_engine(db)
+            if live is None:
+                return json.dumps({"error": "There is no live timetable yet."})
+            slot = call.args.get("slot")
+            if slot is None:
+                s = db.get_settings()
+                date = str(call.args.get("date") or "")
+                rng = cal_mod.slot_range(s["calendar"], s["time"], date)
+                if rng is None:
+                    return json.dumps({"error": cal_mod.describe(s["calendar"], s["time"], date)})
+                slot = rng[0] + int(call.args.get("offset") or 0)
+            venues = engine.free_venues(live, int(slot), int(call.args.get("dur") or 1),
+                                        int(call.args.get("min_cap") or 0), call.args.get("kind"))["venues"]
+            return json.dumps({"slot": int(slot), "venues": venues})
+        if call.name == "book":
+            item = proposals.book(db, call.args, session_id, run)
+            events.append({"kind": "proposals", "items": [item]})
+            return json.dumps({"proposal": {"id": item["id"], "text": item["text"]},
+                               "note": "Wait for a yes before calling apply."})
+        if call.name == "apply":
+            pid = str(call.args.get("id", ""))
+            item = next((p for p in proposals.pending(db, session_id) if p["id"] == pid), None)
+            if item is not None and item.get("run") == run:
+                return json.dumps({"ok": False, "description": NOT_YET, "clashes": []})
+            res = proposals.apply(db, engine, pid, session_id)
+            events.extend(_applied_events((item or {}).get("kind", ""), res))
+            return json.dumps(res)
+        if call.name == "undo":
+            item = proposals.propose_undo(db, session_id, run)
+            if item is None:
+                return json.dumps({"ok": False, "error": "nothing to undo"})
+            events.append({"kind": "proposals", "items": [item]})
+            return json.dumps({"proposal": {"id": item["id"], "text": item["text"]},
+                               "note": "Wait for a yes before calling apply."})
         draft = db.get_org("draft")
         if call.name == "new_draft":
             new = empty_organisation(db.get_settings(), str(call.args.get("name") or "New timetable"))
@@ -86,7 +203,8 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict]) 
         if call.name == "build_draft":
             if draft is None:
                 return json.dumps({"error": "There is no draft to build."})
-            result = engine.build(draft)
+            result = engine.build(bookings.draft_for_engine(db))
+            result["organisation"] = bookings.strip(result["organisation"])
             ok = promote_build(db, result)
             events.append({"kind": "build", "ok": ok, "placed": result["placed"], "unplaced": result["unplaced"],
                            "clashes": result["clashes"]})
@@ -115,6 +233,26 @@ def history_for_provider(db: Db, session_id: str) -> list[dict]:
 
 def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, user_text: str) -> ChatResult:
     db.add_message(session_id, "user", {"text": user_text})
+    run = secrets.token_hex(4)
+    # Expiring before the confirm word is what makes a yes mean this card and not an older one: a
+    # card outlives the message that made it by exactly one message, so a question in between drops
+    # it and the yes that follows applies nothing.
+    proposals.expire(db, session_id, run)
+    norm = re.sub(r"[^a-z ]", "", user_text.lower()).strip()
+    pend = proposals.pending(db, session_id)
+    if pend and norm in CONFIRM_WORDS:
+        # A yes is the confirmation the gate waits for: apply the first pending option here, so no
+        # model turn stands between the user's word and the change.
+        res = proposals.apply(db, engine, pend[0]["id"], session_id)
+        text = (("Applied: " if res["ok"] else "Not applied: ") + res["description"]
+                + (" — " + "; ".join(c["message"] for c in res["clashes"]) if not res["ok"] and res["clashes"] else ""))
+        db.add_message(session_id, "assistant", {"text": text, "tool_calls": []})
+        return ChatResult(text, _applied_events(pend[0]["kind"], res))
+    if pend and norm in DECLINE_WORDS:
+        # The mirror of the yes: the card goes, every run of it, and the model never sees the turn.
+        proposals.clear_pending(db, session_id)
+        db.add_message(session_id, "assistant", {"text": "Dismissed.", "tool_calls": []})
+        return ChatResult("Dismissed.", [{"kind": "dismissed"}])
     events: list[dict] = []
     for _ in range(MAX_ROUNDS):
         try:
@@ -127,7 +265,7 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
         if not turn.tool_calls:
             return ChatResult(turn.text, events)
         for call in turn.tool_calls:
-            result = _run_tool(call, db, engine, events)
+            result = _run_tool(call, db, engine, events, session_id, run)
             db.add_message(session_id, "tool", {"call_id": call.id, "name": call.name, "result": result})
     text = "I stopped after too many tool calls in a row. Ask again with a narrower question."
     db.add_message(session_id, "assistant", {"text": text, "tool_calls": []})

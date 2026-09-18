@@ -49,6 +49,13 @@
   </fieldset>
 
   <fieldset>
+    <legend>Term calendar</legend>
+    <label>Term starts (a Monday) <input id="term-start" name="calendar.term_start" type="date"></label>
+    <label>First week is <select id="first-week" name="calendar.first_week"><option value="odd">Odd</option><option value="even">Even</option></select></label>
+    <label>Non-teaching dates (one per line) <textarea id="non-teaching" name="calendar.non_teaching_dates" rows="3"></textarea></label>
+  </fieldset>
+
+  <fieldset>
     <legend>Model provider</legend>
     <label>Provider<select id="provider_kind"><option value="anthropic">anthropic</option><option value="openai">openai</option><option value="openrouter">openrouter</option><option value="tokenrouter">tokenrouter</option></select></label>
     <label>Model<input type="text" id="model"></label>

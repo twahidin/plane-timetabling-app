@@ -37,7 +37,8 @@ ORG_SCHEMA = _obj({
                    "slots_per_day": {"anyOf": [_INT, {"type": "null"}]}},
                   ["max_load", "max_run", "mandatory_rest"]),
     "locations": {"type": "array", "items": _obj(
-        {"id": _STR, "name": _STR, "cap": _INT, "shared": {"type": "boolean"}, "rest": {"type": "boolean"}},
+        {"id": _STR, "name": _STR, "cap": _INT, "shared": {"type": "boolean"}, "rest": {"type": "boolean"},
+         "kind": _STR},
         ["id", "name", "cap"])},
     "persons": {"type": "array", "items": _obj(
         {"id": _STR, "name": _STR, "role": _STR, "avail": {"type": "array", "items": _INT}, "eligible": _STR_LIST},

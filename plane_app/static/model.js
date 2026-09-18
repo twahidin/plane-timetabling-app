@@ -19,7 +19,7 @@
       groups: (org.groups || []).map((g) => ({ id: g.id, name: g.name, band: g.band || null })),
       events: org.events.filter((e) => e.loc !== null && e.t0 !== null && locIndex[e.loc] !== undefined).map((e) => ({
         id: e.id, name: e.name, members: e.members.map((m) => perIndex[m]).filter((x) => x !== undefined),
-        loc: locIndex[e.loc], t0: e.t0, dur: e.dur, sync: e.sync || undefined })),
+        loc: locIndex[e.loc], t0: e.t0, dur: e.dur, sync: e.sync || undefined, fixed: !!e.fixed })),
     };
   }
 
@@ -315,7 +315,14 @@
     state.clashes.forEach((c) => {
       const li = document.createElement('li'), b = document.createElement('button');
       b.textContent = c.message || c.msg || c.type; b.addEventListener('click', () => select(c.event));
-      li.appendChild(b); list.appendChild(li);
+      li.appendChild(b);
+      if (c.event && !String(c.event).startsWith('bk-')) {   // a booking is not an event the assistant can move
+        const fix = document.createElement('a');
+        fix.className = 'fix'; fix.href = '#'; fix.textContent = 'Fix…'; fix.dataset.event = c.event;
+        fix.addEventListener('click', (ev) => { ev.preventDefault(); if (window.sendChat) window.sendChat('Fix ' + c.event); });
+        li.appendChild(fix);
+      }
+      list.appendChild(li);
     });
     paint();
   }
@@ -324,6 +331,7 @@
   async function renderLoads() {
     const gen = ++loadGen;
     const ds = state.ds, box = el('loads');
+    el('loads-summary').textContent = 'loading…';   // never blank while the /api/loads call is in flight
     box.textContent = '';
     const cell = (cls, text) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; box.appendChild(d); return d; };
     cell('n', ''); cell('n', `load of ${ds.rules.maxLoad}`); cell('n', `run of ${ds.rules.maxRun}`); cell('n', 'rest');
@@ -332,6 +340,15 @@
     try { loads = (await api('/api/loads')).loads || {}; }     // one engine call for every plane
     catch (e) { failed = e; }
     if (gen !== loadGen) return;
+    try {
+      if (failed) throw failed;
+      const reports = ds.persons.map((p) => loads[p.id]).filter(Boolean);
+      const heaviest = reports.reduce((m, r) => Math.max(m, r.load || 0), 0);
+      const over = reports.filter((r) => (r.load || 0) > (r.max_load ?? ds.rules.maxLoad)).length;
+      el('loads-summary').textContent = `${ds.persons.length} teachers, heaviest ${heaviest} of ${ds.rules.maxLoad}, ${over} over budget`;
+    } catch (e) {
+      el('loads-summary').textContent = 'loads unavailable';   // a failed /api/loads, or anything else that went wrong computing it
+    }
     // persons by role in order of first appearance (teachers first in every dataset so far), then the groups
     const roles = [];
     ds.persons.forEach((p) => { if (!roles.includes(p.role)) roles.push(p.role); });
@@ -382,7 +399,16 @@
         <dt>Location</dt><dd>${chip(!locBad.length, locBad.length ? first(locBad) : `${occupancy} of ${loc.cap} seats${loc.shared ? ', shared room' : ''}`)}</dd>
         <dt>Load</dt><dd>${chip(!loadBad.length, isRestEvent(ds, e) ? 'rest tile, not counted as load' : loadBad.length ? first(loadBad) : 'every member within budget')}</dd>
         <dt>Time</dt><dd>${chip(!syncBad.length, syncBad.length ? first(syncBad) : e.sync ? 'sync group aligned' : 'single prism, members bound by shape')}</dd>
+        <dt></dt><dd class="actions">${e.fixed ? '' : '<a class="move" href="#">Move…</a> '}<a class="book" href="#">Book this room</a></dd>
       </dl>`;
+    // A pinned event cannot be moved, but its room can still be booked for another day.
+    const moveLink = el('selected').querySelector('.move');
+    if (moveLink) moveLink.addEventListener('click', (ev) => { ev.preventDefault(); if (window.sendChat) window.sendChat('Propose a move for ' + e.id); });
+    const bookLink = el('selected').querySelector('.book');
+    if (bookLink) bookLink.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      if (window.draftChat) window.draftChat('Book ' + loc.name + ' on YYYY-MM-DD ' + spanLabel(ds, e) + ' for ');
+    });
     paint();
   }
 
@@ -461,6 +487,7 @@
       state.ds = null; state.selected = null;
       el('empty').hidden = false; el('view').hidden = true;
       renderReview(); select(null); qArgs(); el('loads').textContent = ''; el('legend').textContent = '';
+      el('loads-summary').textContent = 'no timetable yet';
       await renderStatus(data); return;
     }
     el('empty').hidden = true; el('view').hidden = false;
@@ -490,6 +517,14 @@
     } catch (e) { problem = e.message; }
     finally { btn.disabled = false; if (problem) statusError(problem); }
   });
+
+  const loadsDetails = el('loads-details');
+  if (loadsDetails) {
+    try { loadsDetails.open = localStorage.getItem('loads-open') === '1'; } catch (e) { /* private mode etc: stays collapsed */ }
+    loadsDetails.addEventListener('toggle', () => {
+      try { localStorage.setItem('loads-open', loadsDetails.open ? '1' : '0'); } catch (e) { /* ignore */ }
+    });
+  }
 
   new ResizeObserver(resize).observe(viewEl);
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refresh);

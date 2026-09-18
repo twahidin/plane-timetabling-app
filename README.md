@@ -17,6 +17,12 @@ compact, even days, edge, venue) before and after. Solve time is metered against
 key's monthly budget; Build is not. Timetable exports (aSc) are imported with student groups and
 bands derived from the lessons, so student-side clashes are checked as well as teachers and rooms.
 
+## Fixing and booking
+
+The assistant in the chat panel proposes individual moves, swaps, and bookings and applies them
+only after you say yes; **Undo** reverts the last change. Set the term calendar in Settings for
+dated bookings so the assistant can reason about term breaks and holidays.
+
 ## Environment variables
 
 | Variable | Required | Purpose |

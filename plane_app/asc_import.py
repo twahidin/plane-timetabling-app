@@ -262,6 +262,43 @@ def slug(text: str) -> str:
     return (s or "x")[:31]
 
 
+def _tokens(code: str) -> set[str]:
+    """The words of a venue code, upper-cased: split on anything that is not a letter or a digit, and
+    again where one word runs into another ("DTStu2" is DT STU 2). Keyword matching is by whole token
+    so that "HEALTH" is not a hall and "DIGITAL" is not a D&T studio."""
+    parts = re.split(r"[^A-Za-z0-9]+", code)
+    out: set[str] = set()
+    for part in parts:
+        for piece in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", part):
+            if piece:
+                out.add(piece.upper())
+    return out
+
+
+def venue_kind(code: str) -> str:
+    """Classify a venue code into its kind: lab, studio, hall, computer, classroom, or empty string."""
+    words = _tokens(code)
+
+    # Lab before computer so "COMP LAB" is a lab
+    if words & {"LAB", "LABS", "SCI", "CHEM", "BIO", "PHY"}:
+        return "lab"
+
+    if words & {"DT", "DR", "ART", "MUS"}:
+        return "studio"
+
+    if words & {"HALL", "AUD", "LT"}:
+        return "hall"
+
+    if words & {"COMP", "IT", "ICT"}:
+        return "computer"
+
+    # Classroom: the whole code matches a class code like "3I3" or "12AB5", or one token is "CR"
+    if re.match(r"^\d{1,2}[A-Z]{1,2}\d{0,2}$", code.upper()) or "CR" in words:
+        return "classroom"
+
+    return ""
+
+
 def _unique(base: str, taken: set[str]) -> str:
     """`base`, or the first of base-2, base-3, ... not in `taken` (kept within 31 characters); records the result."""
     out, n = base, 2
@@ -451,10 +488,10 @@ def build_organisation(pages: list[list[dict]], mode: str = "keep", default_cap:
             while any(l["id"] == vid for l in locations):
                 vid = f"{base}-{n}"; n += 1
             venue_ids[code] = vid
-            locations.append({"id": vid, "name": code, "cap": caps.get(code, default_cap), "shared": False, "rest": False})
+            locations.append({"id": vid, "name": code, "cap": caps.get(code, default_cap), "shared": False, "rest": False, "kind": venue_kind(code)})
         return venue_ids[code]
-    locations.append({"id": "campus", "name": "Whole school", "cap": 9999, "shared": True, "rest": False})
-    locations.append({"id": "rest", "name": "Rest", "cap": 9999, "shared": True, "rest": True})
+    locations.append({"id": "campus", "name": "Whole school", "cap": 9999, "shared": True, "rest": False, "kind": ""})
+    locations.append({"id": "rest", "name": "Rest", "cap": 9999, "shared": True, "rest": True, "kind": "rest"})
 
     persons: dict[str, dict] = {}
     used: dict[str, set] = {}

@@ -71,8 +71,7 @@
     </section>
 
     <section class="card">
-      <h2>Load &amp; rest agent <span class="eyebrow">per plane, along T</span></h2>
-      <div class="loads" id="loads"></div>
+      <details id="loads-details"><summary><h2 style="display:inline">Load &amp; rest agent</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
     </section>
 
     <section class="card">
@@ -128,10 +127,11 @@
     </div>
     <div id="quality" class="quality" hidden></div>
     <div id="draft" class="draft" hidden></div>
+    <div id="bookings" class="bookings" hidden></div>
   </section>
 
   <section id="chat" class="chat">
-    <div class="section-title">Assistant <span class="eyebrow">asks the engine, edits the draft</span> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
+    <div class="section-title">Assistant <span class="eyebrow">asks the engine, edits the draft</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
     <div id="chat-log" class="chat-log"></div>
     <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
   </section>

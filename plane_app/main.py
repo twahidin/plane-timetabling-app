@@ -14,6 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import auth
+from . import bookings
+from . import calendar as cal_mod
+from . import changes
+from .bookings import draft_for_engine, live_for_engine     # re-exported: every route/tool that sends an organisation to the engine uses these
 from .chat import run_chat
 from .config import Config
 from .db import DEFAULT_SOFT, MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, RULES, Db, mask_settings
@@ -22,6 +26,7 @@ from .extract import UnsupportedFile, extract
 from . import asc_import
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
+from . import proposals
 from .promote import promote_build
 
 HERE = Path(__file__).parent
@@ -158,8 +163,9 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         current = db.get_settings()
         if not isinstance(body, dict):
             body = {}
-        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine")}
+        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine", "calendar")}
         groups["solve"] = _clean_solve_settings(groups["solve"], current.get("solve", {}))
+        groups["calendar"] = cal_mod.clean(groups["calendar"], current.get("calendar", {}))
         for group, field in (("provider", "api_key"), ("engine", "key")):
             v = groups[group].get(field, "")
             if not isinstance(v, str):
@@ -342,18 +348,19 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.post("/api/build")
     def build_draft_route(sid: str = Depends(auth.require_session)):
-        d = db.get_org("draft")
+        d = draft_for_engine(db)
         if d is None:
             raise HTTPException(404, "no draft to build")
         try:
             result = engine().build(d)
         except EngineError as e:
             raise HTTPException(502, e.detail)
+        result["organisation"] = bookings.strip(result["organisation"])
         return {**result, "ok": promote_build(db, result)}
 
     @app.post("/api/query")
     def query(body: dict, sid: str = Depends(auth.require_session)):
-        live = db.get_org("live")
+        live = live_for_engine(db)
         if live is None:
             raise HTTPException(404, "no live timetable")
         try:
@@ -363,7 +370,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.get("/api/loads")
     def loads(sid: str = Depends(auth.require_session)):
-        live = db.get_org("live")
+        live = live_for_engine(db)
         if live is None:
             raise HTTPException(404, "no live timetable")
         try:
@@ -396,7 +403,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.post("/api/solve", status_code=202)
     def start_solve(body: dict | None = None, sid: str = Depends(auth.require_session)):
-        d = db.get_org("draft")
+        d = draft_for_engine(db)
         if d is None:
             raise HTTPException(404, "no draft to solve")
         body = body if isinstance(body, dict) else {}
@@ -419,7 +426,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                         raise HTTPException(409, "a solve is already running for this timetable; wait or stop it")
                 except EngineError:
                     pass                                        # the engine forgot it: start afresh
-            live, weights = db.get_org("live"), _solve_weights(settings, preset)
+            live, weights = live_for_engine(db), _solve_weights(settings, preset)
             before = None
             try:
                 if live is not None:
@@ -455,6 +462,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                     return _solve_summary(record["final"], record)
                 # A cancelled job keeps the best solution found so far; it is promoted like a finished one.
                 if job.get("result") is not None and db.get_org("draft") is not None:
+                    job["result"]["organisation"] = bookings.strip(job["result"]["organisation"])
                     record["promoted"] = promote_build(db, job["result"])
                 record["final"] = {k: v for k, v in job.items() if k != "trace"}
                 if record["final"].get("result") is not None:
@@ -475,7 +483,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     @app.get("/api/score")
     def score_live(sid: str = Depends(auth.require_session)):
         """The live timetable's soft-rule score under the current weights (no previous: stability is trivially full)."""
-        live = db.get_org("live")
+        live = live_for_engine(db)
         if live is None:
             raise HTTPException(404, "no live timetable")
         settings = db.get_settings()
@@ -483,6 +491,50 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             return engine().score(live, None, _solve_weights(settings, settings["solve"]["preset"]))
         except EngineError as e:
             raise _engine_error(e)
+
+    # ---- bookings --------------------------------------------------------------
+    @app.get("/api/bookings")
+    def list_bookings(sid: str = Depends(auth.require_session)):
+        s = db.get_settings()
+        items = bookings.list_all(db)
+        return {"items": items, "describe": {b["id"]: cal_mod.describe(s["calendar"], s["time"], b["date"]) for b in items}}
+
+    @app.delete("/api/bookings/{bid}")
+    def delete_booking(bid: str, sid: str = Depends(auth.require_session)):
+        def snapshot_before_removal(booking: dict) -> None:
+            # runs before the removal is persisted, so the change log's "before" snapshot still
+            # includes the booking (undo must be able to restore it).
+            changes.record(db, "booking_removed", f"Removed booking: {booking['title']} on {booking['date']}")
+
+        if bookings.remove(db, bid, before_persist=snapshot_before_removal) is None:
+            raise HTTPException(404, "no such booking")
+        return {"ok": True}
+
+    # ---- proposals ---------------------------------------------------------
+    # The browser can only apply what the assistant has already put in the pending list, by id.
+    @app.post("/api/proposals/apply")
+    def apply_proposal(body: dict, sid: str = Depends(auth.require_session)):
+        pid = str((body or {}).get("id", ""))
+        if not any(p["id"] == pid for p in proposals.pending(db, sid)):
+            raise HTTPException(404, "nothing pending with that id")
+        try:
+            return proposals.apply(db, engine(), pid, sid)
+        except EngineError as e:
+            raise _engine_error(e)
+
+    @app.post("/api/proposals/dismiss")
+    def dismiss_proposal(sid: str = Depends(auth.require_session)):
+        proposals.clear_pending(db, sid)
+        return {"ok": True}
+
+    @app.get("/api/changes")
+    def list_changes(sid: str = Depends(auth.require_session)):
+        return {"items": changes.list_all(db)}
+
+    @app.post("/api/undo")
+    def undo_change(sid: str = Depends(auth.require_session)):
+        undone = changes.undo(db)
+        return {"ok": undone is not None, "undone": undone}
 
     # ---- chat ----------------------------------------------------------------
     @app.post("/api/chat")

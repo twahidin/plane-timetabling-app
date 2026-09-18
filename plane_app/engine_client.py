@@ -48,6 +48,16 @@ class EngineClient:
         """Every person's load report in one metered call: {"loads": {pid: report}}."""
         return self._call("POST", "/v1/loads", {"organisation": org})
 
+    def propose(self, org: dict, event: str, prefer: dict | None = None, limit: int = 3) -> dict:
+        """Ranked alternatives for one event: {"proposals": [{id, kind, event, to, with, delta, total, review}]}."""
+        return self._call("POST", "/v1/propose", {"organisation": org, "event": event, "prefer": prefer, "limit": limit})
+
+    def free_venues(self, org: dict, slot: int, dur: int = 1, min_cap: int = 0, kind: str | None = None) -> dict:
+        return self._call("POST", "/v1/venues/free", {"organisation": org, "slot": slot, "dur": dur, "min_cap": min_cap, "kind": kind})
+
+    def clashes(self, org: dict, person: str | None = None, venue: str | None = None) -> dict:
+        return self._call("POST", "/v1/clashes", {"organisation": org, "person": person, "venue": venue})
+
     def usage(self) -> dict:
         return self._call("GET", "/v1/usage")
 

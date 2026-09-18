@@ -45,7 +45,7 @@
   }
 
   function fill(s) {
-    const t = s.time || {}, r = s.rules || {}, p = s.provider || {}, e = s.engine || {};
+    const t = s.time || {}, r = s.rules || {}, p = s.provider || {}, e = s.engine || {}, c = s.calendar || {};
     el('slot_minutes').value = t.slot_minutes ?? 40;
     el('slots_per_day').value = t.slots_per_day ?? 8;
     el('start').value = t.start || '07:30';
@@ -59,6 +59,9 @@
     el('api_key').value = p.api_key || '';
     el('engine_url').value = e.url || '';
     el('engine_key').value = e.key || '';
+    el('term-start').value = c.term_start || '';
+    el('first-week').value = c.first_week || 'odd';
+    el('non-teaching').value = (c.non_teaching_dates || []).join('\n');
     const sv = s.solve || {}, w = sv.weights || PRESETS.balanced;
     el('solve_preset').value = sv.preset || 'balanced';
     el('solve_time_limit').value = sv.time_limit ?? 300;
@@ -85,6 +88,11 @@
       provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: el('model').value.trim() },
       engine: { url: el('engine_url').value.trim(), key: el('engine_key').value },
       solve: { preset: el('solve_preset').value, time_limit: solveLimit(), weights: Object.fromEntries(RULES.map((r) => [r, weight(r)])) },
+      calendar: {
+        term_start: el('term-start').value,
+        first_week: el('first-week').value,
+        non_teaching_dates: el('non-teaching').value.split('\n').map((x) => x.trim()).filter(Boolean),
+      },
     };
     function solveLimit() {
       const n = ints('solve_time_limit');
