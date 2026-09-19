@@ -267,18 +267,42 @@
   const INT_FIELDS = new Set(['cap', 'dur']);
   const BOOL_FIELDS = new Set(['shared', 'rest', 'fixed']);
 
+  // Accept the old flat [a, b] form as well as the current list-of-windows form,
+  // the way model.js normalises it (Array.isArray(p.avail[0]) ? p.avail : [p.avail]).
+  // A stored draft can still hold the flat form, so display code must handle both.
+  function normaliseAvail(v) {
+    if (!Array.isArray(v) || !v.length) return null;
+    return Array.isArray(v[0]) ? v : [v];
+  }
   function show(field, v) {
     if (BOOL_FIELDS.has(field)) return v ? 'true' : 'false';
     if (v == null) return '';
+    if (field === 'avail') {
+      const windows = normaliseAvail(v);
+      if (windows) return windows.map((w) => w.join('-')).join('; ');
+    }
     if (Array.isArray(v)) return v.join(', ');
     return String(v);
+  }
+  // The avail cell's title spells out each window's first and last slot by their time_labels,
+  // e.g. "Odd Mon 7:35–Odd Mon 12:00; Even Tue 7:35–Even Tue 10:00" (end exclusive, so the last slot is b - 1).
+  function availTitle(v) {
+    const labels = (draft && draft.time_labels) || [];
+    const windows = normaliseAvail(v);
+    if (!windows) return '';
+    return windows.map(([a, b]) => `${labels[a] != null ? labels[a] : a}–${labels[b - 1] != null ? labels[b - 1] : b - 1}`).join('; ');
   }
   function parse(field, text) {
     const s = text.trim();
     if (field === 'avail') {
-      const parts = s.split(/[\s,\u2013-]+/).filter(Boolean).map(Number);
-      if (parts.length !== 2 || parts.some((n) => !Number.isInteger(n))) throw new Error('avail must be two integers, e.g. 0, 8');
-      return parts;
+      const windows = s.split(';').map((part) => {
+        const nums = part.trim().split(/[\s,\u2013-]+/).filter(Boolean).map(Number);
+        if (nums.length !== 2 || nums.some((n) => !Number.isInteger(n))) {
+          throw new Error('avail must be "0-8" or windows "0-3; 5-8"');
+        }
+        return nums;
+      });
+      return windows;
     }
     if (INT_FIELDS.has(field)) {
       const n = Number(s);
@@ -308,7 +332,7 @@
     const groups = d.groups || [], bands = d.bands || [];
     if (groups.length) head.appendChild(node('div', 'summary', `${groups.filter((g) => !g.band).length} whole-class groups \u00b7 ${groups.filter((g) => g.band).length} option groups in ${bands.length} band${bands.length === 1 ? '' : 's'}`));
     box.appendChild(head);
-    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "first, one past last". Then Build (instant) or Solve (best under the soft rules) above.'));
+    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "0-8" or windows "0-3; 5-8" (slot numbers, end exclusive). Then Build (instant) or Solve (best under the soft rules) above.'));
     SECTIONS.forEach((sec) => { const rows = d[sec.key] || []; if (!sec.optional || rows.length) box.appendChild(renderTable(sec, rows)); });
     box.hidden = false;
     await showSolveBar(true);
@@ -377,6 +401,7 @@
       r.appendChild(node('td', 'id', row.id));
       sec.fields.forEach((f) => {
         const td = node('td', null, show(f, row[f]));
+        if (f === 'avail') td.title = availTitle(row[f]);
         if (sec.readOnly) { r.appendChild(td); return; }
         td.contentEditable = 'true'; td.spellcheck = false;
         td.dataset.section = sec.key; td.dataset.id = row.id; td.dataset.field = f; td.dataset.orig = td.textContent;

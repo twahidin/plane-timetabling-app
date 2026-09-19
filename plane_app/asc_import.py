@@ -500,7 +500,7 @@ def build_organisation(pages: list[list[dict]], mode: str = "keep", default_cap:
             raise AscFormatError(f"id {pid!r} is both a {persons[pid]['role'].lower()} and a {role.lower()}: "
                                  f"{persons[pid]['name']!r} and {name!r} would be one plane")
         if pid not in persons:
-            persons[pid] = {"id": pid, "name": name, "role": role, "avail": [0, n_slots], "eligible": None}
+            persons[pid] = {"id": pid, "name": name, "role": role, "avail": [[0, n_slots]], "eligible": None}
 
     lessons = [replace(b, teacher=slug(t.name)) for t in teachers for b in t.blocks if not b.special and b.classes]
     if classes_as_planes:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import re
 
-from plane_timetabling.model import Organisation
+from plane_timetabling.model import Organisation, normalise_avail
 
 from .llm import Provider
 
@@ -41,7 +41,9 @@ ORG_SCHEMA = _obj({
          "kind": _STR},
         ["id", "name", "cap"])},
     "persons": {"type": "array", "items": _obj(
-        {"id": _STR, "name": _STR, "role": _STR, "avail": {"type": "array", "items": _INT}, "eligible": _STR_LIST},
+        {"id": _STR, "name": _STR, "role": _STR,
+         "avail": {"anyOf": [{"type": "array", "items": _INT}, {"type": "array", "items": {"type": "array", "items": _INT}}]},
+         "eligible": _STR_LIST},
         ["id", "name", "role", "avail", "eligible"])},
     "events": {"type": "array", "items": _obj(
         {"id": _STR, "name": _STR, "members": _STR_LIST, "dur": _INT, "loc": _NULLABLE_STR, "t0": _NULLABLE_INT,
@@ -61,8 +63,10 @@ def extraction_prompt(settings: dict) -> str:
     t, r = settings["time"], settings["rules"]
     return (
         "You turn timetable documents into structured data for a timetabling engine. In this model every person "
-        "is a plane: it spans the slots they work (avail = [first slot, one past the last slot]) and the locations "
-        "they may be in (eligible). An event is a lesson, shift, meeting or duty that a group attends together.\n"
+        "is a plane: it spans the slots they work (avail = [first slot, one past the last slot], or a list of such "
+        "windows for people with gaps in their day, e.g. \"avail\": [[0, 26], [52, 78]] for someone free only in "
+        "the morning and evening blocks; one window for full-time staff) and the locations they may be in "
+        "(eligible). An event is a lesson, shift, meeting or duty that a group attends together.\n"
         f"Slots are numbered from 0. The slot labels are: {', '.join(t['labels'])}. Time unit: {t['slot_minutes']} minutes.\n"
         f"Rules unless the document says otherwise: max_load: {r['max_load']}, max_run: {r['max_run']}, "
         f"mandatory_rest slots: {r['mandatory_rest']}.\n"
@@ -100,6 +104,17 @@ def _names_class(g: dict, c: str) -> bool:
 
 
 def _validate(org: dict) -> dict:
+    # Normalise per-person avail first, and before Organisation.from_dict: from_dict
+    # constructs Person objects itself, so a bad avail there would raise ValueError
+    # deep inside from_dict and get swallowed by the generic "not a valid
+    # organisation" message below instead of surfacing this readable, id-prefixed one.
+    n = len(org["time_labels"])
+    for p in org["persons"]:
+        try:
+            windows = normalise_avail(p["avail"], n)
+        except ValueError as e:
+            raise IntakeError(f"{p['id']}: {e}")
+        p["avail"] = [list(w) for w in windows]
     try:
         Organisation.from_dict(org)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
@@ -108,11 +123,6 @@ def _validate(org: dict) -> dict:
         for item in org.get(section, []):
             if not isinstance(item.get("id"), str) or not ID_PATTERN.match(item["id"]):
                 raise IntakeError(f"{section}: id {item.get('id')!r} must be 1-31 lowercase letters, digits or hyphens")
-    n = len(org["time_labels"])
-    for p in org["persons"]:
-        a = p["avail"]
-        if len(a) != 2 or not all(isinstance(x, int) for x in a) or not (0 <= a[0] < a[1] <= n):
-            raise IntakeError(f"{p['id']}: avail {a} must be [start, end) within 0..{n}")
     ids = {l["id"] for l in org["locations"]}
     for p in org["persons"]:
         bad = [x for x in p["eligible"] if x not in ids]

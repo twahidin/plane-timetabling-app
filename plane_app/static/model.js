@@ -14,7 +14,7 @@
       name: org.name, timeLabels: org.time_labels, timeUnit: org.time_unit,
       rules: { maxLoad: org.rules.max_load, maxRun: org.rules.max_run, mandatoryRest: org.rules.mandatory_rest, slotsPerDay: org.rules.slots_per_day || null },
       locations: org.locations.map((l) => ({ id: l.id, name: l.name, cap: l.cap, shared: !!l.shared, rest: !!l.rest })),
-      persons: org.persons.map((p) => ({ id: p.id, name: p.name, role: p.role, avail: p.avail, eligible: p.eligible.map((x) => locIndex[x]).filter((x) => x !== undefined) })),
+      persons: org.persons.map((p) => ({ id: p.id, name: p.name, role: p.role, avail: Array.isArray(p.avail[0]) ? p.avail : [p.avail], eligible: p.eligible.map((x) => locIndex[x]).filter((x) => x !== undefined) })),
       // student groups are planes on the engine's side (it synthesises a person per group); here they only join the load panel
       groups: (org.groups || []).map((g) => ({ id: g.id, name: g.name, band: g.band || null })),
       events: org.events.filter((e) => e.loc !== null && e.t0 !== null && locIndex[e.loc] !== undefined).map((e) => ({
@@ -118,18 +118,21 @@
     g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     world.add(new THREE.LineSegments(g, gridMat));
 
-    // Person planes: one strip per eligible location, spanning the working window
+    // Person planes: one strip per eligible location, per window, spanning that window
     ds.persons.forEach((per, p) => {
-      const z = p * ZS, x0 = per.avail[0], x1 = per.avail[1], len = x1 - x0;
-      per.eligible.forEach((l) => {
-        const geo = new THREE.PlaneGeometry(len, 0.92);
-        const m = new THREE.Mesh(geo, planeMat); m.position.set(x0 + len / 2, l, z); m.renderOrder = 1; world.add(m);
-        const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), planeEdge); e.position.copy(m.position); world.add(e);
+      const z = p * ZS;
+      per.avail.forEach(([x0, x1]) => {
+        const len = x1 - x0;
+        per.eligible.forEach((l) => {
+          const geo = new THREE.PlaneGeometry(len, 0.92);
+          const m = new THREE.Mesh(geo, planeMat); m.position.set(x0 + len / 2, l, z); m.renderOrder = 1; world.add(m);
+          const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), planeEdge); e.position.copy(m.position); world.add(e);
+        });
+        // frame: this window's full extent across every location row, so gaps (between or outside windows) read as "not allowed here"
+        const fg = new THREE.BufferGeometry();
+        fg.setAttribute('position', new THREE.Float32BufferAttribute([x0, -0.5, z, x1, -0.5, z, x1, -0.5, z, x1, nL - 0.5, z, x1, nL - 0.5, z, x0, nL - 0.5, z, x0, nL - 0.5, z, x0, -0.5, z], 3));
+        world.add(new THREE.LineSegments(fg, frameMat));
       });
-      // frame: the plane's full working window across every location row, so gaps read as "not allowed here"
-      const fg = new THREE.BufferGeometry();
-      fg.setAttribute('position', new THREE.Float32BufferAttribute([x0, -0.5, z, x1, -0.5, z, x1, -0.5, z, x1, nL - 0.5, z, x1, nL - 0.5, z, x0, nL - 0.5, z, x0, nL - 0.5, z, x0, -0.5, z], 3));
-      world.add(new THREE.LineSegments(fg, frameMat));
       const lab = makeLabel(per.name, th.ink, { anchor: [1, 0.5] }); lab.position.set(-0.35, -0.5, z); world.add(lab);
       const role = makeLabel(per.role, th.muted, { size: 20, anchor: [1, 0.5] }); role.position.set(-0.35, -0.95, z); world.add(role);
     });

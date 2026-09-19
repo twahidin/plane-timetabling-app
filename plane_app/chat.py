@@ -34,8 +34,9 @@ There is a LIVE timetable (built and checked) and possibly a DRAFT organisation 
 Use the tools: where, who, both_free and load answer questions about the live timetable; list_draft shows the draft;
 update_draft changes it with a patch keyed by id; build_draft asks the engine to build it. When the user describes an
 organisation from scratch (criteria, numbers of people and rooms, subjects, constraints) and there is no draft, call
-new_draft first, then fill it with update_draft: rooms with capacities, people with avail [first slot, one past the
-last] and eligible rooms (always include "rest"), and events with members and duration; then ask the user to check
+new_draft first, then fill it with update_draft: rooms with capacities, people with avail windows
+[[first, one past last], ...] (one window for full-time staff) and eligible rooms (always include "rest"), and
+events with members and duration; then ask the user to check
 the tables before building. Never claim a build
 succeeded unless build_draft returned ok: true. Quote the tool's answer and keep replies short. Slots are numbered
 from 0 and ids are short lowercase strings; if the user uses a name, look it up in the draft or ask.
@@ -47,7 +48,9 @@ Reviewer found; `free_venues` lists rooms free at a slot or on a date. `print_ti
 printable page and a PDF; give the user both."""
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
-              "\"locations\": {\"lab\": {\"cap\": 30}}}. A null value removes the item; an unknown id appends it.")
+              "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
+              "{\"persons\": {\"kumar\": {\"avail\": [[0, 3], [5, 8]]}}} for someone free only outside a midday gap. "
+              "A null value removes the item; an unknown id appends it.")
 
 TOOLS: list[ToolSpec] = [
     ToolSpec("where", "Where a person is at a slot in the live timetable.",

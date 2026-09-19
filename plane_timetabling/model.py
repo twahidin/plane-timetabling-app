@@ -7,6 +7,33 @@ from importlib import resources
 from pathlib import Path
 
 
+def normalise_avail(value, n_slots: int) -> tuple[tuple[int, int], ...]:
+    """Accept [a, b] or [[a, b], ...]; return sorted, merged, validated windows."""
+    msg = f"avail must be windows [start, end) within 0..{n_slots}, sorted and non-overlapping"
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in value):
+        value = [value]
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(msg)
+    wins = []
+    for w in value:
+        if not isinstance(w, (list, tuple)) or len(w) != 2 or not all(isinstance(x, int) and not isinstance(x, bool) for x in w):
+            raise ValueError(msg)
+        a, b = w
+        if not (0 <= a < b <= n_slots):
+            raise ValueError(msg)
+        wins.append((a, b))
+    wins.sort()
+    out: list[tuple[int, int]] = []
+    for a, b in wins:
+        if out and a < out[-1][1]:
+            raise ValueError(msg)
+        if out and a == out[-1][1]:
+            out[-1] = (out[-1][0], b)
+        else:
+            out.append((a, b))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Location:
     id: str
@@ -22,8 +49,19 @@ class Person:
     id: str
     name: str
     role: str
-    avail: tuple[int, int]          # [start, end) in slots: the plane's extent along T
+    avail: tuple[tuple[int, int], ...]   # sorted, non-overlapping [start, end) windows in slots
     eligible: frozenset[str]        # location ids: the plane's extent along L
+
+    def avail_mask(self, n_slots: int) -> int:
+        # Inlined span(a, b) arithmetic: model.py ships alone to the app image
+        # and the public template (see the guard test in test_export_script.py),
+        # so it must not import sibling modules like .masks.
+        m = 0
+        for a, b in self.avail:
+            b = min(b, n_slots)
+            if b > a:
+                m |= ((1 << (b - a)) - 1) << a
+        return m
 
 
 @dataclass
@@ -146,7 +184,7 @@ class Organisation:
         locations = [Location(**l) for l in d["locations"]]
         persons = [
             Person(id=p["id"], name=p["name"], role=p["role"],
-                   avail=tuple(p["avail"]), eligible=frozenset(p["eligible"]))
+                   avail=normalise_avail(p["avail"], n_slots), eligible=frozenset(p["eligible"]))
             for p in d["persons"]
         ]
         groups = [
@@ -166,7 +204,7 @@ class Organisation:
         for g in groups:
             if g.id not in person_ids:
                 persons.append(Person(id=g.id, name=g.name, role="Group",
-                                       avail=(0, n_slots), eligible=all_loc_ids))
+                                       avail=((0, n_slots),), eligible=all_loc_ids))
                 person_ids.add(g.id)
                 synth_persons.add(g.id)
 
@@ -208,7 +246,7 @@ class Organisation:
                       **({"soft_edge_subjects": list(self.rules.soft_edge_subjects)} if self.rules.soft_edge_subjects else {})},
             "locations": [asdict(l) for l in self.locations],
             "persons": [
-                {"id": p.id, "name": p.name, "role": p.role, "avail": list(p.avail),
+                {"id": p.id, "name": p.name, "role": p.role, "avail": [list(w) for w in p.avail],
                  "eligible": sorted(p.eligible)}
                 for p in self.persons
                 if p.id not in self._synth_persons
