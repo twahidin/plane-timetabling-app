@@ -82,6 +82,20 @@ def extraction_prompt(settings: dict) -> str:
     )
 
 
+def rules_from_settings(settings: dict) -> dict:
+    """The organisation's rules as the settings give them, plus `slots_per_day` when the cycle runs
+    over more than one day. The engine judges `max_load` and `max_run` within each day only when the
+    rules say how long a day is; without it a week of labels reads as one very long day, and "six
+    periods a day" would be applied to the whole week."""
+    rules = copy.deepcopy(settings["rules"])
+    time = settings.get("time") or {}
+    spd = time.get("slots_per_day")
+    labels = time.get("labels") or []
+    if spd and len(labels) > spd and not rules.get("slots_per_day"):
+        rules["slots_per_day"] = spd
+    return rules
+
+
 def _ensure_rest(org: dict, settings: dict) -> None:
     if not any(l.get("rest") for l in org.get("locations", [])):
         org.setdefault("locations", []).append({"id": "rest", "name": "Rest", "cap": 999, "shared": True, "rest": True})
@@ -89,7 +103,7 @@ def _ensure_rest(org: dict, settings: dict) -> None:
         if "rest" not in p.get("eligible", []):
             p.setdefault("eligible", []).append("rest")
     if "rules" not in org or not org["rules"]:
-        org["rules"] = copy.deepcopy(settings["rules"])
+        org["rules"] = rules_from_settings(settings)
     org.setdefault("time_labels", list(settings["time"]["labels"]))
     org.setdefault("time_unit", f"{settings['time']['slot_minutes']}-minute slot")
     for e in org.get("events", []):

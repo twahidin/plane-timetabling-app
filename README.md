@@ -32,6 +32,23 @@ all teachers, all classes or all rooms as a single PDF with a page per timetable
 the request and can take some seconds for a large school. In the chat panel you can just ask —
 "print Ms Lee's timetable" — and the assistant hands back both links.
 
+## Curriculum plan
+
+The **Plan** tab, beside the draft tables, holds the curriculum plan: what has to be taught, not
+when it happens. One requirement per teaching group — how many periods of what length, which
+classes it draws from, who teaches it, what kind of room it needs — plus the divisions and bands
+of option groups that run against each other, the staff and their load factors, and rules such as
+edge subjects and pinned events like assembly. Fill it by dropping the staff-deployment workbook
+(with any `Teaching Group, Enrolled, Capacity` sizes CSVs beside it) on the intake dropzone or on
+the Plan tab's **Upload workbook** — the dropzone recognises a deployment workbook by the shape of
+its sheets and routes it here — or by describing requirements in chat ("Sec 3 Science: 6 periods,
+two doubles, in a lab, Mr Tan"). The Issues panel lists what is missing or contradictory: blocking
+issues (a requirement with no teacher, periods that do not match the lesson counts) keep
+**Generate draft** disabled, warnings (a class with no size, a teacher over capacity) do not. Fix,
+re-read the issues, then Generate: the plan becomes the draft organisation, and Build and Solve
+work on it exactly as they do on any other draft. A re-import of an updated workbook merges by id
+and keeps what you set in the app — venue, availability, rules and class sizes.
+
 ## Environment variables
 
 | Variable | Required | Purpose |

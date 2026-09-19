@@ -6,6 +6,8 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
+MAX_UPLOAD = 20 * 1024 * 1024      # shared by every upload route (main.py's /api/upload, plan/routes.py)
+
 
 @dataclass
 class Config:

@@ -15,6 +15,9 @@ from .db import Db
 from .engine_client import EngineClient, EngineError
 from .intake import IntakeError, apply_patch, empty_organisation, summarise
 from .llm import Provider, ProviderError, ToolCall, ToolSpec
+from .plan import generate as plan_generate_mod
+from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
+from .plan.model import apply_patch as apply_plan_patch, empty_plan
 from .promote import promote_build
 
 MAX_ROUNDS = 8
@@ -45,12 +48,22 @@ Changing the live timetable is done by proposals: `propose` (for an event, or ev
 and call `apply` with the option's id only in a later message, after the user has said yes to it. Resolve names with
 `find` before any tool that takes an id; when `find` returns several matches, ask which. `clashes` lists what the
 Reviewer found; `free_venues` lists rooms free at a slot or on a date. `print_timetable` returns links to a
-printable page and a PDF; give the user both."""
+printable page and a PDF; give the user both.
+There is also a curriculum PLAN, separate from the draft: requirements (a group's periods by lesson length,
+its classes, teachers and venue need), divisions and bands for option groups that run together, staff and
+rules. Use plan_summary and plan_list to see it, plan_update to import from a workbook description or fix
+issues with a patch keyed by id (edits need no proposal gate, unlike the live timetable), and once no
+blocking issues remain, plan_generate to turn it into the draft — then Build or Solve as usual."""
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
               "{\"persons\": {\"kumar\": {\"avail\": [[0, 3], [5, 8]]}}} for someone free only outside a midday gap. "
               "A null value removes the item; an unknown id appends it.")
+
+_PLAN_PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"requirements\": {\"ma-1g3-class-1a2\": {\"periods\": 20}}}, "
+                    "{\"staff\": {\"tan\": {\"avail\": [[0, 8]]}}}. A null value removes the item; an unknown id appends it. "
+                    "A described requirement like \"Sec 3 Science: 6 periods, two doubles, in a lab, Mr Tan\" becomes one "
+                    "requirement patch.")
 
 TOOLS: list[ToolSpec] = [
     ToolSpec("where", "Where a person is at a slot in the live timetable.",
@@ -99,6 +112,17 @@ TOOLS: list[ToolSpec] = [
                  "view": {"type": "string", "enum": ["cycle", "week"]},
                  "date": {"type": "string", "description": "YYYY-MM-DD, for view=week"},
              }, "required": ["kind", "name"]}),
+    ToolSpec("plan_summary", "Counts and issue counts for the curriculum plan.",
+             {"type": "object", "properties": {}}),
+    ToolSpec("plan_list", "One section of the curriculum plan, optionally filtered by a substring on id/name/subject/text.",
+             {"type": "object", "properties": {
+                 "section": {"type": "string", "enum": ["staff", "classes", "divisions", "requirements", "bands", "rules", "issues"]},
+                 "filter": {"type": "string"},
+             }, "required": ["section"]}),
+    ToolSpec("plan_update", "Change the curriculum plan. " + _PLAN_PATCH_DOC,
+             {"type": "object", "properties": {"patch": {"type": "object"}}, "required": ["patch"]}),
+    ToolSpec("plan_generate", "Generate a draft organisation from the curriculum plan. Refuses while any blocking issue exists.",
+             {"type": "object", "properties": {}}),
 ]
 
 # names.find's own "person"/"group" split only tells a group (a synthesised whole-class plane) apart
@@ -146,6 +170,22 @@ def _applied_events(kind: str, res: dict) -> list[dict]:
             out.append({"kind": "undone", "description": res["description"]})
         out.append({"kind": "bookings_updated"})
     return out
+
+
+def _plan_issue_dict(i: Issue) -> dict:
+    return {"level": i.level, "where": i.where, "text": i.text}
+
+
+def _plan_issues_for(db: Db, plan: dict) -> list[Issue]:
+    return plan_issues(plan, db.get_org("live"), db.get_settings())
+
+
+def _plan_summary_dict(db: Db, plan: dict, issues: list[Issue] | None = None) -> dict:
+    issues = _plan_issues_for(db, plan) if issues is None else issues
+    return {"requirements": len(plan["requirements"]), "staff": len(plan["staff"]),
+            "divisions": len(plan["divisions"]), "bands": len(plan["bands"]), "classes": len(plan["classes"]),
+            "blocks": sum(1 for i in issues if i.level == "block"),
+            "warns": sum(1 for i in issues if i.level == "warn"), "source": plan.get("source")}
 
 
 def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
@@ -275,6 +315,50 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                            "clashes": result["clashes"]})
             return json.dumps({"ok": ok, "placed": len(result["placed"]), "unplaced": result["unplaced"],
                                "clashes": [c["message"] for c in result["clashes"]], "log": result["log"][-10:]})
+        plan = db.get_value("plan")
+        if call.name == "plan_summary":
+            return json.dumps(_plan_summary_dict(db, plan or empty_plan()))
+        if call.name == "plan_list":
+            p = plan or empty_plan()
+            section = call.args.get("section", "")
+            if section == "rules":
+                return json.dumps(p["rules"])
+            if section == "issues":
+                items = [_plan_issue_dict(i) for i in _plan_issues_for(db, p)]
+            elif section in ("staff", "classes", "divisions", "requirements", "bands"):
+                items = list(p.get(section, []))
+            else:
+                return json.dumps({"error": f"unknown section {section}"})
+            filt = str(call.args.get("filter") or "").strip().lower()
+            if filt:
+                keys = ("id", "code", "name", "subject", "text", "where")
+                items = [it for it in items if any(filt in str(it.get(k, "")).lower() for k in keys)]
+            if len(items) > 40:
+                return json.dumps({"items": items[:40], "more": len(items) - 40})
+            return json.dumps({"items": items})
+        if call.name == "plan_update":
+            p = plan or empty_plan()
+            new = apply_plan_patch(p, call.args.get("patch") or {})
+            db.set_value("plan", new)
+            issues = _plan_issues_for(db, new)
+            events.append({"kind": "plan_updated"})
+            return json.dumps({"ok": True, "summary": _plan_summary_dict(db, new, issues),
+                               "issues": [_plan_issue_dict(i) for i in issues[:ISSUE_LIMIT]]})
+        if call.name == "plan_generate":
+            p = plan or empty_plan()
+            settings = db.get_settings()
+            base_org = db.get_org("live")
+            issues = plan_issues(p, base_org, settings)
+            if has_blocks(issues):
+                blocks = [i.text for i in issues if i.level == "block"]
+                return json.dumps({"error": f"{len(blocks)} blocking issues: " + "; ".join(capped(blocks))})
+            org, summary = plan_generate_mod.generate(p, base_org, settings)
+            db.set_org("draft", org)
+            events.append({"kind": "draft_updated"})
+            result = {"ok": True, "summary": summary, "issues": [_plan_issue_dict(i) for i in issues[:ISSUE_LIMIT]]}
+            if len(issues) > ISSUE_LIMIT:
+                result["more"] = len(issues) - ISSUE_LIMIT
+            return json.dumps(result)
         return json.dumps({"error": f"unknown tool {call.name}"})
     except (EngineError, IntakeError, KeyError, ValueError) as e:
         return json.dumps({"error": str(e)})

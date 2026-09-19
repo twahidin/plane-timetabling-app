@@ -118,9 +118,11 @@
         appendBubble('assistant', 'Dismissed.');
       } else if (ev.kind === 'undone') reload = true;
       else if (ev.kind === 'bookings_updated') loadBookings();
+      else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); }
     });
     if (reload) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
   }
+  window.handleEvents = handleEvents;
 
   window.sendChat = (text) => { el('chat-text').value = text; el('chat-form').requestSubmit(); };
   window.draftChat = (text) => { const input = el('chat-text'); input.value = text; input.focus(); };
@@ -201,6 +203,7 @@
       box.appendChild(d);
     });
   }
+  window.showNotes = showNotes;
 
   // ---------- Upload ----------
   const drop = el('drop'), fileInput = el('files');
@@ -221,10 +224,17 @@
       const body = await r.json().catch(() => ({}));
       const took = busy.seconds(); busy.stop();
       if (!r.ok) { showNotes([], [], [{ cls: 'error', text: body.detail || r.statusText }]); return; }
+      if (!body.draft) {
+        // only a plan workbook (or workbooks) was uploaded: nothing to turn into a draft
+        showNotes(body.notes, body.warnings, []);
+        handleEvents(body.events);
+        return;
+      }
       const s = body.draft || {};
       const how = body.source === 'asc' ? 'read from the timetable export (no model needed)' : `extracted${label ? ' with ' + label : ''}`;
       showNotes(body.notes, body.warnings, [{ cls: 'good', text: `Draft ${how} in ${took}s: ${s.persons} persons, ${s.locations} locations, ${s.events} events. Check the tables, then Build.` }]);
       await loadDraft();
+      handleEvents(body.events);
     } catch (e) { busy.stop(); showNotes([], [], [{ cls: 'error', text: e.message }]); }
     finally { drop.classList.remove('busy'); fileInput.disabled = false; fileInput.value = ''; }
   }

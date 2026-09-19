@@ -45,7 +45,7 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan")  # get_value/set_value keys that are scoped
 CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHANGE_SNAP_PREFIX}{n}" — also scoped, by prefix
 PRINT_CUSTOM_PREFIX = "print_custom:"  # one kv row per saved custom timetable: f"{PRINT_CUSTOM_PREFIX}{token}" — also scoped, by prefix
 
@@ -130,8 +130,8 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}"))
+            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?)",
+                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}"))
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
             con.execute("delete from timetables where id=?", (tid,))

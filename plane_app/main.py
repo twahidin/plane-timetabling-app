@@ -19,7 +19,7 @@ from . import calendar as cal_mod
 from . import changes
 from .bookings import draft_for_engine, live_for_engine     # re-exported: every route/tool that sends an organisation to the engine uses these
 from .chat import run_chat
-from .config import Config
+from .config import MAX_UPLOAD, Config
 from .db import DEFAULT_SOFT, MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, RULES, Db, mask_settings
 from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
@@ -27,11 +27,12 @@ from . import asc_import
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import proposals
+from .plan import importer as plan_importer
+from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
 from .promote import promote_build
 
 HERE = Path(__file__).parent
-MAX_UPLOAD = 20 * 1024 * 1024
 LOGIN_MAX_FAILURES, LOGIN_WINDOW = 10, 15 * 60      # failed logins per client ip before a 429, seconds
 
 
@@ -84,6 +85,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             return app.state.solve_locks.setdefault(db.current_timetable(), threading.Lock())
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     app.include_router(print_router(db, templates))
+    app.include_router(plan_router(db))
     static = HERE / "static"
     static.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static)), name="static")
@@ -200,6 +202,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         pending = []
         asc_pages: list[list[dict]] = []
         asc_names: list[str] = []
+        plan_notes: list[dict] = []
+        plan_events: list[dict] = []
         for f in files:
             data = await f.read()
             if len(data) > MAX_UPLOAD:
@@ -211,11 +215,20 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 asc_names.append(name)
                 pending.append((name, data, None))
                 continue
+            if name.lower().endswith(".xlsx") and plan_importer.is_deployment_workbook(data):
+                # a staff-deployment workbook: import into the curriculum plan, not the draft
+                _, _, note = import_plan_workbook(db, name, data)
+                plan_notes.append({"section": "plan", "source": name, "note": note})
+                plan_events.append({"kind": "plan_updated"})
+                continue
             try:
                 ex = extract(name, data)
             except UnsupportedFile as e:
                 raise HTTPException(400, str(e))
             pending.append((name, data, ex))
+        if not pending and not asc_pages:
+            # nothing left to turn into a draft (only deployment workbook(s) were uploaded)
+            return {"notes": plan_notes, "warnings": [], "events": plan_events}
         if asc_pages:
             if mode not in ("keep", "rebuild"):
                 raise HTTPException(400, "mode must be keep or rebuild")
@@ -239,7 +252,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                               "note": "Ignored alongside the timetable export; the export already holds the timetable. Upload other documents on their own to add to the draft by chat."})
             db.set_org("draft", org)
             s = summarise(org)
-            return {"draft": s, "notes": notes, "warnings": [], "source": "asc", "files": asc_names}
+            return {"draft": s, "notes": notes + plan_notes, "warnings": [], "source": "asc", "files": asc_names,
+                    "events": plan_events}
         warnings = []
         for name, data, ex in pending:
             for old_path in db.remove_upload_by_name(sid, name):     # re-dropping a file replaces it
@@ -255,7 +269,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         except (IntakeError, ProviderError) as e:
             raise HTTPException(400, str(e))
         db.set_org("draft", org)
-        return {"draft": summarise(org), "notes": notes, "warnings": warnings}
+        return {"draft": summarise(org), "notes": notes + plan_notes, "warnings": warnings, "events": plan_events}
 
     @app.post("/api/uploads/clear")
     def clear_uploads(sid: str = Depends(auth.require_session)):

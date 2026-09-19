@@ -23,7 +23,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["plane_app", "plane_app.llm", "plane_app.print", "plane_timetabling"]
+packages = ["plane_app", "plane_app.llm", "plane_app.print", "plane_app.plan", "plane_timetabling"]
 
 [tool.setuptools.package-data]
 # `**` needs setuptools >= 62.3; the build requires >= 68 above. templates/print/grid.html

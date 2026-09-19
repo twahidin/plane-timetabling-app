@@ -106,29 +106,63 @@
       <label class="check"><input type="checkbox" id="classes-as-planes"> Treat classes as planes <span class="hint">(shows subject banding as clashes)</span></label>
     </div>
     <div id="notes" class="notes"></div>
-    <div id="solve-bar" class="solve-bar" hidden>
-      <button class="btn" id="build" type="button" title="The engine's greedy build: instant, no soft rules">Build <small>instant, greedy</small></button>
-      <span class="or">or</span>
-      <label for="solve-preset">Preset</label>
-      <select id="solve-preset" aria-label="Solve preset">
-        <option value="close">Keep it close</option>
-        <option value="balanced">Balanced</option>
-        <option value="quality">Best quality</option>
-        <option value="custom">Custom weights (settings)</option>
-      </select>
-      <label for="solve-time">Time limit</label>
-      <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
-      <button class="btn primary" id="solve" type="button" title="Search for the best timetable under the soft rules, up to the time limit">Solve</button>
-      <button class="btn" id="score-live" type="button" title="Score the live timetable under the current weights, without solving">Score live</button>
+
+    <div class="tabs seg" id="intake-tabs" role="tablist" aria-label="Intake view">
+      <button id="tab-draft" class="on" type="button" role="tab" aria-selected="true">Draft</button>
+      <button id="tab-plan" type="button" role="tab" aria-selected="false">Plan</button>
     </div>
-    <div id="solve-progress" class="progress" hidden>
-      <div class="row"><span class="spinner"></span><span id="solve-label">Solving…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
-      <div class="bar"><i id="solve-fill"></i></div>
-      <div class="meta" id="solve-meta"></div>
+
+    <div id="draft-panel">
+      <div id="solve-bar" class="solve-bar" hidden>
+        <button class="btn" id="build" type="button" title="The engine's greedy build: instant, no soft rules">Build <small>instant, greedy</small></button>
+        <span class="or">or</span>
+        <label for="solve-preset">Preset</label>
+        <select id="solve-preset" aria-label="Solve preset">
+          <option value="close">Keep it close</option>
+          <option value="balanced">Balanced</option>
+          <option value="quality">Best quality</option>
+          <option value="custom">Custom weights (settings)</option>
+        </select>
+        <label for="solve-time">Time limit</label>
+        <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
+        <button class="btn primary" id="solve" type="button" title="Search for the best timetable under the soft rules, up to the time limit">Solve</button>
+        <button class="btn" id="score-live" type="button" title="Score the live timetable under the current weights, without solving">Score live</button>
+      </div>
+      <div id="solve-progress" class="progress" hidden>
+        <div class="row"><span class="spinner"></span><span id="solve-label">Solving…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
+        <div class="bar"><i id="solve-fill"></i></div>
+        <div class="meta" id="solve-meta"></div>
+      </div>
+      <div id="quality" class="quality" hidden></div>
+      <div id="draft" class="draft" hidden></div>
+      <div id="bookings" class="bookings" hidden></div>
     </div>
-    <div id="quality" class="quality" hidden></div>
-    <div id="draft" class="draft" hidden></div>
-    <div id="bookings" class="bookings" hidden></div>
+
+    <div id="plan" class="plan" hidden>
+      <div class="plan-toolbar">
+        <label class="plan-upload-label" for="plan-upload">Upload workbook
+          <input type="file" id="plan-upload" multiple accept=".xlsx,.csv">
+        </label>
+        <button class="btn primary" id="plan-generate" type="button" title="Turn the plan into a draft organisation">Generate draft</button>
+      </div>
+      <div id="plan-issues" class="plan-issues"></div>
+      <div class="plan-section">
+        <h3>Requirements</h3>
+        <div class="tablewrap"><table class="grid" id="plan-requirements"></table></div>
+      </div>
+      <div class="plan-section">
+        <h3>Staff</h3>
+        <div class="tablewrap"><table class="grid" id="plan-staff"></table></div>
+      </div>
+      <div class="plan-section">
+        <h3>Divisions &amp; bands</h3>
+        <div class="tablewrap"><table class="grid" id="plan-divisions"></table></div>
+      </div>
+      <div class="plan-section">
+        <h3>Rules</h3>
+        <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
+      </div>
+    </div>
   </section>
 
   <section id="chat" class="chat">
@@ -176,6 +210,7 @@
 <script src="/static/three.min.js"></script>
 <script src="/static/model.js"></script>
 <script src="/static/chat.js"></script>
+<script src="/static/plan.js"></script>
 <script src="/static/timetables.js"></script>
 <script src="/static/print.js"></script>
 </body>
