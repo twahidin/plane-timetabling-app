@@ -27,6 +27,7 @@ from . import asc_import
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import proposals
+from .print.routes import make_router as print_router
 from .promote import promote_build
 
 HERE = Path(__file__).parent
@@ -82,6 +83,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         with solve_locks_guard:
             return app.state.solve_locks.setdefault(db.current_timetable(), threading.Lock())
     templates = Jinja2Templates(directory=str(HERE / "templates"))
+    app.include_router(print_router(db, templates))
     static = HERE / "static"
     static.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static)), name="static")

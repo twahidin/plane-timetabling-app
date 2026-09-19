@@ -23,6 +23,15 @@ The assistant in the chat panel proposes individual moves, swaps, and bookings a
 only after you say yes; **Undo** reverts the last change. Set the term calendar in Settings for
 dated bookings so the assistant can reason about term breaks and holidays.
 
+## Printing
+
+**Print**, beside the timetable selector, opens a dialog: pick a teacher, class, group or room —
+or build a custom timetable from any set of people — then the whole cycle or the week of a date,
+and either **View** (a printable page in a new tab) or **PDF** (a download). The same row offers
+all teachers, all classes or all rooms as a single PDF with a page per timetable; those render in
+the request and can take some seconds for a large school. In the chat panel you can just ask —
+"print Ms Lee's timetable" — and the assistant hands back both links.
+
 ## Environment variables
 
 | Variable | Required | Purpose |

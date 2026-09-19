@@ -400,6 +400,9 @@
         <dt>Load</dt><dd>${chip(!loadBad.length, isRestEvent(ds, e) ? 'rest tile, not counted as load' : loadBad.length ? first(loadBad) : 'every member within budget')}</dd>
         <dt>Time</dt><dd>${chip(!syncBad.length, syncBad.length ? first(syncBad) : e.sync ? 'sync group aligned' : 'single prism, members bound by shape')}</dd>
         <dt></dt><dd class="actions">${e.fixed ? '' : '<a class="move" href="#">Move…</a> '}<a class="book" href="#">Book this room</a></dd>
+        <dt>print</dt><dd class="actions">${e.members.filter((p) => String(ds.persons[p].role || '').startsWith('Teacher'))
+          .map((p) => `<a class="print-teacher" href="#" data-id="${esc(ds.persons[p].id)}">Print ${esc(ds.persons[p].name)}</a>`).join(' ')}
+          ${isRestEvent(ds, e) ? '' : `<a class="print-room" href="#" data-id="${esc(loc.id)}">Print ${esc(loc.name)}</a>`}</dd>
       </dl>`;
     // A pinned event cannot be moved, but its room can still be booked for another day.
     const moveLink = el('selected').querySelector('.move');
@@ -409,6 +412,12 @@
       ev.preventDefault();
       if (window.draftChat) window.draftChat('Book ' + loc.name + ' on YYYY-MM-DD ' + spanLabel(ds, e) + ' for ');
     });
+    el('selected').querySelectorAll('.print-teacher').forEach((a) => a.addEventListener('click', (ev) => {
+      ev.preventDefault(); if (window.openPrint) window.openPrint('teacher', a.dataset.id);
+    }));
+    el('selected').querySelectorAll('.print-room').forEach((a) => a.addEventListener('click', (ev) => {
+      ev.preventDefault(); if (window.openPrint) window.openPrint('room', a.dataset.id);
+    }));
     paint();
   }
 

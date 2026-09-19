@@ -344,7 +344,17 @@
   .dialog input[type="text"] { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 14px; padding: 7px 9px;
     border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
   .dialog .error { color: var(--bad); font-size: 13px; margin: 8px 0 0; }
-  .dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .dialog .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+  #print-dialog { width: min(480px, calc(100vw - 32px)); }
+  #print-dialog label { margin-top: 10px; }
+  #print-dialog h2 + label { margin-top: 0; }
+  #print-dialog select, #print-dialog input[type="date"] { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 14px; padding: 7px 9px;
+    border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  #print-dialog select[multiple] { height: 130px; }
+  #print-dialog .dialog-actions .btn { white-space: nowrap; }
+  #print-dialog .note { color: var(--ink-2); font-size: 13px; margin: 8px 0 0; }
+  #print-dialog .btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
 
   .import-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
   .import-options select { font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }

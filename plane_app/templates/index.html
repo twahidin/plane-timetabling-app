@@ -22,6 +22,7 @@
       <button class="btn" id="tt-clone" type="button" title="Copy this timetable as the starting point for another period">Clone</button>
       <button class="btn" id="tt-rename" type="button">Rename</button>
       <button class="btn" id="tt-delete" type="button">Delete</button>
+      <button class="btn" id="print-open" type="button" title="Print or download timetables">Print</button>
     </div>
     <a href="/settings">Settings</a>
     <form method="post" action="/logout"><button class="btn" type="submit">Log out</button></form>
@@ -150,9 +151,32 @@
   </form>
 </dialog>
 
+<dialog id="print-dialog" class="dialog">
+  <form method="dialog" id="print-form">
+    <h2>Print timetables</h2>
+    <label>Kind <select id="print-kind"><option value="teacher">Teacher</option><option value="class">Class</option><option value="group">Group</option><option value="room">Room</option><option value="custom">Custom</option></select></label>
+    <label id="print-filter-label">Find <input id="print-filter" type="text" autocomplete="off" placeholder="type to filter"></label>
+    <label id="print-target-label">Which <select id="print-target" size="6"></select></label>
+    <label id="print-title-label" hidden>Title <input id="print-title" type="text" maxlength="80"></label>
+    <label>View <select id="print-view"><option value="cycle">Whole cycle</option><option value="week">Week of a date</option></select></label>
+    <label id="print-date-label" hidden>Date <input id="print-date" type="date"></label>
+    <p id="print-note" class="note" hidden></p>
+    <p id="print-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <a class="btn" id="print-all-teachers" href="/print/all/teachers.pdf">All teachers PDF</a>
+      <a class="btn" id="print-all-classes" href="/print/all/classes.pdf">All classes PDF</a>
+      <a class="btn" id="print-all-rooms" href="/print/all/rooms.pdf">All rooms PDF</a>
+      <button type="button" class="btn" id="print-cancel">Close</button>
+      <button type="button" class="btn" id="print-view-btn">View</button>
+      <button type="button" class="btn primary" id="print-pdf-btn">PDF</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="/static/three.min.js"></script>
 <script src="/static/model.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/timetables.js"></script>
+<script src="/static/print.js"></script>
 </body>
 </html>

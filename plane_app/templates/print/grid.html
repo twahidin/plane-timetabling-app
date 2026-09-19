@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ timetable }} · timetables</title>
+<style>
+  @page { size: A4 landscape; margin: 12mm; }
+  body { font: 11px/1.3 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #111; margin: 0; padding: 12px; }
+  .grid { page-break-after: always; }
+  .grid:last-child { page-break-after: auto; }
+  h1 { font-size: 18px; margin: 0 0 2px; } .sub { color: #555; margin: 0 0 8px; }
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  th, td { border: 1px solid #bbb; padding: 3px 4px; vertical-align: top; overflow: hidden; }
+  th { background: #f2f2f2; font-weight: 600; } th.day { text-align: left; width: 7em; }
+  td.lesson .t { font-weight: 600; } td .s { color: #555; font-size: 10px; }
+  td.rest { background: #eee; color: #777; } td.booking { background: #fff3cd; } tr.off td { background: #f7f7f7; color: #999; }
+  .foot { color: #777; font-size: 10px; margin-top: 6px; }
+  @media print { body { padding: 0; } }
+</style></head><body>
+{% for g in grids %}
+<section class="grid">
+  <h1>{{ g.title }}</h1><p class="sub">{{ g.subtitle }}{% if timetable %} · {{ timetable }}{% endif %}</p>
+  <table>
+    <thead><tr><th class="day"></th>{% for s in g.slots %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for d in g.days %}<tr{% if d.off %} class="off"{% endif %}><th class="day">{{ d.label }}</th>
+      {% for c in d.cells %}{% if c.kind != "continued" %}<td class="{{ c.kind }}"{% if c.span > 1 %} colspan="{{ c.span }}"{% endif %}>{% if c.kind == "rest" %}<span class="s">rest</span>{% elif c.kind in ("lesson", "booking") %}<div class="t">{{ c.text }}</div><div class="s">{{ c.sub }}</div>{% endif %}</td>{% endif %}{% endfor %}
+    </tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="foot">Generated {{ generated }}</p>
+</section>
+{% endfor %}
+</body></html>

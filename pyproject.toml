@@ -13,6 +13,7 @@ dependencies = [
   "pypdf==6.19.0",
   "openpyxl==3.1.5",
   "pdfplumber==0.11.10",
+  "reportlab==5.0.1",
   "anthropic>=1.6",
   "openai==3.14.1",
 ]
@@ -22,7 +23,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["plane_app", "plane_app.llm", "plane_timetabling"]
+packages = ["plane_app", "plane_app.llm", "plane_app.print", "plane_timetabling"]
 
 [tool.setuptools.package-data]
-plane_app = ["templates/*.html", "static/*"]
+# `**` needs setuptools >= 62.3; the build requires >= 68 above. templates/print/grid.html
+# lives one level down, so the flat glob alone would leave it out of the wheel.
+plane_app = ["templates/*.html", "templates/**/*.html", "static/*"]

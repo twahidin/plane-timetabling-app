@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 from . import bookings
 from . import calendar as cal_mod
@@ -42,7 +43,8 @@ Changing the live timetable is done by proposals: `propose` (for an event, or ev
 `undo` show an option and wait. Never call `apply` in the same reply that made an option — show the options, stop,
 and call `apply` with the option's id only in a later message, after the user has said yes to it. Resolve names with
 `find` before any tool that takes an id; when `find` returns several matches, ask which. `clashes` lists what the
-Reviewer found; `free_venues` lists rooms free at a slot or on a date."""
+Reviewer found; `free_venues` lists rooms free at a slot or on a date. `print_timetable` returns links to a
+printable page and a PDF; give the user both."""
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. A null value removes the item; an unknown id appends it.")
@@ -86,7 +88,46 @@ TOOLS: list[ToolSpec] = [
              {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
     ToolSpec("undo", "Offer to undo the last applied change. Like every change, it waits for the user's yes.",
              {"type": "object", "properties": {}}),
+    ToolSpec("print_timetable", "Links to a printable timetable (HTML page and PDF) for a teacher, class, group or "
+                                "room in the live timetable; resolves the name (or id) first.",
+             {"type": "object", "properties": {
+                 "kind": {"type": "string", "enum": ["teacher", "class", "group", "room"]},
+                 "name": {"type": "string", "description": "A name or id to resolve; asks when several match."},
+                 "view": {"type": "string", "enum": ["cycle", "week"]},
+                 "date": {"type": "string", "description": "YYYY-MM-DD, for view=week"},
+             }, "required": ["kind", "name"]}),
 ]
+
+# names.find's own "person"/"group" split only tells a group (a synthesised whole-class plane) apart
+# from every other person; teacher and room still need a further filter of find's own matches.
+_PRINT_FIND_KIND = {"teacher": "person", "group": "group", "room": "location"}
+
+
+def _print_classes(org: dict) -> list[str]:
+    return sorted({c for g in org.get("groups", []) if g.get("band") is None for c in g["classes"]})
+
+
+def _find_class(org: dict, query: str) -> list[dict]:
+    q = query.strip().lower()
+    if not q:
+        return []
+    classes = _print_classes(org)
+    exact = [c for c in classes if c.lower() == q]
+    if exact:
+        return [{"id": c, "name": c, "kind": "class", "role": ""} for c in exact]
+    tokens = q.split()
+    partial = [c for c in classes if all(t in c.lower() for t in tokens)]
+    return [{"id": c, "name": c, "kind": "class", "role": ""} for c in partial[:10]]
+
+
+def _find_print_target(org: dict, kind: str, query: str) -> list[dict]:
+    if kind == "class":
+        return _find_class(org, query)
+    if kind == "teacher":
+        # Filter to teachers BEFORE find's ten-match cap: filtering afterwards loses a teacher whose
+        # name a dozen students share, because find would have returned ten students and stopped.
+        org = {**org, "persons": [p for p in org.get("persons", []) if str(p.get("role", "")).startswith("Teacher")]}
+    return names.find(org, query, kinds=(_PRINT_FIND_KIND[kind],))
 
 
 @dataclass
@@ -115,6 +156,27 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
         if call.name == "find":
             live = db.get_org("live") or db.get_org("draft") or {"persons": [], "locations": []}
             return json.dumps({"matches": names.find(live, str(call.args.get("query", "")))})
+        if call.name == "print_timetable":
+            live = db.get_org("live")
+            if live is None:
+                return json.dumps({"error": "There is no live timetable yet. Upload documents and build a draft first."})
+            kind = str(call.args.get("kind", ""))
+            if kind not in ("teacher", "class", "group", "room"):
+                return json.dumps({"error": f"unknown kind {kind}"})
+            query = str(call.args.get("name", ""))
+            matches = _find_print_target(live, kind, query)
+            if not matches:
+                return json.dumps({"error": f"no {kind} matching {query!r}"})
+            if len(matches) > 1:
+                return json.dumps({"matches": matches})
+            m = matches[0]
+            view = call.args.get("view") or "cycle"
+            qs = ""
+            if view == "week":
+                date = call.args.get("date")
+                qs = "?view=week" + (f"&date={quote(str(date), safe='')}" if date else "")
+            ident = quote(str(m["id"]), safe="")        # ids are free text: a space or a # would break the link
+            return json.dumps({"title": m["name"], "html": f"/print/{kind}/{ident}{qs}", "pdf": f"/print/{kind}/{ident}.pdf{qs}"})
         if call.name == "clashes":
             live = bookings.live_for_engine(db)
             if live is None:
