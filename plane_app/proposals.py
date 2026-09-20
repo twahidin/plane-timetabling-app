@@ -2,10 +2,11 @@
 
 Nothing in the app writes to the live timetable straight from a chat message. The assistant asks the
 engine for options (`propose_for`), prepares a booking (`book`) or offers to revert (`propose_undo`);
-all three only store a card in the pending list of one chat session. A change happens only when the
-user consents, and there are exactly three ways to consent: a confirmation word in the next message,
-a click on the apply route, or the model calling the `apply` tool in a *later* message than the one
-that produced the card (see `chat.CONFIRM_WORDS` and the run token in `chat.run_chat`).
+all three only store a card in the pending list of the timetable's one chat thread (`db.THREAD`). A
+change happens only when the user consents, and there are exactly three ways to consent: a
+confirmation word in the next message, a click on the apply route, or the model calling the `apply`
+tool in a *later* message than the one that produced the card (see `chat.CONFIRM_WORDS` and the run
+token in `chat.run_chat`).
 
 `apply` then re-reads the card, refuses it if the timetable has moved under it, snapshots the
 timetable through the change log, makes the change and re-checks it. Anything that goes wrong after
@@ -23,8 +24,8 @@ STALE = "the timetable changed since this was proposed"
 LOG_MOVED = "the change log moved since this was proposed"
 
 
-# ---- the pending list: one card set per chat session -------------------------------------------
-# Stored under the per-timetable "pending" key as {"cards": {sid: {"run", "items"}}, "runs": {sid: run}}.
+# ---- the pending list: one card set per chat thread ---------------------------------------------
+# Stored under the per-timetable "pending" key as {"cards": {db.THREAD: {"run", "items"}}, "runs": {db.THREAD: run}}.
 # "runs" holds the run token of the most recent user message that saw the card, which is how
 # `expire` lets a card live for exactly one message after the one that created it.
 
@@ -43,7 +44,7 @@ def pending(db, session_id: str = "") -> list[dict]:
 
 
 def set_pending(db, items: list[dict], session_id: str = "", run: str = "") -> list[dict]:
-    """Stamp the cards with the run that made them and store them for this session."""
+    """Stamp the cards with the run that made them and store them for the timetable's thread."""
     store = _store(db)
     cards, runs = dict(store.get("cards") or {}), dict(store.get("runs") or {})
     items = [{**i, "run": run} for i in items]

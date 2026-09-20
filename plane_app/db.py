@@ -50,6 +50,11 @@ create table if not exists timetables (id text primary key, name text not null, 
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
 PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "wizard")  # get_value/set_value keys that are scoped
+# The one chat thread of a timetable. Messages, uploads and pending proposals are keyed by this
+# rather than by the browser's login session, so a user who logs in on another device (or after
+# the cookie expired) continues the same conversation. The login session id still authenticates
+# and still keys the chat rate limit.
+THREAD = "timetable"
 CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHANGE_SNAP_PREFIX}{n}" — also scoped, by prefix
 PRINT_CUSTOM_PREFIX = "print_custom:"  # one kv row per saved custom timetable: f"{PRINT_CUSTOM_PREFIX}{token}" — also scoped, by prefix
 
@@ -90,6 +95,38 @@ class Db:
                 con.execute("delete from kv where k=?", (old,))
         if con.execute("select 1 from kv where k='current_timetable'").fetchone() is None:
             con.execute("insert into kv values ('current_timetable', ?)", (json.dumps(DEFAULT_TIMETABLE),))
+        # Fold every browser session's chat rows into the timetable's one thread (see THREAD). A
+        # steady-state boot already has every row under THREAD, so check before scanning either
+        # table for something to write.
+        if (con.execute("select 1 from messages where session_id!=? limit 1", (THREAD,)).fetchone()
+                or con.execute("select 1 from uploads where session_id!=? limit 1", (THREAD,)).fetchone()):
+            for table in ("messages", "uploads"):
+                con.execute(f"update {table} set session_id=? where session_id!=?", (THREAD, THREAD))
+            # The fold can land two old sessions' uploads of the same name under one thread; keep only
+            # the newest (highest id) per (timetable_id, name) and drop the rest. Their files are not
+            # unlinked here — _migrate has no caller to hand the paths back to for cleanup, and a
+            # leftover upload file is harmless (clear_uploads only ever removes rows it knows about).
+            con.execute("""
+                delete from uploads
+                where session_id=? and id not in (
+                    select max(id) from uploads where session_id=? group by timetable_id, name
+                )
+            """, (THREAD, THREAD))
+        for row in con.execute("select k, v from kv where k like 'pending:%'").fetchall():
+            try:
+                rec = json.loads(row["v"])
+                if not isinstance(rec, dict):
+                    continue
+                cards = {k: v for k, v in (rec.get("cards") or {}).items() if k == THREAD}
+                runs = {k: v for k, v in (rec.get("runs") or {}).items() if k == THREAD}
+                new = {"cards": cards, "runs": runs} if cards else None
+                if new != rec:
+                    if new is None:
+                        con.execute("delete from kv where k=?", (row["k"],))
+                    else:
+                        con.execute("update kv set v=? where k=?", (json.dumps(new), row["k"]))
+            except (ValueError, AttributeError, TypeError):
+                continue
 
     def timetables(self) -> list[dict]:
         with self._con() as con:
@@ -291,7 +328,7 @@ class Db:
         return [dict(r) for r in rows]
 
     def remove_upload_by_name(self, session_id: str, name: str) -> list[str]:
-        """Drop every upload of this session with that filename; returns the stored paths so the caller can unlink them."""
+        """Drop every upload of the timetable's thread with that filename; returns the stored paths so the caller can unlink them."""
         with self._con() as con:
             rows = con.execute("select path from uploads where session_id=? and name=? and timetable_id=?", (session_id, name, self._tid())).fetchall()
             con.execute("delete from uploads where session_id=? and name=? and timetable_id=?", (session_id, name, self._tid()))

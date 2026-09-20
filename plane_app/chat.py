@@ -435,16 +435,39 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
 
 
 def history_for_provider(db: Db, session_id: str) -> list[dict]:
-    out = []
-    for m in db.messages(session_id):
+    """The stored transcript, shaped for the provider — and repaired if it is damaged.
+
+    Two devices sharing one thread (see db.THREAD) can interleave a message between an assistant's
+    tool_use and its tool_result (one posts while the other's tool round is still running); replaying
+    that verbatim gets every provider's "tool_use must be followed by its tool_result" 400 forever,
+    since the transcript never heals itself. So an assistant entry keeps only the tool_calls answered
+    by the tool rows that directly follow it in the stored order (its text is kept either way). A tool
+    row is kept only while its call_id is still "open" — one of the kept tool_calls of the most
+    recently appended assistant entry that has not yet been matched by an earlier tool row in this
+    same run (so a duplicate result is dropped too) — and a user entry closes every open call, since
+    nothing after it can answer a tool_use from before it. Anything that fails this is dropped rather
+    than replayed broken."""
+    rows = db.messages(session_id)
+    out: list[dict] = []
+    open_calls: set[str] = set()
+    for i, m in enumerate(rows):
         c = m["content"]
         if m["role"] == "assistant":
-            out.append({"role": "assistant", "text": c.get("text", ""),
-                        "tool_calls": [ToolCall(t["id"], t["name"], t["args"]) for t in c.get("tool_calls", [])]})
+            j = i + 1
+            answered = set()
+            while j < len(rows) and rows[j]["role"] == "tool":
+                answered.add(rows[j]["content"]["call_id"])
+                j += 1
+            calls = [ToolCall(t["id"], t["name"], t["args"]) for t in c.get("tool_calls", []) if t["id"] in answered]
+            out.append({"role": "assistant", "text": c.get("text", ""), "tool_calls": calls})
+            open_calls = {t.id for t in calls}
         elif m["role"] == "tool":
-            out.append({"role": "tool", "call_id": c["call_id"], "name": c["name"], "result": c["result"]})
+            if c["call_id"] in open_calls:
+                out.append({"role": "tool", "call_id": c["call_id"], "name": c["name"], "result": c["result"]})
+                open_calls.discard(c["call_id"])
         else:
             out.append({"role": "user", "text": c.get("text", "")})
+            open_calls = set()
     return out
 
 

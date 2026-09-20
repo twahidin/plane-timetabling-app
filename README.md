@@ -47,7 +47,9 @@ bands derived from the lessons, so student-side clashes are checked as well as t
 
 The assistant in the chat panel proposes individual moves, swaps, and bookings and applies them
 only after you say yes; **Undo** reverts the last change. Set the term calendar in Settings for
-dated bookings so the assistant can reason about term breaks and holidays.
+dated bookings so the assistant can reason about term breaks and holidays. The conversation, the
+documents you dropped and any option waiting for your yes belong to the timetable, not to your
+browser: log in from another device and carry on where you left off.
 
 ## Printing
 

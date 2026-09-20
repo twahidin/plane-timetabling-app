@@ -20,7 +20,7 @@ from . import changes
 from .bookings import draft_for_engine, live_for_engine     # re-exported: every route/tool that sends an organisation to the engine uses these
 from .chat import run_chat
 from .config import MAX_UPLOAD, Config
-from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, Db, mask_settings
+from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, THREAD, Db, mask_settings
 from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
@@ -37,6 +37,7 @@ from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
 LOGIN_MAX_FAILURES, LOGIN_WINDOW = 10, 15 * 60      # failed logins per client ip before a 429, seconds
+CHAT_LOCK_TIMEOUT = 60    # seconds a /api/chat request waits for another device's turn on this timetable
 
 
 def _unlink_quietly(path: str) -> None:
@@ -58,6 +59,10 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.state.engine_factory = engine_factory or _default_engine_factory(config)
     app.state.provider_factory = provider_factory or make_provider
     app.state.chat_times: dict[str, deque] = defaultdict(deque)
+    # One lock per timetable's chat thread: two devices posting to /api/chat for the same timetable
+    # at once must not interleave — a tool_use with its tool_result split across two concurrent
+    # run_chat calls would otherwise land with a user message wedged between them (see history_for_provider).
+    app.state.chat_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
     app.state.login_failures: dict[str, deque] = defaultdict(deque)     # client ip -> failed-attempt times
     app.state.solve_locks: dict[str, threading.Lock] = {}                # timetable id -> lock around start and promotion
     solve_locks_guard = threading.Lock()
@@ -208,11 +213,11 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             except IntakeError as e:
                 raise HTTPException(400, f"The timetable export could not be turned into a draft: {e}")
             for name, data, ex in pending:
-                for old_path in db.remove_upload_by_name(sid, name):
+                for old_path in db.remove_upload_by_name(THREAD, name):
                     _unlink_quietly(old_path)
                 path = config.data_dir / "uploads" / f"{auth.new_session_id()}.pdf"
                 path.write_bytes(data)
-                db.add_upload(sid, name, str(path), "asc" if ex is None else ex.kind, "" if ex is None else ex.text)
+                db.add_upload(THREAD, name, str(path), "asc" if ex is None else ex.kind, "" if ex is None else ex.text)
             others = [name for name, _, ex in pending if ex is not None]
             if others:
                 notes.append({"section": "documents", "source": ", ".join(others),
@@ -223,14 +228,14 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                     "events": plan_events}
         warnings = []
         for name, data, ex in pending:
-            for old_path in db.remove_upload_by_name(sid, name):     # re-dropping a file replaces it
+            for old_path in db.remove_upload_by_name(THREAD, name):     # re-dropping a file replaces it
                 _unlink_quietly(old_path)
             path = config.data_dir / "uploads" / f"{auth.new_session_id()}.{ex.kind}"
             path.write_bytes(data)
-            db.add_upload(sid, name, str(path), ex.kind, ex.text)
+            db.add_upload(THREAD, name, str(path), ex.kind, ex.text)
             if ex.warning:
                 warnings.append(f"{name}: {ex.warning}")
-        texts = [(u["name"], u["text"]) for u in db.uploads(sid)]
+        texts = [(u["name"], u["text"]) for u in db.uploads(THREAD)]
         try:
             org, notes = extract_organisation(provider(), db.get_settings(), texts)
         except (IntakeError, ProviderError) as e:
@@ -240,7 +245,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.post("/api/uploads/clear")
     def clear_uploads(sid: str = Depends(auth.require_session)):
-        for path in db.clear_uploads(sid):
+        for path in db.clear_uploads(THREAD):
             _unlink_quietly(path)
         return {"ok": True}
 
@@ -498,16 +503,16 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     @app.post("/api/proposals/apply")
     def apply_proposal(body: dict, sid: str = Depends(auth.require_session)):
         pid = str((body or {}).get("id", ""))
-        if not any(p["id"] == pid for p in proposals.pending(db, sid)):
+        if not any(p["id"] == pid for p in proposals.pending(db, THREAD)):
             raise HTTPException(404, "nothing pending with that id")
         try:
-            return proposals.apply(db, engine(), pid, sid)
+            return proposals.apply(db, engine(), pid, THREAD)
         except EngineError as e:
             raise _engine_error(e)
 
     @app.post("/api/proposals/dismiss")
     def dismiss_proposal(sid: str = Depends(auth.require_session)):
-        proposals.clear_pending(db, sid)
+        proposals.clear_pending(db, THREAD)
         return {"ok": True}
 
     @app.get("/api/changes")
@@ -538,19 +543,24 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         text = (body.get("text") or "").strip()
         if not text:
             raise HTTPException(400, "empty message")
+        lock = app.state.chat_locks[db.current_timetable()]
+        if not lock.acquire(timeout=CHAT_LOCK_TIMEOUT):
+            raise HTTPException(409, "Another message on this timetable is still being answered; try again in a moment.")
         try:
-            res = run_chat(db, sid, provider(), engine(), text)
+            res = run_chat(db, THREAD, provider(), engine(), text)
         except ProviderError as e:
             raise HTTPException(400, str(e))
+        finally:
+            lock.release()
         return {"text": res.text, "events": res.events}
 
     @app.get("/api/messages")
     def messages(sid: str = Depends(auth.require_session)):
-        return db.messages(sid)
+        return db.messages(THREAD)
 
     @app.post("/api/messages/clear")
     def clear(sid: str = Depends(auth.require_session)):
-        db.clear_messages(sid)
+        db.clear_messages(THREAD)
         return {"ok": True}
 
     @app.get("/api/usage")
