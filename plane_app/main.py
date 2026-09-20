@@ -313,6 +313,9 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             raise HTTPException(400, str(e))
         for path in paths:
             _unlink_quietly(path)
+        with solve_locks_guard:                       # the deleted timetable's locks are never needed again
+            app.state.solve_locks.pop(tid, None)
+            app.state.chat_locks.pop(tid, None)
         return _timetables_payload()
 
     @app.get("/api/draft")
