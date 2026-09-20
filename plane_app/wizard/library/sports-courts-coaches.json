@@ -1,0 +1,43 @@
+{
+  "id": "sports-courts-coaches",
+  "domain": "sports",
+  "name": "Courts, coaches and squads",
+  "summary": "Squads training on a limited number of courts or pitches in the hours after school and work, each session led by a coach.",
+  "when_to_choose": "Choose this if you run regular training for several squads, the courts and the coaches are both in short supply, and almost everything has to happen in the same few evening hours.",
+  "vocabulary": {"person": "coach", "group": "squad", "requirement": "session", "venue": "court"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the training cycle", "help": "Seven for a pattern that repeats every week, including the weekend. Fourteen if squads alternate weeks on the main court.", "kind": "int", "default": 7, "min": 1, "max": 14},
+    {"key": "courts", "label": "Courts or pitches", "help": "How many playing surfaces can be in use at the same time.", "kind": "int", "default": 4, "min": 1, "max": 20},
+    {"key": "session_minutes", "label": "Length of a training session", "help": "In minutes. Sixty suits younger squads; ninety or more is usual for senior training.", "kind": "choice", "options": [45, 60, 90, 120], "default": 60},
+    {"key": "squads", "label": "Squads to schedule", "help": "How many separate groups train. Count each age group and each ability level once.", "kind": "int", "default": 8, "min": 1, "max": 30}
+  ],
+  "questions": [
+    "How many squads train with you, and how often does each one train?",
+    "How many courts or pitches do you have, and are any of them only available at certain times?",
+    "What hours can you use - when does the first squad arrive and when do you have to be out?",
+    "How many coaches are there, and can any squad be taken by more than one of them?",
+    "Are there squads that must not train at the same time, because players are in both?"
+  ],
+  "tradeoffs": [
+    "Giving the senior squad the prime evening hour every week is what the squad expects, but those are the only hours the junior squads' parents can manage, and the juniors are the ones who leave when they cannot get a court.",
+    "Longer sessions give real coaching time rather than a warm-up and a scramble, but each court then fits two squads an evening instead of three, and something has to move to a morning or a weekend.",
+    "Putting two squads on one court together doubles what the space carries and works well for fitness work, but it halves the attention each player gets from a coach."
+  ],
+  "time": {"slot_minutes": 30, "day_start": "15:00", "slots_per_day": 12, "labels": "day-hour", "days_per_week": 7},
+  "rules": {"max_load_slots": 8, "max_run_slots": 4, "mandatory_rest": []},
+  "sheets": "generic",
+  "sample": {
+    "units": 4,
+    "staff": 6,
+    "duties": [
+      {"name": "Squad training", "per_cycle": 2, "length_slots": 2, "min_staff": 1, "venue_kind": "court"},
+      {"name": "Skills clinic", "per_cycle": 1, "length_slots": 2, "min_staff": 2, "venue_kind": "hall"},
+      {"name": "Match practice", "per_cycle": 1, "length_slots": 3, "min_staff": 1, "venue_kind": "court"}
+    ],
+    "venues": [
+      {"name": "Court 1", "kind": "court", "capacity": 20},
+      {"name": "Court 2", "kind": "court", "capacity": 20},
+      {"name": "Hall 1", "kind": "hall", "capacity": 40}
+    ]
+  }
+}

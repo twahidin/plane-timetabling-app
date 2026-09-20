@@ -36,11 +36,17 @@ def _decode_csv(data: bytes) -> str:
 
 
 def import_workbook(db, filename: str, data: bytes, sizes_texts: tuple[str, ...] = ()) -> tuple[dict, list[Issue], str]:
-    """Import a deployment workbook into the stored plan (merging with what is there), apply any
-    sizes CSVs on top, store the result and return (plan, issues, note). Shared between the
-    dedicated upload route and the general `/api/upload` handler's workbook routing."""
+    """Import a deployment or generic duties workbook into the stored plan (merging with what is
+    there), apply any sizes CSVs on top, store the result and return (plan, issues, note). Shared
+    between the dedicated upload route and the general `/api/upload` handler's workbook routing.
+    A generic workbook is detected by its sheet names (`is_generic_workbook`); everything else
+    that reaches here is read as a staff-deployment workbook, same as before the start wizard."""
     org = db.get_org("live")
-    plan, parse_issues = IMP.read_workbook(data, org, _current_plan(db), filename)
+    if IMP.is_generic_workbook(data):
+        plan, parse_issues = IMP.read_generic_workbook(data, org, _current_plan(db), filename,
+                                                       db.get_settings())
+    else:
+        plan, parse_issues = IMP.read_workbook(data, org, _current_plan(db), filename)
     sizes: dict[str, int] = {}
     for text in sizes_texts:
         sizes.update(IMP.read_sizes_csv(text))
@@ -85,8 +91,8 @@ def make_router(db) -> APIRouter:
         data = await file.read()
         if len(data) > MAX_UPLOAD:
             raise HTTPException(400, f"{file.filename or 'file'} is over 20 MB")
-        if not IMP.is_deployment_workbook(data):
-            raise HTTPException(400, f"{file.filename or 'file'} is not a staff-deployment workbook")
+        if not (IMP.is_deployment_workbook(data) or IMP.is_generic_workbook(data)):
+            raise HTTPException(400, f"{file.filename or 'file'} is not a staff-deployment or duties workbook")
         sizes_texts = []
         for s in sizes:
             sdata = await s.read()

@@ -6,10 +6,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .. import intake
+from . import model as M
 
 # Issue lists are read by people, in a toast, a chat reply or a 409 body: past ten they stop being
 # a list of things to fix and become a wall (spec §6 reports "the first ten").
 ISSUE_LIMIT = 10
+
+
+def _plain(number: float) -> str:
+    """A capacity a person reads: 168, not 168.0 — a half-time load factor still shows its half."""
+    return str(int(number)) if float(number).is_integer() else f"{number:g}"
+
+
+def _load_unit(plan: dict, settings: dict) -> str:
+    """The word a load is counted in, for a person to read. A slot an hour long is an hour; otherwise
+    it is whatever the plan calls the thing that fills one — the start wizard sets that vocabulary per
+    template — and "periods" for a plan that has no word of its own."""
+    if int(((settings or {}).get("time") or {}).get("slot_minutes") or 0) == 60:
+        return "hours"
+    word = str((plan.get("vocabulary") or {}).get("requirement") or "").strip()
+    return f"{word}s" if word and word != M.DEFAULT_VOCABULARY["requirement"] else "periods"
 
 
 @dataclass
@@ -93,19 +109,22 @@ def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
         for t in r["teachers"]:
             assigned[t] = assigned.get(t, 0) + r["periods"]
 
+    # Issues are read by the person who filled the workbook in, who wrote names into it, not ids.
+    unit = _load_unit(plan, settings)
     for s in plan["staff"]:
+        who = str(s.get("name") or "").strip() or s["id"]
         # a staff id becomes a person id of the organisation unchanged, so one written by hand past
         # the organisation's 31 characters must read here rather than fail inside generation
         if not intake.ID_PATTERN.match(s["id"]):
             issues.append(Issue("block", s["id"],
-                                 f"{s['id']}: a staff id must be 1-31 lowercase letters, digits or hyphens "
-                                 f"(it becomes a person id of the timetable)"))
+                                 f"{who}: the staff id {s['id']!r} must be 1-31 lowercase letters, digits "
+                                 f"or hyphens (it becomes a person id of the timetable)"))
         capacity = s["load_factor"] * max_load * days
         load = assigned.get(s["id"], 0)
         if load > capacity:
             issues.append(Issue("warn", s["id"],
-                                 f"{s['id']}: assigned load {load} periods exceeds capacity {capacity}"))
+                                 f"{who}: assigned load {load} {unit} exceeds capacity {_plain(capacity)}"))
         if not s.get("avail"):
-            issues.append(Issue("warn", s["id"], f"{s['id']}: no availability window"))
+            issues.append(Issue("warn", s["id"], f"{who}: no availability window"))
 
     return issues

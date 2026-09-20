@@ -1,0 +1,40 @@
+{
+  "id": "health-ward-rota",
+  "domain": "health",
+  "name": "Ward rota",
+  "summary": "Nurses cover a ward around the clock in fixed shifts, with a minimum number on duty at every hour and a guaranteed rest between shifts.",
+  "when_to_choose": "Choose this if you staff one or more wards twenty-four hours a day, the shifts are the same length every day, and the hard part is making sure enough people are on at night without anyone working back to back.",
+  "vocabulary": {"person": "nurse", "group": "ward", "requirement": "shift", "venue": "ward"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the rota cycle", "help": "How long the pattern runs before it repeats. Fourteen days is the usual choice; a longer cycle gives fairer weekends but is harder to read.", "kind": "int", "default": 14, "min": 7, "max": 28},
+    {"key": "shift_hours", "label": "Shift length", "help": "Twelve hours means two shifts a day and one handover. Eight means three shifts a day and three handovers.", "kind": "choice", "options": [8, 12], "default": 12},
+    {"key": "min_staff", "label": "Minimum nurses on each shift", "help": "The number that must be on the ward at all times during a shift, including at night.", "kind": "int", "default": 3, "min": 1, "max": 20},
+    {"key": "rest_hours", "label": "Rest between shifts", "help": "In hours. The gap a nurse must have after finishing one shift before starting the next.", "kind": "int", "default": 11, "min": 8, "max": 24}
+  ],
+  "questions": [
+    "How many wards are you rostering, and how many nurses belong to each?",
+    "Do you run two twelve-hour shifts a day, or three shorter ones?",
+    "How many nurses must be on the ward at the quietest time of the night?",
+    "How much rest do you give between the end of one shift and the start of the next?",
+    "Are there nurses who only work days, only nights, or only certain days of the week?"
+  ],
+  "tradeoffs": [
+    "Twelve-hour shifts mean one handover a day and more whole days off in a row, but the days are long and a night is hard to recover from; eight-hour shifts spread the load and suit part-time staff, at the cost of needing more people on the rota and handing over three times a day.",
+    "A longer rest between shifts protects staff but makes a short cycle difficult to fill: with eleven hours' rest and twelve-hour shifts, nobody can work an evening and the next morning, so the cycle needs enough people to cover both.",
+    "Setting the night minimum equal to the day minimum is safest but is usually what makes a rota impossible; most wards run one fewer at night and accept that a busy night has less slack."
+  ],
+  "time": {"slot_minutes": 60, "day_start": "07:00", "slots_per_day": 24, "labels": "day-hour", "days_per_week": 7},
+  "rules": {"max_load_slots": 12, "max_run_slots": 12, "mandatory_rest": []},
+  "sheets": "generic",
+  "sample": {
+    "units": 1,
+    "staff": 8,
+    "duties": [
+      {"name": "Day shift", "per_cycle": 14, "length_slots": 12, "min_staff": 3, "venue_kind": "ward"},
+      {"name": "Night shift", "per_cycle": 14, "length_slots": 12, "min_staff": 2, "venue_kind": "ward"}
+    ],
+    "venues": [
+      {"name": "Ward 1", "kind": "ward", "capacity": 30}
+    ]
+  }
+}

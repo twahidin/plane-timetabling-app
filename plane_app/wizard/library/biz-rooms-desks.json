@@ -1,0 +1,46 @@
+{
+  "id": "biz-rooms-desks",
+  "domain": "business",
+  "name": "Meeting rooms and desks",
+  "summary": "Meeting rooms and desk space booked out across the working day, so recurring team meetings and office days have a place to sit.",
+  "when_to_choose": "Choose this if the thing you are scheduling is space rather than people: regular meetings that need a room of the right size, and teams who come in on set days and need desks when they do.",
+  "vocabulary": {"person": "colleague", "group": "team", "requirement": "booking", "venue": "room"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the booking cycle", "help": "Five for a pattern that repeats every week. Ten if teams alternate their office days fortnightly.", "kind": "int", "default": 5, "min": 1, "max": 14},
+    {"key": "open_from", "label": "Building opens", "help": "The earliest time anything can be booked.", "kind": "choice", "options": ["06:00", "07:00", "08:00", "09:00"], "default": "08:00"},
+    {"key": "open_to", "label": "Building closes", "help": "The latest time a booking may finish.", "kind": "choice", "options": ["16:00", "17:00", "18:00", "19:00", "20:00"], "default": "18:00"},
+    {"key": "slot_minutes", "label": "Size of a booking block", "help": "How finely the day is divided. Thirty minutes suits most offices; fifteen gives finer control but a much busier day to read.", "kind": "choice", "options": [15, 30, 60], "default": 30},
+    {"key": "rooms", "label": "Meeting rooms", "help": "How many bookable meeting rooms the building has.", "kind": "int", "default": 6, "min": 1, "max": 40},
+    {"key": "desks", "label": "Desks", "help": "How many desks are available to book. Set this to zero if you only schedule meeting rooms.", "kind": "int", "default": 20, "min": 0, "max": 200}
+  ],
+  "questions": [
+    "How many teams are booking space, and roughly how big is each?",
+    "What are the building's opening hours?",
+    "How many meeting rooms are there, and how many people does each hold?",
+    "Which meetings happen every week without fail, and how long are they?",
+    "Do teams have set office days, or does everyone choose their own?"
+  ],
+  "tradeoffs": [
+    "Fifteen-minute blocks let a half-hour meeting start at twenty past, which fills the rooms more tightly; they also make the day four times longer to read down and leave gaps too short for anyone to use.",
+    "Putting every team's stand-up in the first half-hour of the day is what people expect, but it means the rooms are full at nine and empty at eleven; staggering them by team makes far better use of the same building.",
+    "Fixed office days per team guarantee that colleagues who need each other are in on the same day, but they concentrate the demand for desks into two or three days instead of spreading it across five."
+  ],
+  "time": {"slot_minutes": 30, "day_start": "08:00", "slots_per_day": 20, "labels": "day-hour", "days_per_week": 5},
+  "rules": {"max_load_slots": 8, "max_run_slots": 4, "mandatory_rest": []},
+  "sheets": "generic",
+  "sample": {
+    "units": 3,
+    "staff": 8,
+    "duties": [
+      {"name": "Team stand-up", "per_cycle": 5, "length_slots": 1, "min_staff": 4, "venue_kind": "meeting-room"},
+      {"name": "Team planning", "per_cycle": 1, "length_slots": 4, "min_staff": 4, "venue_kind": "meeting-room"},
+      {"name": "Client review", "per_cycle": 1, "length_slots": 2, "min_staff": 2, "venue_kind": "meeting-room"},
+      {"name": "Desk block", "per_cycle": 2, "length_slots": 4, "min_staff": 2, "venue_kind": "desk"}
+    ],
+    "venues": [
+      {"name": "Meeting Room 1", "kind": "meeting-room", "capacity": 8},
+      {"name": "Meeting Room 2", "kind": "meeting-room", "capacity": 12},
+      {"name": "Desk Zone 1", "kind": "desk", "capacity": 20}
+    ]
+  }
+}

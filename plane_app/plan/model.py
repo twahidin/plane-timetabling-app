@@ -33,6 +33,18 @@ def plan_slug(text: str) -> str:
 
 _LESSON_LENGTHS = ("1", "2", "3", "4")
 
+# A plan lesson is not capped at a quadruple period any more (a 12-hour ward shift is one 12-slot
+# lesson): any positive integer count of slots up to a working day and a half is accepted. The
+# four defaults above still always appear in `lessons` (padded to zero) so every requirement built
+# from a deployment workbook keeps its familiar shape; a duty's own length is simply an extra key.
+LESSON_LENGTH_MAX = 48
+
+# The plan's own vocabulary: the words the Plan tab, issues and printouts use for a person, a
+# group, a requirement and a venue. Education's are the default; the start wizard sets its own
+# for every other domain (spec docs/superpowers/specs/2026-09-20-start-wizard-design.md §5), and a
+# re-import must not reset a vocabulary the user (or the wizard) already chose (`merge_import`).
+DEFAULT_VOCABULARY = {"person": "teacher", "group": "class", "requirement": "lesson", "venue": "room"}
+
 
 class PlanError(ValueError):
     pass
@@ -47,6 +59,7 @@ def empty_plan() -> dict:
         "requirements": [],
         "bands": [],
         "rules": {"edge_subjects": [], "no_double_across_rest": True, "pinned": []},
+        "vocabulary": dict(DEFAULT_VOCABULARY),
         "source": None,
     }
 
@@ -125,8 +138,9 @@ def _normalise_lessons(raw) -> dict:
     lessons = {k: 0 for k in _LESSON_LENGTHS}
     for k, v in raw.items():
         key = str(k)
-        if key not in lessons:
-            raise PlanError(f"lessons: unknown lesson length {key!r}, must be one of {_LESSON_LENGTHS}")
+        if not key.isdigit() or not (1 <= int(key) <= LESSON_LENGTH_MAX):
+            raise PlanError(f"lessons: unknown lesson length {key!r}, must be a positive integer "
+                             f"up to {LESSON_LENGTH_MAX}")
         try:
             count = int(v)
         except (TypeError, ValueError):
@@ -168,6 +182,16 @@ def _normalise_band(item: dict) -> dict:
     return {"id": b_id, "division": item.get("division"), "options": _as_list(item.get("options"), "band options")}
 
 
+def _normalise_vocabulary(raw) -> dict:
+    raw = _as_dict(raw, "vocabulary")
+    out = dict(DEFAULT_VOCABULARY)
+    for key in DEFAULT_VOCABULARY:
+        value = raw.get(key)
+        if value:
+            out[key] = str(value)
+    return out
+
+
 def _normalise_rules(raw) -> dict:
     raw = _as_dict(raw, "rules")
     return {
@@ -187,6 +211,7 @@ def normalise(plan: dict) -> dict:
         "requirements": [_normalise_requirement(r) for r in _as_list(plan.get("requirements"), "requirements")],
         "bands": [_normalise_band(b) for b in _as_list(plan.get("bands"), "bands")],
         "rules": _normalise_rules(plan.get("rules")),
+        "vocabulary": _normalise_vocabulary(plan.get("vocabulary")),
         "source": plan.get("source"),
     }
     out["staff"].sort(key=lambda x: x["id"])
@@ -267,6 +292,12 @@ def _rules_are_default(rules) -> bool:
     return r["edge_subjects"] == [] and r["pinned"] == [] and r["no_double_across_rest"] is True
 
 
+def _vocabulary_is_default(vocabulary) -> bool:
+    """Neither importer sets a vocabulary, so a re-import must not reset the one the wizard (or
+    the user, via a patch) already chose for this plan."""
+    return _normalise_vocabulary(vocabulary) == DEFAULT_VOCABULARY
+
+
 def merge_import(existing: dict, imported: dict) -> dict:
     existing_n = normalise(existing)
     imported = _as_dict(imported, "imported plan")
@@ -276,6 +307,9 @@ def merge_import(existing: dict, imported: dict) -> dict:
         out[key] = imported[key] if key in imported and imported[key] is not None else existing_n[key]
     imported_rules = imported.get("rules")
     out["rules"] = existing_n["rules"] if imported_rules is None or _rules_are_default(imported_rules) else imported_rules
+    imported_vocabulary = imported.get("vocabulary")
+    out["vocabulary"] = (existing_n["vocabulary"] if imported_vocabulary is None or _vocabulary_is_default(imported_vocabulary)
+                          else imported_vocabulary)
     out["version"] = imported.get("version", existing_n["version"])
     out["source"] = imported.get("source", existing_n["source"])
 

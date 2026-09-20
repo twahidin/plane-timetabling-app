@@ -1,0 +1,42 @@
+{
+  "id": "biz-service-desk",
+  "domain": "business",
+  "name": "Service desk rota",
+  "summary": "A rota that keeps a support desk covered from opening to closing, with a minimum number of people answering at any moment.",
+  "when_to_choose": "Choose this if you have to keep a desk, a phone line or a support queue staffed across long opening hours, and the question is who covers which stretch rather than what happens in each hour.",
+  "vocabulary": {"person": "agent", "group": "desk", "requirement": "shift", "venue": "desk"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the rota cycle", "help": "Seven for a pattern that repeats every week, including the weekend. Fourteen if you alternate who takes the weekend.", "kind": "int", "default": 7, "min": 1, "max": 28},
+    {"key": "open_from", "label": "Desk opens", "help": "The time cover has to start.", "kind": "choice", "options": ["06:00", "07:00", "08:00", "09:00"], "default": "08:00"},
+    {"key": "open_to", "label": "Desk closes", "help": "The time cover may end. Choose the latest time you promise an answer, not the time the last person leaves.", "kind": "choice", "options": ["17:00", "18:00", "20:00", "22:00"], "default": "20:00"},
+    {"key": "min_on_desk", "label": "Minimum agents on the desk", "help": "How many people must be answering at any moment during opening hours, including the quietest hour.", "kind": "int", "default": 2, "min": 1, "max": 20}
+  ],
+  "questions": [
+    "What hours does the desk have to be covered, and does that include weekends?",
+    "How many agents must be answering at the busiest time, and at the quietest?",
+    "How long is a normal shift, and does anyone work only mornings or only evenings?",
+    "Is there work away from the desk - escalations, follow-ups - that also needs time set aside?",
+    "How many agents are on the team in total?"
+  ],
+  "tradeoffs": [
+    "Two long shifts with one changeover keep the handover simple and give agents whole free days, but they leave the middle of the day, when the queue is busiest, no better staffed than the quiet ends.",
+    "Overlapping shifts put extra people on at the busy hours and cut waiting times, at the cost of a rota that is harder to explain and a start time that differs for every agent.",
+    "Setting aside time away from the desk for escalations means the queue is one person lighter while it happens; skipping it means the escalations get done during calls, badly."
+  ],
+  "time": {"slot_minutes": 60, "day_start": "08:00", "slots_per_day": 12, "labels": "day-hour", "days_per_week": 7},
+  "rules": {"max_load_slots": 8, "max_run_slots": 6, "mandatory_rest": []},
+  "sheets": "generic",
+  "sample": {
+    "units": 1,
+    "staff": 6,
+    "duties": [
+      {"name": "Early shift", "per_cycle": 7, "length_slots": 6, "min_staff": 2, "venue_kind": "desk"},
+      {"name": "Late shift", "per_cycle": 7, "length_slots": 6, "min_staff": 2, "venue_kind": "desk"},
+      {"name": "Escalation cover", "per_cycle": 5, "length_slots": 4, "min_staff": 1, "venue_kind": "back-office"}
+    ],
+    "venues": [
+      {"name": "Service Desk 1", "kind": "desk", "capacity": 6},
+      {"name": "Back Office 1", "kind": "back-office", "capacity": 4}
+    ]
+  }
+}

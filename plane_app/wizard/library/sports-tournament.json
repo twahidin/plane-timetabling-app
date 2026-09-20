@@ -1,0 +1,42 @@
+{
+  "id": "sports-tournament",
+  "domain": "sports",
+  "name": "Tournament day",
+  "summary": "Teams playing through rounds on a handful of pitches in a single day, with officials to spread across the matches and a break in the middle.",
+  "when_to_choose": "Choose this if you are running a one-day competition rather than a weekly timetable: every team plays several matches, no team plays twice at once, and the day has to finish on time.",
+  "vocabulary": {"person": "official", "group": "team", "requirement": "match", "venue": "pitch"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days the tournament runs", "help": "One for a single day. Two or three for a weekend competition.", "kind": "int", "default": 1, "min": 1, "max": 3},
+    {"key": "teams", "label": "Teams entered", "help": "How many teams are playing in total, across all groups.", "kind": "int", "default": 8, "min": 2, "max": 32},
+    {"key": "rounds", "label": "Rounds to play", "help": "How many matches each team plays. Seven rounds lets eight teams each play everyone else once.", "kind": "int", "default": 7, "min": 1, "max": 15},
+    {"key": "venues", "label": "Pitches or courts", "help": "How many matches can be played at the same time.", "kind": "int", "default": 4, "min": 1, "max": 12}
+  ],
+  "questions": [
+    "How many teams are entered, and do they play everyone else or only their group?",
+    "How many pitches or courts can run at once?",
+    "How long is a match, including the changeover before the next one?",
+    "What time does the first match start and what time must the last one finish?",
+    "How many officials do you have, and does each match need more than one?"
+  ],
+  "tradeoffs": [
+    "More pitches finish the day sooner, but each one needs its own official, and a tournament usually runs out of officials before it runs out of grass.",
+    "Every team playing everyone else is the fairest result, but it grows fast: doubling the teams roughly quadruples the matches, and at some point the day is longer than the teams can play.",
+    "Back-to-back matches keep teams warm and the day short, but a team that plays three in a row is at a real disadvantage in the third; a guaranteed round off between matches costs an hour and is the single fairest thing you can do."
+  ],
+  "time": {"slot_minutes": 30, "day_start": "09:00", "slots_per_day": 16, "labels": "period", "days_per_week": 7},
+  "rules": {"max_load_slots": 10, "max_run_slots": 2, "mandatory_rest": [8]},
+  "sheets": "generic",
+  "sample": {
+    "units": 4,
+    "staff": 6,
+    "duties": [
+      {"name": "Group match", "per_cycle": 2, "length_slots": 2, "min_staff": 1, "venue_kind": "pitch"},
+      {"name": "Play-off match", "per_cycle": 1, "length_slots": 2, "min_staff": 2, "venue_kind": "pitch"}
+    ],
+    "venues": [
+      {"name": "Pitch 1", "kind": "pitch", "capacity": 30},
+      {"name": "Pitch 2", "kind": "pitch", "capacity": 30},
+      {"name": "Pitch 3", "kind": "pitch", "capacity": 30}
+    ]
+  }
+}

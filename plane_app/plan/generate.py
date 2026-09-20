@@ -14,8 +14,6 @@ from .. import intake
 from .issues import capped, has_blocks, plan_issues
 from .model import PlanError, plan_slug
 
-_LENGTHS = ("1", "2", "3", "4")
-
 _ORG_ID_MAX = 31          # intake.ID_PATTERN; plan ids may be longer (model.PLAN_ID_MAX)
 _ORG_ID_HEAD = 24         # 24 + "-" + 6 hex digits = 31
 
@@ -146,12 +144,15 @@ def _events(plan: dict, locations: list[dict], group_of_req: dict[str, str],
             warnings: list[str]) -> list[dict]:
     reqs = {r["id"]: r for r in plan["requirements"]}
     # the i-th lesson of length k of every option of a band starts together; an option with
-    # fewer lessons of that length simply has no partner at that i, so it is left unsynced
+    # fewer lessons of that length simply has no partner at that i, so it is left unsynced. A
+    # lesson length is not capped at a quadruple period (plan.model.LESSON_LENGTH_MAX), so the
+    # lengths compared here are whatever the options' own `lessons` dicts carry, not a fixed set.
     synced: dict[str, dict[str, int]] = {}
     for b in plan["bands"]:
         options = [reqs[o] for o in b["options"] if o in reqs]
         if len(options) > 1:
-            synced[b["id"]] = {k: min(o["lessons"][k] for o in options) for k in _LENGTHS}
+            lengths = {k for o in options for k in o["lessons"]}
+            synced[b["id"]] = {k: min(o["lessons"].get(k, 0) for o in options) for k in lengths}
     band_of_req = {o: b["id"] for b in plan["bands"] for o in b["options"] if b["id"] in synced}
 
     events = []
@@ -162,9 +163,9 @@ def _events(plan: dict, locations: list[dict], group_of_req: dict[str, str],
         eligible = _eligible_locs(r, locations, warnings)
         band = band_of_req.get(r["id"])
         members = list(r["teachers"]) + [group_of_req[r["id"]]]
-        for k in _LENGTHS:
-            for i in range(r["lessons"][k]):
-                sync = _fit_id(band, k, str(i)) if band and i < synced[band][k] else None
+        for k, count in r["lessons"].items():
+            for i in range(count):
+                sync = _fit_id(band, k, str(i)) if band and i < synced[band].get(k, 0) else None
                 events.append({"id": _fit_id(r["id"], k, str(i)), "name": name, "members": list(members),
                                "dur": int(k), "loc": None, "t0": None, "sync": sync,
                                "eligible_locs": list(eligible), "fixed": False, "double": int(k) >= 2})

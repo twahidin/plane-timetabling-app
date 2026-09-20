@@ -11,6 +11,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from . import calendar as cal_mod
+
 # The six soft rules and their default weights. A literal copy of plane_timetabling.model.DEFAULT_SOFT:
 # the app never imports the engine's scoring code (see tests/test_no_engine_import.py).
 RULES = ("spread", "stability", "compact", "even_days", "edge", "venue")
@@ -25,7 +27,9 @@ PRESETS = {
 MIN_TIME_LIMIT, MAX_TIME_LIMIT = 10, 900     # the engine clamps one solve to this range, seconds
 
 DEFAULT_SETTINGS = {
-    "time": {"slot_minutes": 40, "slots_per_day": 8, "start": "07:30",
+    # `days_per_week` is where the cycle's week turns over: it names the days ("Odd Mon", "Even Tue")
+    # and is what reads an Availability cell written as weekdays ("Mon-Wed") onto the right slots.
+    "time": {"slot_minutes": 40, "slots_per_day": 8, "start": "07:30", "days_per_week": 5,
              "labels": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"], "window": "day"},
     "rules": {"max_load": 6, "max_run": 4, "mandatory_rest": []},
     "solve": {"preset": "balanced", "time_limit": 300, "weights": dict(DEFAULT_SOFT)},
@@ -45,7 +49,7 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "wizard")  # get_value/set_value keys that are scoped
 CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHANGE_SNAP_PREFIX}{n}" — also scoped, by prefix
 PRINT_CUSTOM_PREFIX = "print_custom:"  # one kv row per saved custom timetable: f"{PRINT_CUSTOM_PREFIX}{token}" — also scoped, by prefix
 
@@ -130,8 +134,8 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}"))
+            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"wizard:{tid}"))
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
             con.execute("delete from timetables where id=?", (tid,))
@@ -181,6 +185,55 @@ class Db:
         per = {k: settings.get(k, DEFAULT_SETTINGS[k]) for k in PER_TIMETABLE_SETTINGS}
         self._set(f"tt:{self._tid()}", per)
         self._set("settings", settings)      # the global copy keeps time/rules/solve as defaults for new timetables
+
+    def _clean_solve(self, given: dict, current: dict) -> dict:
+        """Keep the solve group well-formed whatever the caller sent: a known preset, a time limit
+        within the engine's cap, and integer weights for the six rules (anything else falls back to
+        the stored value)."""
+        out = {}
+        preset = given.get("preset", current.get("preset", "balanced"))
+        out["preset"] = preset if preset in PRESETS or preset == "custom" else current.get("preset", "balanced")
+        try:
+            limit = int(given.get("time_limit", current.get("time_limit", 300)))
+        except (TypeError, ValueError):
+            limit = int(current.get("time_limit", 300))
+        out["time_limit"] = min(max(limit, MIN_TIME_LIMIT), MAX_TIME_LIMIT)
+        weights = given.get("weights")
+        base = dict(current.get("weights") or DEFAULT_SOFT)
+        if isinstance(weights, dict):
+            for r in RULES:
+                v = weights.get(r, base.get(r, DEFAULT_SOFT[r]))
+                base[r] = max(int(v), 0) if isinstance(v, (int, float)) and not isinstance(v, bool) else base.get(r, DEFAULT_SOFT[r])
+        out["weights"] = {r: base.get(r, DEFAULT_SOFT[r]) for r in RULES}
+        return out
+
+    def store_settings(self, given: dict) -> dict:
+        """Clean and merge a settings body the same way `PUT /api/settings` does, store it and return
+        the merged (unmasked) settings. A caller may send only some of the six groups (the wizard sends
+        just `time` and `rules`); every group it leaves out keeps its current value untouched. Shared
+        by the settings route and the start wizard, which must never disturb the solver, provider,
+        engine or calendar groups it did not ask to change."""
+        current = self.get_settings()
+        if not isinstance(given, dict):
+            given = {}
+        groups = {k: (dict(g) if isinstance(g := given.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine", "calendar")}
+        groups["solve"] = self._clean_solve(groups["solve"], current.get("solve", {}))
+        groups["calendar"] = cal_mod.clean(groups["calendar"], current.get("calendar", {}))
+        for group, field in (("provider", "api_key"), ("engine", "key")):
+            v = groups[group].get(field, "")
+            if not isinstance(v, str):
+                groups[group].pop(field, None)
+            elif v.startswith("***"):
+                groups[group][field] = current.get(group, {}).get(field, "")
+        # A provider key belongs to one provider: switching kind without a fresh key stores no key.
+        new_kind = groups["provider"].get("kind")
+        if isinstance(new_kind, str) and new_kind != current.get("provider", {}).get("kind"):
+            submitted = given.get("provider", {}).get("api_key", "") if isinstance(given.get("provider"), dict) else ""
+            if not isinstance(submitted, str) or not submitted or submitted.startswith("***"):
+                groups["provider"]["api_key"] = ""
+        merged = {k: {**current.get(k, {}), **groups[k]} for k in groups}
+        self.set_settings(merged)
+        return merged
 
     def _is_scoped(self, key: str) -> bool:
         return key in PER_TIMETABLE_VALUES or key.startswith(CHANGE_SNAP_PREFIX) or key.startswith(PRINT_CUSTOM_PREFIX)

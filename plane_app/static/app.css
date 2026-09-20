@@ -288,6 +288,18 @@
   table.grid td.saved { background: var(--good-soft); }
   table.grid td.failed { background: var(--bad-soft); }
 
+  .wizard { display: flex; flex-direction: column; gap: 10px; }
+  .wizard-decisions ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--ink-2); }
+  .wizard-candidates { display: flex; flex-direction: column; gap: 10px; }
+  .wizard-candidate { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 6px; }
+  .wizard-candidate h4 { margin: 0; font-size: 13px; }
+  .wizard-candidate p { font-size: 12.5px; color: var(--ink-2); margin: 0; }
+  .wizard-facts { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .wizard-candidate .btn { align-self: flex-start; }
+  .wizard-downloads { display: flex; flex-direction: column; gap: 8px; }
+  .wizard-download-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .wizard-note { font-size: 12.5px; color: var(--ink-2); margin: 0; }
+
   .chat { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .chat-log {
     display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;

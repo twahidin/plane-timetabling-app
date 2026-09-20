@@ -1,0 +1,43 @@
+{
+  "id": "health-clinic-sessions",
+  "domain": "health",
+  "name": "Clinic sessions",
+  "summary": "Consulting rooms booked out in half-day sessions, with clinicians who are only available for some of them.",
+  "when_to_choose": "Choose this if your day is divided into morning and afternoon clinics rather than shifts, the limit is how many rooms you have, and each clinician works a fixed number of sessions a week.",
+  "vocabulary": {"person": "clinician", "group": "clinic", "requirement": "session", "venue": "consulting room"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the clinic cycle", "help": "Five for a pattern that repeats every week. Ten if some clinics run only on alternate weeks.", "kind": "int", "default": 5, "min": 1, "max": 14},
+    {"key": "session_minutes", "label": "Length of one session", "help": "In minutes. A hundred and eighty is a standard half-day clinic; shorter sessions let you fit more into a day.", "kind": "choice", "options": [90, 120, 180, 240], "default": 180},
+    {"key": "rooms", "label": "Consulting rooms available", "help": "How many rooms can run a clinic at the same time. This is usually the real limit on how much you can book.", "kind": "int", "default": 4, "min": 1, "max": 20},
+    {"key": "sessions_per_day", "label": "Sessions in a day", "help": "Two means a morning and an afternoon clinic. Three means you also run an evening or an early list.", "kind": "int", "default": 2, "min": 1, "max": 4}
+  ],
+  "questions": [
+    "How many clinics do you run, and what is each one called?",
+    "How many consulting rooms can be in use at the same time?",
+    "How many sessions does each clinician work in a week?",
+    "Are there sessions that need a particular room - a procedure room, one with equipment in it?",
+    "Does anything have to happen on a fixed day, such as a weekly multidisciplinary meeting?"
+  ],
+  "tradeoffs": [
+    "Shorter sessions fit more clinics into the same rooms, but every extra changeover costs time and the room is never quite empty when the next list starts.",
+    "Letting a clinic use any free room fills the building more evenly, but a clinic that always sits in the same room keeps its equipment and its notes where the staff expect them.",
+    "Protecting a whole session a week for administration is what stops clinics overrunning into the evening; it also costs you a room and a clinician that the waiting list would happily have used."
+  ],
+  "time": {"slot_minutes": 60, "day_start": "08:00", "slots_per_day": 10, "labels": "day-hour", "days_per_week": 5},
+  "rules": {"max_load_slots": 8, "max_run_slots": 4, "mandatory_rest": [4]},
+  "sheets": "generic",
+  "sample": {
+    "units": 2,
+    "staff": 6,
+    "duties": [
+      {"name": "Morning clinic", "per_cycle": 5, "length_slots": 3, "min_staff": 1, "venue_kind": "consulting-room"},
+      {"name": "Afternoon clinic", "per_cycle": 5, "length_slots": 3, "min_staff": 1, "venue_kind": "consulting-room"},
+      {"name": "Procedure list", "per_cycle": 2, "length_slots": 3, "min_staff": 2, "venue_kind": "procedure-room"}
+    ],
+    "venues": [
+      {"name": "Room 1", "kind": "consulting-room", "capacity": 2},
+      {"name": "Room 2", "kind": "consulting-room", "capacity": 2},
+      {"name": "Procedure Room 1", "kind": "procedure-room", "capacity": 4}
+    ]
+  }
+}

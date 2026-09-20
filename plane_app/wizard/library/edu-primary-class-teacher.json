@@ -1,0 +1,43 @@
+{
+  "id": "edu-primary-class-teacher",
+  "domain": "education",
+  "name": "Primary school with class teachers",
+  "summary": "One teacher takes their class for most of the week, with a few specialists who move between classes for music, sport and art.",
+  "when_to_choose": "Choose this if each class has its own teacher who covers most subjects, and the timetable's real job is to fit the specialists and the shared spaces around them.",
+  "vocabulary": {"person": "teacher", "group": "class", "requirement": "subject", "venue": "room"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the timetable cycle", "help": "Five for a timetable that repeats every week. Ten if the specialists work to a two-week pattern.", "kind": "choice", "options": [5, 10], "default": 5},
+    {"key": "periods_per_day", "label": "Periods in a school day", "help": "Count the blocks the day is divided into, not the hours. Many primary schools work in six or seven.", "kind": "int", "default": 7, "min": 6, "max": 10},
+    {"key": "period_minutes", "label": "Length of one period", "help": "In minutes. Longer blocks suit younger classes; the specialists' lessons are usually one or two of these.", "kind": "int", "default": 45, "min": 30, "max": 60},
+    {"key": "recess_after", "label": "Main break comes after this many periods", "help": "The break everyone shares. Three means the break falls after the third period of the morning.", "kind": "int", "default": 3, "min": 1, "max": 9},
+    {"key": "specialist_subjects", "label": "Subjects taught by a specialist", "help": "How many subjects are taken by someone other than the class teacher - typically music, physical education and art.", "kind": "int", "default": 3, "min": 0, "max": 6}
+  ],
+  "questions": [
+    "How many classes are there in each year group?",
+    "Which subjects are taken by a specialist rather than the class teacher?",
+    "Do the specialists work every day, or only on certain days?",
+    "Which spaces are shared - a hall, a field, a music room - and how many classes can use them at once?",
+    "Do any classes need to be free at the same time, for assembly or shared reading?"
+  ],
+  "tradeoffs": [
+    "Giving each class teacher a long unbroken block for literacy and numeracy protects the morning, but it pushes every specialist lesson into the afternoon, where the hall and the field then run short.",
+    "A part-time specialist who works two days makes the rest of the week simpler but forces several classes to take the same subject on the same two days.",
+    "A two-week cycle lets a specialist see each class fortnightly rather than squeezing everyone into one week, at the cost of parents and children having to remember which week it is."
+  ],
+  "time": {"slot_minutes": 45, "day_start": "08:00", "slots_per_day": 7, "labels": "day-period", "days_per_week": 5},
+  "rules": {"max_load_slots": 6, "max_run_slots": 4, "mandatory_rest": [3]},
+  "sheets": "deployment",
+  "sample": {
+    "levels": 2,
+    "classes_per_level": 2,
+    "teachers": 6,
+    "subjects": [
+      {"name": "Literacy", "periods": 8, "lengths": {"1": 6, "2": 1}, "band": false},
+      {"name": "Numeracy", "periods": 7, "lengths": {"1": 5, "2": 1}, "band": false},
+      {"name": "Topic", "periods": 4, "lengths": {"1": 2, "2": 1}, "band": false},
+      {"name": "Music", "periods": 2, "lengths": {"1": 2}, "band": false},
+      {"name": "Physical Education", "periods": 2, "lengths": {"2": 1}, "band": false},
+      {"name": "Art", "periods": 2, "lengths": {"2": 1}, "band": false}
+    ]
+  }
+}

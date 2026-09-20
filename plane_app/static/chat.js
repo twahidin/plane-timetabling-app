@@ -118,7 +118,12 @@
         appendBubble('assistant', 'Dismissed.');
       } else if (ev.kind === 'undone') reload = true;
       else if (ev.kind === 'bookings_updated') loadBookings();
-      else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); }
+      else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
+      else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
+      else if (ev.kind === 'settings_updated') {
+        if (window.reloadModel) window.reloadModel().catch(() => {});
+        if (window.loadWizard) window.loadWizard().catch(() => {});
+      }
     });
     if (reload) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
   }
@@ -242,16 +247,9 @@
   ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (ev) => { ev.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'dragend'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('over')));
   drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.classList.remove('over'); upload(ev.dataTransfer && ev.dataTransfer.files); });
-  el('start-criteria').addEventListener('click', async () => {
-    const btn = el('start-criteria'); btn.disabled = true;
-    try {
-      const s = await api('/api/draft/new', { method: 'POST' });
-      showNotes([], [], [{ cls: 'good', text: `Empty draft started (${s.locations} location: rest). Describe the organisation in the chat: people and their hours, venues and capacities, the lessons or shifts and who attends, and any rules. The assistant fills the tables; check them, then Build.` }]);
-      await loadDraft();
-      const input = el('chat-text'); input.placeholder = 'Describe the people, venues, lessons and rules…'; input.focus();
-    } catch (e) { showNotes([], [], [{ cls: 'error', text: e.message }]); }
-    finally { btn.disabled = false; }
-  });
+  // The old empty-draft button is gone; that path is still reachable through the chat's
+  // new_draft tool ("start an empty draft"). Start wizard just asks the assistant to begin.
+  el('start-wizard').addEventListener('click', () => { window.sendChat("I'd like to set up a new timetable"); });
 
   window.reloadIntake = async () => { el('notes').textContent = ''; stopFollowing(); await loadMessages(); await loadDraft(); await resumeSolve(); };
 

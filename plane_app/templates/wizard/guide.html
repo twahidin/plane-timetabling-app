@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ template.name }} · how to fill in the workbook</title>
+<style>
+  @page { size: A4 portrait; margin: 14mm; }
+  body { font: 12px/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #111; margin: 0; padding: 16px; max-width: 46em; }
+  h1 { font-size: 20px; margin: 0 0 2px; } h2 { font-size: 14px; margin: 18px 0 6px; }
+  p.sub { color: #555; margin: 0 0 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 4px 0 10px; }
+  th, td { border: 1px solid #bbb; padding: 3px 6px; vertical-align: top; text-align: left; }
+  th { background: #f2f2f2; font-weight: 600; }
+  td.col { width: 11em; font-weight: 600; } td.eg { width: 9em; color: #555; }
+  ul { margin: 4px 0 10px; padding-left: 18px; } li { margin: 2px 0; }
+  .facts span { display: inline-block; margin-right: 14px; }
+  .sheet { page-break-inside: avoid; }
+  .foot { color: #777; font-size: 11px; margin-top: 14px; }
+  @media print { body { padding: 0; } }
+</style></head><body>
+
+<h1>{{ template.name }}</h1>
+<p class="sub">{{ template.summary }}</p>
+
+<h2>The configuration you chose</h2>
+<p class="facts">
+  <span>Cycle: {{ facts.cycle_days }} day{{ "" if facts.cycle_days == 1 else "s" }}</span>
+  <span>{{ facts.slots_per_day }} {{ facts.unit }} a day</span>
+  <span>{{ facts.slot_minutes }} minutes each</span>
+  <span>{{ facts.slots }} {{ facts.unit }} in the cycle</span>
+</p>
+<table>
+  <thead><tr><th>Question</th><th>Your answer</th><th>What it means</th></tr></thead>
+  <tbody>
+  {% for knob in knobs %}<tr><td class="col">{{ knob.label }}</td><td class="eg">{{ knob.value }}</td><td>{{ knob.help }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+
+<h2>The words this timetable uses</h2>
+<ul>
+  <li>A <strong>{{ vocabulary.person }}</strong> is a person with a timetable.</li>
+  <li>A <strong>{{ vocabulary.group }}</strong> is who a {{ vocabulary.requirement }} is for.</li>
+  <li>A <strong>{{ vocabulary.requirement }}</strong> is one thing that has to be covered.</li>
+  <li>A <strong>{{ vocabulary.venue }}</strong> is where it happens.</li>
+</ul>
+
+<h2>The workbook</h2>
+{% for sheet in sheets %}
+<div class="sheet">
+  <h2>{{ sheet.name }}</h2>
+  <p class="sub">{{ sheet.purpose }}</p>
+  <table>
+    <thead><tr><th>Column</th><th>What to put</th><th>Example</th></tr></thead>
+    <tbody>
+    {% for column in sheet.columns %}<tr><td class="col">{{ column.name }}</td><td>{{ column.what }}</td><td class="eg">{{ column.example }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+<h2>What to do next</h2>
+<ol>{% for step in steps %}<li>{{ step }}</li>{% endfor %}</ol>
+
+<p class="foot">Generated {{ generated }}. Every name in the workbook and the sample timetable is invented.</p>
+</body></html>

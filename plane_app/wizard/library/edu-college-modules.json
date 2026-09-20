@@ -1,0 +1,41 @@
+{
+  "id": "edu-college-modules",
+  "domain": "education",
+  "name": "College with modules and tutorials",
+  "summary": "Programmes made of modules, each with a lecture the whole cohort attends and smaller tutorial groups that run in parallel.",
+  "when_to_choose": "Choose this if students enrol on modules rather than sitting in one class all week, and each module has a large teaching session plus several small ones.",
+  "vocabulary": {"person": "lecturer", "group": "cohort", "requirement": "module", "venue": "room"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the timetable cycle", "help": "Five for a timetable that repeats every week. Ten if modules alternate between two weeks.", "kind": "choice", "options": [5, 10], "default": 5},
+    {"key": "periods_per_day", "label": "Teaching blocks in a day", "help": "How many blocks the teaching day is divided into. A lecture usually takes two of them.", "kind": "int", "default": 8, "min": 6, "max": 10},
+    {"key": "period_minutes", "label": "Length of one block", "help": "In minutes. Sixty is common; an hour-long block makes a two-hour lecture easy to express.", "kind": "int", "default": 60, "min": 30, "max": 60},
+    {"key": "recess_after", "label": "Lunch comes after this many blocks", "help": "The block nobody teaches in. Four means lunch falls in the middle of an eight-block day.", "kind": "int", "default": 4, "min": 1, "max": 9},
+    {"key": "tutorial_groups_per_module", "label": "Tutorial groups per module", "help": "How many small groups a cohort splits into for tutorials. They usually run at the same time as each other.", "kind": "int", "default": 2, "min": 1, "max": 6}
+  ],
+  "questions": [
+    "How many programmes are you timetabling, and how many students are on each?",
+    "For a typical module, how many hours are lectures and how many are tutorials?",
+    "How many tutorial groups does a cohort split into?",
+    "Do students on different programmes share any modules?",
+    "Which rooms are big enough for a whole cohort, and how many do you have?"
+  ],
+  "tradeoffs": [
+    "Running all the tutorial groups of a module at once needs several small rooms and several tutors in the same hour, but it keeps the rest of the cohort's week clear and stops students choosing between two tutorials.",
+    "Shared modules across programmes save teaching hours, but they pin both cohorts to the same block, and every further shared module makes the two programmes harder to place.",
+    "Long lecture blocks mean fewer room changes and less travel, but they leave large holes when a cohort is not in the lecture theatre."
+  ],
+  "time": {"slot_minutes": 60, "day_start": "09:00", "slots_per_day": 8, "labels": "day-period", "days_per_week": 5},
+  "rules": {"max_load_slots": 6, "max_run_slots": 3, "mandatory_rest": [4]},
+  "sheets": "deployment",
+  "sample": {
+    "levels": 2,
+    "classes_per_level": 1,
+    "teachers": 6,
+    "subjects": [
+      {"name": "Module A lecture", "periods": 2, "lengths": {"2": 1}, "band": false},
+      {"name": "Module A tutorial", "periods": 2, "lengths": {"1": 2}, "band": true},
+      {"name": "Module B lecture", "periods": 2, "lengths": {"2": 1}, "band": false},
+      {"name": "Module B tutorial", "periods": 2, "lengths": {"1": 2}, "band": true}
+    ]
+  }
+}

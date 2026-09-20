@@ -6,6 +6,20 @@ for configuring the engine connection and LLM provider. It talks to the `plane-e
 over HTTP for all algorithm work (build, solve, check, score, query) — it never imports the
 timetabling engine directly.
 
+## Getting started
+
+A new timetable opens on the **Start wizard**: say what you are timetabling — a ward, a clinic, a
+school, an office, a sports centre — and the chat proposes a few configurations, one question at a
+time, with the trade-offs beside it. Choose one and it hands you three things: a **workbook** with
+the sheets your kind of organisation needs and a few example rows to replace, a **sample PDF** of
+what the printed timetable will look like, and a one-page **guide** explaining every column in your
+own words. Fill the workbook in and drop it back into the chat.
+
+From there it is the plan loop: the app reads the workbook into the Plan tab, lists anything that
+does not add up in the Issues panel, and — once nothing is blocking — **Generate** turns the plan
+into a draft timetable, **Build** places it, **Solve** improves it, and **Print** hands it out.
+Re-drop a corrected workbook at any time; the plan merges and the loop runs again.
+
 ## Build and Solve
 
 **Build** places a draft instantly with the engine's greedy pass. **Solve** runs the engine's

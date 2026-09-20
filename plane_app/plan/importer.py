@@ -17,10 +17,14 @@ from .. import names as names_mod
 from . import model as M
 from .issues import Issue
 
-_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees"}
+#  README is skipped on both shapes of workbook: the start wizard's `wizard.instantiate.workbook_bytes`
+# always appends one (spec docs/superpowers/specs/2026-09-20-start-wizard-design.md §5), and it is
+# never a department, staff or duties sheet.
+_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees", "readme"}
 _SPECIAL_SHEETS = {"groups", "control", "load"}
 
 _NEEDED_HEADERS = {"subject", "single", "double", "grouping", "class 1"}
+_GENERIC_SHEETS = {"staff", "venues", "units", "duties"}
 
 _LESSON_COLS = (("single", "1"), ("double", "2"), ("triple", "3"), ("quadruple", "4"))
 
@@ -120,6 +124,20 @@ def openpyxl_load(data: bytes):
     return openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
 
 
+def is_generic_workbook(data: bytes) -> bool:
+    """A duties workbook (spec §5): Staff, Venues, Units and Duties sheets, by name — the same
+    shape `wizard.instantiate.workbook_bytes` writes for every non-education template."""
+    try:
+        wb = openpyxl_load(data)
+    except Exception:
+        return False
+    try:
+        titles = {ws.title.strip().lower() for ws in wb.worksheets}
+        return _GENERIC_SHEETS <= titles
+    finally:
+        wb.close()
+
+
 # ---------------------------------------------------------------------------
 # staff (Control / Load sheet)
 # ---------------------------------------------------------------------------
@@ -171,6 +189,27 @@ def _read_staff_sheet(ws, org: dict | None) -> list[dict]:
 # department sheets (requirements)
 # ---------------------------------------------------------------------------
 
+_SPLIT = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+
+
+def _apply_split(req: dict, split_raw: str, teachers: list[str], periods, issues: list[Issue]) -> list[dict]:
+    """A `Split` cell ("4/2"): the row's two teachers no longer co-teach every lesson, each takes
+    their own share of the periods instead — one requirement a teacher, carried as a single lesson
+    of that many slots (plan.model.LESSON_LENGTH_MAX allows it). The two numbers must sum to the
+    row's periods; when they do not, the row is left as the single co-taught requirement it already
+    is and a block issue is reported instead of guessing how to split it."""
+    m = _SPLIT.match(split_raw)
+    a, b = (int(m.group(1)), int(m.group(2))) if m else (None, None)
+    if a is None or periods is None or a + b != periods:
+        issues.append(Issue("block", req["id"],
+                             f"{req['id']}: split {split_raw!r} does not sum to periods {periods}"))
+        return [req]
+    return [
+        {**req, "id": f"{req['id']}-a", "teachers": [teachers[0]], "lessons": {str(a): 1}, "periods": a},
+        {**req, "id": f"{req['id']}-b", "teachers": [teachers[1]], "lessons": {str(b): 1}, "periods": b},
+    ]
+
+
 def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
@@ -191,6 +230,7 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
         (int(k.split(" ", 1)[1]), v) for k, v in header.items()
         if k.startswith("teacher ") and k.split(" ", 1)[1].strip().isdigit()
     )
+    split_col = header.get("split")
 
     requirements: list[dict] = []
     for row in rows[1:]:
@@ -235,6 +275,7 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
 
         size_val = _cell(row, size_col)
         size = int(size_val) if size_val not in (None, "") else None
+        split_raw = _text(row, split_col)
 
         row_hash = _row_hash(row)
 
@@ -262,6 +303,9 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
             row_reqs = [make_req([cls], "class") for cls in classes]
         else:
             row_reqs = [make_req(classes, grouping_raw)]
+
+        if split_raw and len(row_reqs) == 1 and len(teachers) >= 2:
+            row_reqs = _apply_split(row_reqs[0], split_raw, teachers[:2], periods, issues)
         requirements.extend(row_reqs)
 
         if periods is not None:
@@ -462,6 +506,391 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
             "divisions": divisions,
             "requirements": requirements,
             "bands": bands,
+            "rules": {"edge_subjects": [], "no_double_across_rest": True, "pinned": []},
+            "source": {"file": filename, "imported": datetime.now(timezone.utc).isoformat()},
+        }
+        new_plan = M.normalise(plan)
+    finally:
+        wb.close()
+
+    if existing is not None:
+        return M.merge_import(existing, new_plan), issues
+    return new_plan, issues
+
+
+# ---------------------------------------------------------------------------
+# read_generic_workbook (spec §5): a duties workbook — Staff, Venues, Units, Duties, README
+# ---------------------------------------------------------------------------
+
+_DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_DAY_WORDS = {"weekday": (0, 1, 2, 3, 4), "weekdays": (0, 1, 2, 3, 4),
+              "weekend": (5, 6), "weekends": (5, 6)}
+# Whole-cycle words: what a person writes when they are simply always available.
+_WHOLE_CYCLE = {"all", "all week", "all days", "any", "anytime", "always", "every day", "everyday",
+                "daily", "full", "full time", "full-time", "whole cycle", "-", "n/a", "na"}
+_SPLIT_PARTS = re.compile(r"[;,&/]|\band\b|\+", re.IGNORECASE)
+_RANGE = re.compile(r"\s*(?:-|–|—|\bto\b)\s*", re.IGNORECASE)
+
+
+def _day_index(token: str) -> int | None:
+    """"Mon", "mon.", "tues", "Wednesday" -> 0, 1, 2. Three letters is the shortest that is a day."""
+    t = token.strip().strip(".").lower()
+    if len(t) < 3:
+        return None
+    return next((i for i, name in enumerate(_DAY_NAMES) if name.startswith(t)), None)
+
+
+def _days_of(part: str) -> tuple[int, ...] | None:
+    """The weekdays one comma-free piece names: "Mon" -> (0,), "Mon-Wed" -> (0, 1, 2), "weekdays" ->
+    (0..4). `None` when the piece is not weekdays at all."""
+    word = part.strip().strip(".").lower()
+    if word in _DAY_WORDS:
+        return _DAY_WORDS[word]
+    ends = _RANGE.split(part, maxsplit=1)
+    if len(ends) == 2:
+        first, last = _day_index(ends[0]), _day_index(ends[1])
+        if first is None or last is None:
+            return None
+        span = range(first, last + 1) if first <= last else [*range(first, 7), *range(0, last + 1)]
+        return tuple(span)
+    one = _day_index(part)
+    return None if one is None else (one,)
+
+
+def _numeric_window(part: str) -> list[int] | None:
+    ends = _RANGE.split(part.strip(), maxsplit=1)
+    if len(ends) != 2:
+        return None
+    try:
+        start, end = int(ends[0].strip()), int(ends[1].strip())
+    except ValueError:
+        return None
+    return [start, end] if end > start else None
+
+
+def _merge(windows: list[list[int]], n_slots: int | None) -> list[list[int]]:
+    """Sorted, non-overlapping and inside the cycle — the shape `model.normalise_avail` accepts."""
+    clipped = []
+    for start, end in windows:
+        start, end = max(0, start), end if n_slots is None else min(end, n_slots)
+        if end > start:
+            clipped.append([start, end])
+    out: list[list[int]] = []
+    for start, end in sorted(clipped):
+        if out and start <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], end)
+        else:
+            out.append([start, end])
+    return out
+
+
+def _parse_availability(text: str, cycle: tuple[int, int, int] | None = None,
+                        where: str = "", issues: list[Issue] | None = None) -> list[list[int]] | None:
+    """When someone works, in the two forms the workbook's own README offers (spec §5):
+
+    * whole days by name — "Mon-Wed", "Mon, Wed, Fri", "weekdays", and "All week"/"" for the whole
+      cycle — mapped onto the cycle's days through `cycle` (slots a day, days in the cycle, days in
+      a week): a 7-day-week rota reads Mon..Sun, a 5-day cycle Mon..Fri, and a multi-week cycle
+      applies the days to every week;
+    * slot windows in the app's own words, "0-24; 48-72", for anyone who wants the slots themselves.
+
+    Anything else is a warn issue naming the row, and reads as the whole cycle: an unreadable cell
+    should say so and carry on, not block the import."""
+    text = (text or "").strip()
+    if not text or text.lower() in _WHOLE_CYCLE:
+        return None
+
+    def unreadable() -> None:
+        if issues is not None:
+            issues.append(Issue("warn", where or "staff",
+                                 f"{where or 'staff'}: availability {text!r} is not a list of days "
+                                 f'("Mon-Wed", "Mon, Wed, Fri", "All week") or slot windows '
+                                 f'("0-24; 48-72"); read as the whole cycle'))
+
+    spd, n_days, per_week = cycle or (0, 0, 0)
+    windows: list[list[int]] = []
+    for part in _SPLIT_PARTS.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        window = _numeric_window(part)
+        if window is not None:
+            windows.append(window)
+            continue
+        days = _days_of(part)
+        if days is None or not spd:
+            unreadable()
+            return None
+        for week in range(-(-n_days // per_week) if per_week else 1):
+            for day in days:
+                index = week * per_week + day
+                if index < n_days:
+                    windows.append([index * spd, (index + 1) * spd])
+    merged = _merge(windows, spd * n_days if spd and n_days else None)
+    if not merged:
+        unreadable()
+        return None
+    return merged
+
+
+def cycle_shape(org: dict | None, settings: dict | None) -> tuple[int, int, int] | None:
+    """(slots a day, days in the cycle, days in a week) for the Availability column, from the
+    timetable's settings or, failing that, the live organisation.
+
+    The week comes from `time.days_per_week`, the same number that names the days ("Odd Mon", "Even
+    Tue"), so a day named here is the day the timetable shows. Only a settings document old enough
+    not to carry it is guessed at, by the length of the cycle: whole weeks run Mon..Sun, a cycle
+    that divides by five Mon..Fri, anything else is one week of its own length."""
+    time = (settings or {}).get("time") or {}
+    spd = time.get("slots_per_day")
+    n_slots = len(time.get("labels") or ())
+    per_week = time.get("days_per_week")
+    if not spd and org:
+        spd = ((org.get("rules") or {}).get("slots_per_day"))
+        n_slots = len(org.get("time_labels") or ())
+        per_week = None                 # an organisation does not carry the week
+    if not spd or not n_slots:
+        return None
+    spd = int(spd)
+    n_days = max(1, n_slots // spd)
+    if not isinstance(per_week, int) or isinstance(per_week, bool) or not 1 <= per_week <= 7:
+        per_week = 7 if n_days % 7 == 0 else (5 if n_days % 5 == 0 else n_days)
+    return spd, n_days, per_week
+
+
+def _co_staffed_count(raw: str) -> int:
+    """"Co-staffed": "" or "no" -> one person on the duty alone; "yes" -> two; a number -> that many."""
+    text = (raw or "").strip().lower()
+    if not text or text == "no":
+        return 1
+    if text == "yes":
+        return 2
+    try:
+        n = int(float(text))
+    except ValueError:
+        return 1
+    return n if n > 0 else 1
+
+
+def _read_generic_staff(ws, org: dict | None, cycle: tuple[int, int, int] | None,
+                        issues: list[Issue]) -> list[dict]:
+    staff: list[dict] = []
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return staff
+    header = _header_map(rows[0])
+    name_col = header.get("name")
+    role_col = header.get("role")
+    avail_col = header.get("availability")
+    load_col = header.get("load factor")
+
+    for row in rows[1:]:
+        name = _text(row, name_col)
+        if not name:
+            continue
+        pid = None
+        if org is not None:
+            matches = names_mod.find(org, name, kinds=("person",))
+            if matches:
+                pid = matches[0]["id"]
+        if pid is None:
+            pid = M.slug(name)
+        load_raw = _cell(row, load_col)
+        staff.append({
+            "id": pid,
+            "name": name,
+            "short": "",
+            # `dept` doubles as the row's "Role" here: `_role_index` groups staff by it so
+            # "Who can do it" can name a role instead of listing everyone in it.
+            "dept": _text(row, role_col),
+            "load_factor": float(load_raw) if load_raw not in (None, "") else 1.0,
+            "avail": _parse_availability(_text(row, avail_col), cycle, name, issues),
+            "max_periods_day": None,
+            "source_hash": _row_hash(row),
+        })
+    return staff
+
+
+def _role_index(staff: list[dict]) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
+    for s in staff:
+        role = (s.get("dept") or "").strip().lower()
+        if role:
+            index.setdefault(role, []).append(s["id"])
+    return index
+
+
+def _read_generic_units(ws) -> list[dict]:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    header = _header_map(rows[0])
+    name_col = header.get("name")
+    size_col = header.get("size")
+
+    units = []
+    for row in rows[1:]:
+        name = _text(row, name_col)
+        if not name:
+            continue
+        size_val = _cell(row, size_col)
+        units.append({"code": name, "level": "", "size": int(size_val) if size_val not in (None, "") else None})
+    return units
+
+
+def _who_can_do_it(who_raw: str, org, staff: list[dict], role_index: dict[str, list[str]]) -> list[str]:
+    """A comma list of staff names, or a role from the Staff sheet's "Role" column: a role expands
+    to everyone with it, in Staff-sheet order; a name resolves the same way a deployment workbook's
+    teacher columns do (`_resolve_staff`), so an unlisted name still becomes a staff entry."""
+    pool: list[str] = []
+    for token in (who_raw or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        role_ids = role_index.get(token.lower())
+        if role_ids:
+            for pid in role_ids:
+                if pid not in pool:
+                    pool.append(pid)
+            continue
+        pid = _resolve_staff(token, org, staff)
+        if pid and pid not in pool:
+            pool.append(pid)
+    return pool
+
+
+def _dedup_id(req_id: str, seen: dict[str, int]) -> str:
+    """Task 2's own sample workbook cycles a short duty list across three example rows, so the same
+    (Name, Unit) pair can appear twice; a repeat gets a "-2", "-3"… suffix rather than silently
+    replacing the requirement that came before it."""
+    seen[req_id] = seen.get(req_id, 0) + 1
+    n = seen[req_id]
+    return req_id if n == 1 else f"{req_id}-{n}"
+
+
+def _parse_duty_count(raw, label: str, duty_name: str, req_id: str, issues: list[Issue]) -> int | None:
+    """A Duties count cell ("Per cycle", "Length"): a blank cell is 0 (no lessons), a non-numeric
+    one is a block issue rather than a crash — same "report, don't raise" convention as
+    `_co_staffed_count` — and the caller carries `None` on, which reads as "no lessons" downstream
+    (`periods`/`lessons` both fall back to empty) rather than guessing a count."""
+    if raw in (None, ""):
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        issues.append(Issue("block", req_id, f"{duty_name}: {label} must be a whole number"))
+        return None
+
+
+def _read_generic_duties(ws, org, staff: list[dict], role_index: dict[str, list[str]],
+                         issues: list[Issue]) -> list[dict]:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    header = _header_map(rows[0])
+    name_col = header.get("name")
+    unit_col = header.get("unit")
+    per_cycle_col = header.get("per cycle")
+    length_col = header.get("length")
+    venue_col = header.get("venue kind")
+    who_col = header.get("who can do it")
+    together_col = header.get("together with")
+    co_col = header.get("co-staffed")
+
+    requirements: list[dict] = []
+    by_key: dict[tuple[str, str], dict] = {}
+    pending_sync: list[tuple[dict, str, str]] = []
+    seen_ids: dict[str, int] = {}
+
+    for row in rows[1:]:
+        name = _text(row, name_col)
+        if not name:
+            continue
+        unit = _text(row, unit_col)
+        venue_kind = _text(row, venue_col) or None
+        who_raw = _text(row, who_col)
+        together = _text(row, together_col)
+
+        req_id = _dedup_id(M.requirement_id(name, None, "class", [unit] if unit else []), seen_ids)
+
+        per_cycle = _parse_duty_count(_cell(row, per_cycle_col), "Per cycle", name, req_id, issues)
+        if per_cycle is not None and per_cycle <= 0:
+            issues.append(Issue("block", req_id, f"{name}: Per cycle must be greater than zero"))
+        length = _parse_duty_count(_cell(row, length_col), "Length", name, req_id, issues)
+
+        pool = _who_can_do_it(who_raw, org, staff, role_index)
+        if not pool:
+            issues.append(Issue("block", req_id, f"no one can do {name}"))
+        n = _co_staffed_count(_text(row, co_col))
+        if pool and len(pool) < n:
+            issues.append(Issue("warn", req_id, f"{name}: co-staffed {n} but only {len(pool)} eligible"))
+        teachers = pool[:n]
+
+        req = {
+            "id": req_id,
+            "dept": name,
+            "level": "",
+            "subject": name,
+            "periods": per_cycle * length if per_cycle and length else None,
+            "lessons": {str(length): per_cycle} if length and per_cycle else {},
+            "grouping": "class",
+            "classes": [unit] if unit else [],
+            "teachers": teachers,
+            "size": None,
+            "venue": {"kind": venue_kind, "room": None},
+            "sync_with": None,
+            "source_hash": _row_hash(row),
+        }
+        requirements.append(req)
+        by_key[(unit, name)] = req
+        if together:
+            pending_sync.append((req, unit, together))
+
+    for req, unit, together_name in pending_sync:
+        target = by_key.get((unit, together_name))
+        if target is not None:
+            req["sync_with"] = target["id"]
+        else:
+            issues.append(Issue("warn", req["id"],
+                                 f"{req['id']}: 'together with' names an unknown duty {together_name!r}"))
+
+    return requirements
+
+
+def read_generic_workbook(data: bytes, org: dict | None, existing: dict | None,
+                          filename: str = "", settings: dict | None = None) -> tuple[dict, list[Issue]]:
+    """The generic duties workbook (spec §5): Staff, Venues, Units and Duties sheets, detected by
+    name (`is_generic_workbook`) rather than by header cells. `Venues` only needs to exist for the
+    shape to be recognised — a duty names its venue kind directly, the same field every requirement
+    already carries."""
+    issues: list[Issue] = []
+    try:
+        wb = openpyxl_load(data)
+    except Exception as e:
+        issues.append(Issue("block", "workbook", f"could not read workbook: {e}"))
+        base = existing if existing is not None else M.empty_plan()
+        return M.normalise(base), issues
+
+    try:
+        sheets = {ws.title.strip().lower(): ws for ws in wb.worksheets}
+        cycle = cycle_shape(org, settings)
+        staff = _read_generic_staff(sheets["staff"], org, cycle, issues) if "staff" in sheets else []
+        role_index = _role_index(staff)
+        units = _read_generic_units(sheets["units"]) if "units" in sheets else []
+        requirements = (_read_generic_duties(sheets["duties"], org, staff, role_index, issues)
+                        if "duties" in sheets else [])
+
+        unit_sizes = {u["code"]: u["size"] for u in units}
+        unit_codes = sorted({u["code"] for u in units} | {c for r in requirements for c in r["classes"]})
+        classes = [{"code": code, "level": "", "size": unit_sizes.get(code)} for code in unit_codes]
+
+        plan = {
+            "version": M.PLAN_VERSION,
+            "staff": staff,
+            "classes": classes,
+            "divisions": [],
+            "requirements": requirements,
+            "bands": [],
             "rules": {"edge_subjects": [], "no_double_across_rest": True, "pinned": []},
             "source": {"file": filename, "imported": datetime.now(timezone.utc).isoformat()},
         }

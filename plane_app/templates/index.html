@@ -31,7 +31,7 @@
 
 <div class="status" id="status"></div>
 
-<div id="empty" class="empty-state" hidden>No timetable yet. Drop a PDF, CSV or Excel file below to rebuild from data, or press "Start from criteria" and describe the organisation in the chat.</div>
+<div id="empty" class="empty-state" hidden>No timetable yet. Drop a PDF, CSV or Excel file below to rebuild from data, or press "Start wizard" and answer a few questions in the chat.</div>
 
 <main class="wrap">
   <section class="stage">
@@ -95,7 +95,7 @@
 
 <div class="below">
   <section id="intake">
-    <div class="section-title">Intake <span class="eyebrow">documents to draft to build</span> <button class="btn" id="start-criteria" type="button" title="Begin an empty draft and describe people, venues and lessons in the chat">Start from criteria</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
+    <div class="section-title">Intake <span class="eyebrow">documents to draft to build</span> <button class="btn" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">Start wizard</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
     <div id="drop" class="drop">Drop files here or <input type="file" id="files" multiple accept=".pdf,.csv,.xlsx"></div>
     <div class="import-options">
       <label for="import-mode">If the file is a timetable export (aSc)</label>
@@ -166,6 +166,12 @@
   </section>
 
   <section id="chat" class="chat">
+    <div id="wizard" class="card wizard" hidden>
+      <h2>Start wizard <span class="eyebrow">plain words, no timetabling jargon</span></h2>
+      <div id="wizard-decisions" class="wizard-decisions" hidden></div>
+      <div id="wizard-candidates" class="wizard-candidates"></div>
+      <div id="wizard-downloads" class="wizard-downloads" hidden></div>
+    </div>
     <div class="section-title">Assistant <span class="eyebrow">asks the engine, edits the draft</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
     <div id="chat-log" class="chat-log"></div>
     <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
@@ -211,6 +217,7 @@
 <script src="/static/model.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/plan.js"></script>
+<script src="/static/wizard.js"></script>
 <script src="/static/timetables.js"></script>
 <script src="/static/print.js"></script>
 </body>

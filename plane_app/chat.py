@@ -19,6 +19,9 @@ from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
 from .plan.model import apply_patch as apply_plan_patch, empty_plan
 from .promote import promote_build
+from .wizard import instantiate as wiz_instantiate
+from .wizard import library as wiz_library
+from .wizard.routes import instantiate as wizard_apply, resolve as wizard_resolve
 
 MAX_ROUNDS = 8
 # A bare yes applies the first pending proposal without troubling the model.
@@ -53,7 +56,19 @@ There is also a curriculum PLAN, separate from the draft: requirements (a group'
 its classes, teachers and venue need), divisions and bands for option groups that run together, staff and
 rules. Use plan_summary and plan_list to see it, plan_update to import from a workbook description or fix
 issues with a patch keyed by id (edits need no proposal gate, unlike the live timetable), and once no
-blocking issues remain, plan_generate to turn it into the draft — then Build or Solve as usual."""
+blocking issues remain, plan_generate to turn it into the draft — then Build or Solve as usual.
+When there is no live timetable and no plan yet (or the user wants to start over), guide them through the
+start wizard instead of building from scratch. Ask one question at a time, in plain words a non-timetabler
+understands: never mention template ids, "slots" or other engine terms, and never offer more than three
+options at once. First ask what they are timetabling and call wizard_library to find the domain's
+templates; describe at most three candidates by their name, summary and when_to_choose, and call
+wizard_preview on each so the side panel shows its facts — up to three previews accumulate there in one
+turn. Once they pick one, ask its own questions (from the template) one at a time, then confirm the knobs
+in plain words, calling wizard_preview again as the knobs settle. When the user is happy, call
+wizard_instantiate; it writes the settings, the plan's vocabulary and returns three links — a workbook to
+fill in, a sample PDF of what the printed timetable will look like, and a one-page guide. Give the user all
+three links and tell them to drop the filled workbook back into the chat when it is ready. The user may
+still start from criteria instead ("start an empty draft"), which skips the wizard."""
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
@@ -123,6 +138,19 @@ TOOLS: list[ToolSpec] = [
              {"type": "object", "properties": {"patch": {"type": "object"}}, "required": ["patch"]}),
     ToolSpec("plan_generate", "Generate a draft organisation from the curriculum plan. Refuses while any blocking issue exists.",
              {"type": "object", "properties": {}}),
+    ToolSpec("wizard_library", "The start wizard's template library: domains and, in each, the templates' id, name, "
+                               "summary, when_to_choose and knobs with defaults. Optionally filter to one domain.",
+             {"type": "object", "properties": {"domain": {"type": "string", "enum": ["education", "health", "business", "sports"]}}}),
+    ToolSpec("wizard_preview", "Compute the facts (cycle length, slots, sample counts, trade-offs) for one candidate "
+                               "template and its knobs, without writing anything. Fills the side panel with the "
+                               "candidate card; call it again with different knobs or another template to compare, "
+                               "up to three at once.",
+             {"type": "object", "properties": {"template": {"type": "string"}, "knobs": {"type": "object"}},
+              "required": ["template"]}),
+    ToolSpec("wizard_instantiate", "Write the timetable's settings, the plan's vocabulary and the wizard's record for "
+                                   "the chosen template and knobs. Returns links to the workbook, sample PDF and guide.",
+             {"type": "object", "properties": {"template": {"type": "string"}, "knobs": {"type": "object"}},
+              "required": ["template"]}),
 ]
 
 # names.find's own "person"/"group" split only tells a group (a synthesised whole-class plane) apart
@@ -359,6 +387,35 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             if len(issues) > ISSUE_LIMIT:
                 result["more"] = len(issues) - ISSUE_LIMIT
             return json.dumps(result)
+        if call.name == "wizard_library":
+            domains = wiz_library.domains()
+            domain = call.args.get("domain")
+            if domain:
+                domains = [d for d in domains if d["id"] == domain]
+            return json.dumps({"domains": domains})
+        if call.name in ("wizard_preview", "wizard_instantiate"):
+            try:
+                template, knobs = wizard_resolve(call.args.get("template"), call.args.get("knobs"))
+            except KeyError:
+                return json.dumps({"error": f"no such template {call.args.get('template')!r}"})
+            except wiz_library.WizardError as e:
+                return json.dumps({"error": str(e)})
+            if call.name == "wizard_preview":
+                facts = wiz_instantiate.facts(template, knobs)
+                candidate = {"template": template["id"], "name": template["name"], "summary": template["summary"],
+                             "when_to_choose": template["when_to_choose"], "tradeoffs": facts["tradeoffs"],
+                             "facts": facts, "knobs": knobs}
+                panel = next((e for e in events if e.get("kind") == "wizard" and e.get("stage") == "preview"), None)
+                if panel is None:
+                    panel = {"kind": "wizard", "stage": "preview", "candidates": []}
+                    events.append(panel)
+                if len(panel["candidates"]) < 3:      # the side panel shows at most three candidates at once
+                    panel["candidates"].append(candidate)
+                return json.dumps(facts)
+            result = wizard_apply(db, template, knobs)
+            events.append({"kind": "wizard", "stage": "done", "downloads": result["downloads"]})
+            events.append({"kind": "settings_updated"})
+            return json.dumps({"ok": True, **result})
         return json.dumps({"error": f"unknown tool {call.name}"})
     except (EngineError, IntakeError, KeyError, ValueError) as e:
         return json.dumps({"error": str(e)})

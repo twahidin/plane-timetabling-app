@@ -1,0 +1,43 @@
+{
+  "id": "edu-secondary-bands",
+  "domain": "education",
+  "name": "Secondary school with option blocks",
+  "summary": "Classes grouped into year levels, with a shared timetable and option blocks where older students choose between subjects that run side by side.",
+  "when_to_choose": "Choose this if your students stay with their form class for most subjects, and upper years pick options - languages, arts, sciences - that have to run at the same time as each other.",
+  "vocabulary": {"person": "teacher", "group": "class", "requirement": "subject", "venue": "room"},
+  "knobs": [
+    {"key": "cycle_days", "label": "Days in the timetable cycle", "help": "Five for a timetable that repeats every week. Ten if you run a two-week timetable, often called Odd and Even weeks.", "kind": "choice", "options": [5, 10], "default": 5},
+    {"key": "periods_per_day", "label": "Periods in a school day", "help": "Count every teaching period, including the one a form class is registered in if it appears on the timetable.", "kind": "int", "default": 8, "min": 6, "max": 10},
+    {"key": "period_minutes", "label": "Length of one period", "help": "In minutes. A double lesson is two of these back to back.", "kind": "int", "default": 40, "min": 30, "max": 60},
+    {"key": "recess_after", "label": "Main break comes after this many periods", "help": "The break everyone shares. Four means the break falls after the fourth period of the morning.", "kind": "int", "default": 4, "min": 1, "max": 9},
+    {"key": "bands", "label": "Upper years choose options", "help": "Yes if some subjects run side by side so students can pick one of them. No if every class takes the same subjects.", "kind": "bool", "options": [false, true], "default": true},
+    {"key": "sets_per_subject", "label": "Sets a banded subject splits into", "help": "How many parallel groups a subject is taught in when students are set by attainment. One means the class is not split.", "kind": "int", "default": 2, "min": 1, "max": 4}
+  ],
+  "questions": [
+    "How many year levels do you timetable, and how many classes are in each?",
+    "Does the timetable repeat every week, or do you run a two-week cycle?",
+    "Do older years choose between subjects that run at the same time?",
+    "How long is a period, and how many are there in a day?",
+    "Which subjects need a special room - a laboratory, a workshop, a gymnasium?"
+  ],
+  "tradeoffs": [
+    "A two-week cycle gives room for subjects that want an odd number of periods and spreads laboratories more evenly, but staff and students have to hold two different weeks in their heads.",
+    "Option blocks let students pick freely, but every subject in a block needs its own teacher and room at the same moment, so a wide block is the hardest part of the week to place and the first thing to narrow if the timetable will not settle.",
+    "Splitting a subject into more sets makes each group smaller, but all the sets run together, so a whole corridor of rooms and staff is committed to one subject at once."
+  ],
+  "time": {"slot_minutes": 40, "day_start": "07:30", "slots_per_day": 8, "labels": "day-period", "days_per_week": 5},
+  "rules": {"max_load_slots": 6, "max_run_slots": 4, "mandatory_rest": [4]},
+  "sheets": "deployment",
+  "sample": {
+    "levels": 2,
+    "classes_per_level": 2,
+    "teachers": 8,
+    "subjects": [
+      {"name": "English", "periods": 5, "lengths": {"1": 3, "2": 1}, "band": false},
+      {"name": "Mathematics", "periods": 5, "lengths": {"1": 3, "2": 1}, "band": false},
+      {"name": "Science", "periods": 6, "lengths": {"1": 2, "2": 2}, "band": false},
+      {"name": "Humanities", "periods": 4, "lengths": {"1": 2, "2": 1}, "band": false},
+      {"name": "Art", "periods": 2, "lengths": {"1": 0, "2": 1}, "band": true}
+    ]
+  }
+}

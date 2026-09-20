@@ -20,7 +20,7 @@ from . import changes
 from .bookings import draft_for_engine, live_for_engine     # re-exported: every route/tool that sends an organisation to the engine uses these
 from .chat import run_chat
 from .config import MAX_UPLOAD, Config
-from .db import DEFAULT_SOFT, MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, RULES, Db, mask_settings
+from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, Db, mask_settings
 from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
@@ -31,6 +31,7 @@ from .plan import importer as plan_importer
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
 from .promote import promote_build
+from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
 LOGIN_MAX_FAILURES, LOGIN_WINDOW = 10, 15 * 60      # failed logins per client ip before a 429, seconds
@@ -41,27 +42,6 @@ def _unlink_quietly(path: str) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _clean_solve_settings(given: dict, current: dict) -> dict:
-    """Keep the solve group well-formed whatever the client sent: a known preset, a time limit within the
-    engine's cap, and integer weights for the six rules (anything else falls back to the stored value)."""
-    out = {}
-    preset = given.get("preset", current.get("preset", "balanced"))
-    out["preset"] = preset if preset in PRESETS or preset == "custom" else current.get("preset", "balanced")
-    try:
-        limit = int(given.get("time_limit", current.get("time_limit", 300)))
-    except (TypeError, ValueError):
-        limit = int(current.get("time_limit", 300))
-    out["time_limit"] = min(max(limit, MIN_TIME_LIMIT), MAX_TIME_LIMIT)
-    weights = given.get("weights")
-    base = dict(current.get("weights") or DEFAULT_SOFT)
-    if isinstance(weights, dict):
-        for r in RULES:
-            v = weights.get(r, base.get(r, DEFAULT_SOFT[r]))
-            base[r] = max(int(v), 0) if isinstance(v, (int, float)) and not isinstance(v, bool) else base.get(r, DEFAULT_SOFT[r])
-    out["weights"] = {r: base.get(r, DEFAULT_SOFT[r]) for r in RULES}
-    return out
 
 
 def _default_engine_factory(config: Config):
@@ -99,6 +79,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             return app.state.provider_factory(db.get_settings())
         except ProviderError as e:
             raise HTTPException(400, str(e))
+
+    app.include_router(wizard_router(db, templates, engine))
 
     @app.exception_handler(HTTPException)
     async def _http_exc(request: Request, exc: HTTPException):
@@ -164,27 +146,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.put("/api/settings")
     def put_settings(body: dict, sid: str = Depends(auth.require_session)):
-        current = db.get_settings()
-        if not isinstance(body, dict):
-            body = {}
-        groups = {k: (dict(g) if isinstance(g := body.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine", "calendar")}
-        groups["solve"] = _clean_solve_settings(groups["solve"], current.get("solve", {}))
-        groups["calendar"] = cal_mod.clean(groups["calendar"], current.get("calendar", {}))
-        for group, field in (("provider", "api_key"), ("engine", "key")):
-            v = groups[group].get(field, "")
-            if not isinstance(v, str):
-                groups[group].pop(field, None)
-            elif v.startswith("***"):
-                groups[group][field] = current.get(group, {}).get(field, "")
-        # A provider key belongs to one provider: switching kind without a fresh key stores no key.
-        new_kind = groups["provider"].get("kind")
-        if isinstance(new_kind, str) and new_kind != current.get("provider", {}).get("kind"):
-            submitted = body.get("provider", {}).get("api_key", "") if isinstance(body.get("provider"), dict) else ""
-            if not isinstance(submitted, str) or not submitted or submitted.startswith("***"):
-                groups["provider"]["api_key"] = ""
-        merged = {k: {**current.get(k, {}), **groups[k]} for k in groups}
-        db.set_settings(merged)
-        return mask_settings(merged)
+        return mask_settings(db.store_settings(body))
 
     # ---- timetable data ------------------------------------------------------
     @app.get("/api/solid")
@@ -215,8 +177,9 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 asc_names.append(name)
                 pending.append((name, data, None))
                 continue
-            if name.lower().endswith(".xlsx") and plan_importer.is_deployment_workbook(data):
-                # a staff-deployment workbook: import into the curriculum plan, not the draft
+            if name.lower().endswith(".xlsx") and (plan_importer.is_deployment_workbook(data)
+                                                    or plan_importer.is_generic_workbook(data)):
+                # a staff-deployment or generic duties workbook: import into the curriculum plan, not the draft
                 _, _, note = import_plan_workbook(db, name, data)
                 plan_notes.append({"section": "plan", "source": name, "note": note})
                 plan_events.append({"kind": "plan_updated"})

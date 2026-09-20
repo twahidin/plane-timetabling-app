@@ -23,9 +23,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["plane_app", "plane_app.llm", "plane_app.print", "plane_app.plan", "plane_timetabling"]
+packages = ["plane_app", "plane_app.llm", "plane_app.print", "plane_app.plan", "plane_app.wizard", "plane_timetabling"]
 
 [tool.setuptools.package-data]
 # `**` needs setuptools >= 62.3; the build requires >= 68 above. templates/print/grid.html
 # lives one level down, so the flat glob alone would leave it out of the wheel.
-plane_app = ["templates/*.html", "templates/**/*.html", "static/*"]
+plane_app = ["templates/*.html", "templates/**/*.html", "static/*", "wizard/library/*.json"]

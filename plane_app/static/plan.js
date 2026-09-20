@@ -30,6 +30,49 @@
   let plan = null;
   let issues = [];
 
+  // ---------- vocabulary ----------
+  // The plan's own words for a person, a group, a requirement and a venue (start wizard, spec
+  // docs/superpowers/specs/2026-09-20-start-wizard-design.md §5). Education's words are the
+  // default and already match the tables' plain English headings ("Staff", "Requirements",
+  // "classes"), so those stay as they are; only a plan the wizard configured for another domain
+  // (a ward, a clinic, a court) swaps them in.
+  const DEFAULT_VOCABULARY = { person: 'teacher', group: 'class', requirement: 'lesson', venue: 'room' };
+  let divisionsClassesLabel = 'classes';
+
+  function isDefaultVocabulary(v) {
+    return DEFAULT_VOCABULARY.person === v.person && DEFAULT_VOCABULARY.group === v.group
+      && DEFAULT_VOCABULARY.requirement === v.requirement && DEFAULT_VOCABULARY.venue === v.venue;
+  }
+  // A plain-English plural: "nurse" -> "nurses", "coach" -> "coaches", "match" -> "matches",
+  // "consulting room" -> "consulting rooms" (only the last word takes the plural).
+  function pluralize(word) {
+    const w = String(word || '');
+    const parts = w.split(' ');
+    const last = parts.pop();
+    const plural = /[sxz]$|[cs]h$/i.test(last) ? last + 'es' : /[^aeiou]y$/i.test(last) ? last.slice(0, -1) + 'ies' : last + 's';
+    return parts.concat([plural]).join(' ');
+  }
+  function capitalize(word) { return word ? word.charAt(0).toUpperCase() + word.slice(1) : word; }
+
+  function heading(tableId) {
+    const table = el(tableId);
+    const section = table && table.closest('.plan-section');
+    return section && section.querySelector('h3');
+  }
+
+  // Called once the plan is (re)loaded: swaps the table headings and the "classes" column for
+  // the plan's own vocabulary, or leaves the ordinary wording alone when none was set.
+  function applyVocabulary(vocabulary) {
+    const v = vocabulary || DEFAULT_VOCABULARY;
+    const custom = !isDefaultVocabulary(v);
+    const reqHeading = heading('plan-requirements'), staffHeading = heading('plan-staff');
+    if (reqHeading) reqHeading.textContent = custom ? capitalize(pluralize(v.requirement)) : 'Requirements';
+    if (staffHeading) staffHeading.textContent = custom ? capitalize(pluralize(v.person)) : 'Staff';
+    divisionsClassesLabel = custom ? pluralize(v.group) : 'classes';
+    const classesColumn = REQ_COLUMNS.find((c) => c.key === 'classes');
+    if (classesColumn) classesColumn.label = divisionsClassesLabel;
+  }
+
   // Past ten, a list of issues in a toast is a wall rather than a list of things to fix; the
   // server caps what it sends the same way (plan/issues.py capped()).
   const ISSUE_LIMIT = 10;
@@ -148,6 +191,7 @@
     try {
       const res = await api('/api/plan', { method: 'PATCH', body: JSON.stringify({ patch }) });
       plan = res.plan; issues = res.issues || [];
+      applyVocabulary(plan.vocabulary);
       td.dataset.orig = text;
       renderIssues();
       // The server normalises what it stored (periods recomputed from lessons, a sorted list, a
@@ -221,7 +265,7 @@
   function renderDivisions(table, divisions, bands) {
     table.textContent = '';
     const thead = node('thead'), htr = node('tr');
-    ['id', 'classes', 'bands'].forEach((h) => htr.appendChild(node('th', null, h)));
+    ['id', divisionsClassesLabel, 'bands'].forEach((h) => htr.appendChild(node('th', null, h)));
     thead.appendChild(htr); table.appendChild(thead);
     const tbody = node('tbody');
     (divisions || []).forEach((d) => {
@@ -288,6 +332,7 @@
     try { data = await api('/api/plan'); }
     catch (e) { notify('error', e.message); return; }
     plan = data.plan; issues = data.issues || [];
+    applyVocabulary(plan.vocabulary);
     renderAll();
   }
   window.loadPlan = loadPlan;
@@ -308,8 +353,12 @@
       const body = await r.json().catch(() => ({}));
       if (!r.ok) { notify('error', body.detail || r.statusText); return; }
       plan = body.plan; issues = body.issues || [];
+      applyVocabulary(plan.vocabulary);
       renderAll();
       notify('good', body.note || 'Workbook imported.');
+      // A workbook can be the first thing that gives the plan requirements: the #wizard card
+      // (chat.js's counterpart, hidden once a plan exists) must re-check itself here too.
+      if (window.loadWizard) window.loadWizard().catch(() => {});
     } catch (e) { notify('error', e.message); }
     finally { planUpload.disabled = false; planUpload.value = ''; }
   }
