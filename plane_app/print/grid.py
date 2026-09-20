@@ -1,7 +1,7 @@
 """The grid model behind every printout: days down, slots across, one cell per slot."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as _date, timedelta
 from os.path import commonprefix
 
@@ -14,6 +14,7 @@ class Cell:
     text: str = ""
     sub: str = ""
     span: int = 1
+    events: list[str] = field(default_factory=list)   # ids of the events in a lesson cell (stacked overlaps too)
 
 
 @dataclass
@@ -102,10 +103,11 @@ def _place(org: dict, index: tuple[dict, dict, dict], rows: list[DayRow], events
             oc = cells[owner]                             # an overlap with an earlier lesson: stack onto it
             oc.text += " / " + text
             oc.sub += " / " + sub
+            oc.events.append(e["id"])
             end = max(owner + oc.span, s + span)
             oc.span = end - owner
         elif cells[s].kind == "free":
-            cells[s] = Cell("lesson", text, sub, span)
+            cells[s] = Cell("lesson", text, sub, span, [e["id"]])
             owner, end = s, s + span
         else:
             continue                                      # e.g. a rest tile already occupies this slot
@@ -184,7 +186,7 @@ def week_grid(org: dict, grid: Grid, cal: dict, time: dict, date: str, bookings=
         if k is None or k >= len(grid.days):
             rows.append(DayRow(label, [Cell("free") for _ in grid.slots], off=True))
             continue
-        cells = [Cell(c.kind, c.text, c.sub, c.span) for c in grid.days[k].cells]
+        cells = [Cell(c.kind, c.text, c.sub, c.span, list(c.events)) for c in grid.days[k].cells]
         if grid.kind == "room":
             spd = _spd(org)
             for b in bookings:

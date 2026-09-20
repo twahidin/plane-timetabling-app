@@ -1,6 +1,7 @@
 # plane-app
 
-The web front end for plane timetabling: a login-gated 3D view of the timetable, staff/roster
+The web front end for plane timetabling: a login-gated timetable grid (with a 3D model as the
+expert view), staff/roster
 intake (CSV/XLSX/PDF), a chat panel backed by an LLM provider of your choice, and a Settings page
 for configuring the engine connection and LLM provider. It talks to the `plane-engine` service
 over HTTP for all algorithm work (build, solve, check, score, query) — it never imports the
@@ -17,18 +18,29 @@ own words. Fill the workbook in and drop it back into the chat.
 
 From there it is the plan loop: the app reads the workbook into the Plan tab, lists anything that
 does not add up in the Issues panel, and — once nothing is blocking — **Generate** turns the plan
-into a draft timetable, **Build** places it, **Solve** improves it, and **Print** hands it out.
-Re-drop a corrected workbook at any time; the plan merges and the loop runs again.
+into a draft timetable, **Quick timetable** places it, **Best timetable** improves it, and
+**Print** hands it out. Re-drop a corrected workbook at any time; the plan merges and the loop
+runs again.
 
-## Build and Solve
+## The timetable view
 
-**Build** places a draft instantly with the engine's greedy pass. **Solve** runs the engine's
-constraint solver as a job with a preset — *keep it close* (stay near the live timetable),
-*balanced*, or *best quality* — and a time limit (10 to 900 s). The progress card shows elapsed
-time and the best objective so far, and can stop early keeping the best result. When the job
-finishes the draft is promoted and the Quality panel scores six rules (spread, stability,
-compact, even days, edge, venue) before and after. Solve time is metered against your licence
-key's monthly budget; Build is not. Timetable exports (aSc) are imported with student groups and
+The page opens on the **Timetable** tab: pick a teacher, class, option group or room and see the
+familiar grid, days down and periods across. Cells with a problem are outlined; hover for the
+reason, click to select the lesson and see what is wrong in the **Selected** card, then **Fix…**
+in the Checks list asks the assistant for a proposal. **Print this** opens the print dialog on the
+same timetable. The **3D model** tab is the expert view of the same data; "Why 'Plane'?" in the
+header explains the picture. Once a start-wizard template is chosen, the page uses its words
+(nurses, wards, shifts) everywhere.
+
+## Quick and best timetables
+
+**Quick timetable** places a draft in seconds. **Best timetable** runs the constraint solver as a
+job with a preference — *keep it close* (stay near the live timetable), *balanced*, or *best
+quality* — and a time limit (10 to 900 s). The progress card shows elapsed time and the best
+objective so far, and can stop early keeping the best result. When the job finishes the draft is
+promoted and the Quality panel scores six rules (spread, stability, compact, even days, edge,
+venue) before and after. Best-timetable time is metered against your licence key's monthly
+budget; Quick timetable is not. Timetable exports (aSc) are imported with student groups and
 bands derived from the lessons, so student-side clashes are checked as well as teachers and rooms.
 
 ## Fixing and booking
@@ -59,8 +71,8 @@ its sheets and routes it here — or by describing requirements in chat ("Sec 3 
 two doubles, in a lab, Mr Tan"). The Issues panel lists what is missing or contradictory: blocking
 issues (a requirement with no teacher, periods that do not match the lesson counts) keep
 **Generate draft** disabled, warnings (a class with no size, a teacher over capacity) do not. Fix,
-re-read the issues, then Generate: the plan becomes the draft organisation, and Build and Solve
-work on it exactly as they do on any other draft. A re-import of an updated workbook merges by id
+re-read the issues, then Generate: the plan becomes the draft organisation, and Quick timetable and Best
+timetable work on it exactly as they do on any other draft. A re-import of an updated workbook merges by id
 and keeps what you set in the app — venue, availability, rules and class sizes.
 
 ## Environment variables

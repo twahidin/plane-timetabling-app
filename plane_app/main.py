@@ -24,10 +24,12 @@ from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, Db, mask_settings
 from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
+from .grid_api import make_router as grid_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import proposals
 from .plan import importer as plan_importer
+from .plan.model import vocabulary_of
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
 from .promote import promote_build
@@ -66,6 +68,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     app.include_router(print_router(db, templates))
     app.include_router(plan_router(db))
+    app.include_router(grid_router(db))
     static = HERE / "static"
     static.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static)), name="static")
@@ -155,7 +158,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         cur = db.current_timetable()
         return {"organisation": live, "draft": summarise(draft) if draft else None, "check": db.get_value("last_check"),
                 "labels": db.get_settings()["time"]["labels"],
-                "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)}}
+                "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)},
+                "vocabulary": vocabulary_of(db)}
 
     @app.post("/api/upload")
     async def upload(sid: str = Depends(auth.require_session), files: list[UploadFile] = File(...),

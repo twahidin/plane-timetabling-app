@@ -46,6 +46,13 @@ LESSON_LENGTH_MAX = 48
 DEFAULT_VOCABULARY = {"person": "teacher", "group": "class", "requirement": "lesson", "venue": "room"}
 
 
+def vocabulary_of(db) -> dict:
+    """The timetable's words: the stored plan's vocabulary over the defaults (education's)."""
+    plan = db.get_value("plan") or {}
+    v = plan.get("vocabulary") or {}
+    return {k: (v.get(k) or d) for k, d in DEFAULT_VOCABULARY.items()}
+
+
 class PlanError(ValueError):
     pass
 

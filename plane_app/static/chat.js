@@ -222,7 +222,7 @@
     const label = await loadModelLabel();
     const names = Array.from(files).map((f) => f.name).join(', ');
     const busy = startBusy(el('notes'), label
-      ? `Reading ${names} and extracting the organisation with ${label}. Large PDFs can take a minute or two\u2026`
+      ? `Reading ${names} with ${label}. Large PDFs can take a minute or two\u2026`
       : `Reading ${names}\u2026`);
     try {
       const r = await fetch('/api/upload', { method: 'POST', body: fd });
@@ -334,13 +334,16 @@
     draft = d;
     box.textContent = '';
     const head = node('div', 'head');
-    head.appendChild(node('div', 'section-title', 'Draft organisation' + (d.name ? ': ' + d.name : '')));
+    head.appendChild(node('div', 'section-title', 'Draft timetable' + (d.name ? ': ' + d.name : '')));
     const placed = (d.events || []).filter((e) => e.loc != null && e.t0 != null).length;
-    head.appendChild(node('div', 'summary', `${(d.persons || []).length} persons \u00b7 ${(d.locations || []).length} locations \u00b7 ${(d.events || []).length} events (${placed} fixed) \u00b7 ${(d.time_labels || []).length} slots`));
+    const summary = node('div', 'summary');
+    summary.innerHTML = `${String((d.persons || []).length)} <span data-word="person" data-word-plural>teachers</span> \u00b7 ${String((d.locations || []).length)} <span data-word="venue" data-word-plural>rooms</span> \u00b7 ${String((d.events || []).length)} <span data-word="requirement" data-word-plural>lessons</span> (${String(placed)} fixed) \u00b7 ${String((d.time_labels || []).length)} time slots`;
+    window.Words.apply(summary);
+    head.appendChild(summary);
     const groups = d.groups || [], bands = d.bands || [];
     if (groups.length) head.appendChild(node('div', 'summary', `${groups.filter((g) => !g.band).length} whole-class groups \u00b7 ${groups.filter((g) => g.band).length} option groups in ${bands.length} band${bands.length === 1 ? '' : 's'}`));
     box.appendChild(head);
-    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "0-8" or windows "0-3; 5-8" (slot numbers, end exclusive). Then Build (instant) or Solve (best under the soft rules) above.'));
+    box.appendChild(node('div', 'help', 'Click a cell to edit; changes save when you leave the cell. Lists are comma-separated ids; avail is "0-8" or windows "0-3; 5-8" (slot numbers, end exclusive). Then Quick timetable or Best timetable above.'));
     SECTIONS.forEach((sec) => { const rows = d[sec.key] || []; if (!sec.optional || rows.length) box.appendChild(renderTable(sec, rows)); });
     box.hidden = false;
     await showSolveBar(true);
@@ -504,7 +507,7 @@
     const wall = Math.max(0, (Date.now() - solveStartedAt) / 1000);
     const best = st.best_objective != null ? `best ${st.best_objective}`
       : st.status === 'queued' ? 'queued' : wall > 5 ? 'building the model' : 'no solution yet';
-    el('solve-label').textContent = `Solving \u00b7 ${PRESET_LABELS[st.preset] || st.preset} \u00b7 ${Math.round(wall)}s \u00b7 ${best}`;
+    el('solve-label').textContent = `Finding the best timetable \u00b7 ${PRESET_LABELS[st.preset] || st.preset} \u00b7 ${Math.round(wall)}s \u00b7 ${best}`;
     el('solve-fill').style.width = `${Math.min(100, ((st.elapsed || 0) / (st.time_limit || 1)) * 100)}%`;
   }
   const gapPct = (obj, bound) => `${(Math.max(0, obj - bound) / Math.max(obj, 1) * 100).toFixed(1)}%`;

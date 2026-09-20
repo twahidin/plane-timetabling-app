@@ -14,14 +14,41 @@ KINDS = {"teacher": G.teacher_grid, "group": G.group_grid, "class": G.class_grid
 ALL = ("teachers", "classes", "rooms")
 
 
+def live_org(db) -> dict:
+    """The live organisation, or a 404 — shared by the print routes and `/api/grid`."""
+    org = db.get_org("live")
+    if org is None:
+        raise HTTPException(404, "no live timetable")
+    return org
+
+
+def resolve_grid(org: dict, kind: str, id: str) -> G.Grid:
+    """A teacher/group/class/room grid by kind and id, or a 404 — shared by the print routes and `/api/grid`."""
+    if kind not in KINDS:
+        raise HTTPException(404, f"unknown kind {kind}")
+    try:
+        return KINDS[kind](org, id)
+    except KeyError as e:
+        raise HTTPException(404, f"unknown {kind} {e.args[0]!r}")
+
+
+def apply_week(db, org: dict, grids: list[G.Grid], view: str, date: str | None) -> list[G.Grid]:
+    """Grids unchanged, unless `view == "week"`: then each is widened to its calendar week, with a
+    400 if the calendar (e.g. `term_start`) isn't set up. Shared by the print routes and `/api/grid`."""
+    if view != "week":
+        return grids
+    s = db.get_settings()
+    try:
+        return [G.week_grid(org, g, s["calendar"], s["time"], date or _date.today().isoformat(), bookings.list_all(db)) for g in grids]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 def make_router(db, templates) -> APIRouter:
     r = APIRouter()
 
     def live() -> dict:
-        org = db.get_org("live")
-        if org is None:
-            raise HTTPException(404, "no live timetable")
-        return org
+        return live_org(db)
 
     def meta() -> tuple[str, str]:
         name = next((t["name"] for t in db.timetables() if t["id"] == db.current_timetable()), "")
@@ -29,26 +56,15 @@ def make_router(db, templates) -> APIRouter:
 
     def grids_for(kind: str, id: str) -> list[G.Grid]:
         org = live()
-        try:
-            if kind == "custom":
-                spec = db.get_value(f"print_custom:{id}")
-                if spec is None:
-                    raise HTTPException(404, "no such custom timetable")
-                return [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
-            if kind not in KINDS:
-                raise HTTPException(404, f"unknown kind {kind}")
-            return [KINDS[kind](org, id)]
-        except KeyError as e:
-            raise HTTPException(404, f"unknown {kind} {e.args[0]!r}")
+        if kind == "custom":
+            spec = db.get_value(f"print_custom:{id}")
+            if spec is None:
+                raise HTTPException(404, "no such custom timetable")
+            return [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
+        return [resolve_grid(org, kind, id)]
 
     def apply_view(grids: list[G.Grid], view: str, date: str | None) -> list[G.Grid]:
-        if view != "week":
-            return grids
-        s = db.get_settings()
-        try:
-            return [G.week_grid(live(), g, s["calendar"], s["time"], date or _date.today().isoformat(), bookings.list_all(db)) for g in grids]
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+        return apply_week(db, live(), grids, view, date)
 
     def respond(grids, as_pdf: bool, filename: str):
         generated, name = meta()

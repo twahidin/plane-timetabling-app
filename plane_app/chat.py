@@ -17,7 +17,7 @@ from .intake import IntakeError, apply_patch, empty_organisation, summarise
 from .llm import Provider, ProviderError, ToolCall, ToolSpec
 from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
-from .plan.model import apply_patch as apply_plan_patch, empty_plan
+from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, vocabulary_of
 from .promote import promote_build
 from .wizard import instantiate as wiz_instantiate
 from .wizard import library as wiz_library
@@ -34,8 +34,7 @@ DECLINE_WORDS = {"no", "cancel", "dismiss", "never mind", "stop"}
 # word, or a click on the apply route — never the model's own say-so.
 NOT_YET = "show the options and wait for the user's yes"
 
-SYSTEM_PROMPT = """You are the timetable assistant for one organisation. The timetable is a solid: every person is a
-plane, time runs along it, location runs up it, and a lesson or shift is a prism through the planes of its members.
+_PROMPT_BODY = """You are the timetable assistant for one organisation. {WORDS}
 There is a LIVE timetable (built and checked) and possibly a DRAFT organisation extracted from uploaded documents.
 Use the tools: where, who, both_free and load answer questions about the live timetable; list_draft shows the draft;
 update_draft changes it with a patch keyed by id; build_draft asks the engine to build it. When the user describes an
@@ -69,6 +68,18 @@ wizard_instantiate; it writes the settings, the plan's vocabulary and returns th
 fill in, a sample PDF of what the printed timetable will look like, and a one-page guide. Give the user all
 three links and tell them to drop the filled workbook back into the chat when it is ready. The user may
 still start from criteria instead ("start an empty draft"), which skips the wizard."""
+
+
+def system_prompt(vocabulary: dict | None = None) -> str:
+    v = {**DEFAULT_VOCABULARY, **{k: x for k, x in (vocabulary or {}).items() if x}}
+    words = (f"Use the timetable's own words: a person is a {v['person']}, a group is a {v['group']}, "
+             f"a scheduled activity is a {v['requirement']}, a place is a {v['venue']}. Never say plane, prism, "
+             "tile, solid, greedy, CP-SAT, engine or slot numbers to the user; say 'quick timetable' for build "
+             "and 'best timetable' for solve, and give times by their labels.")
+    return _PROMPT_BODY.replace("{WORDS}", words)
+
+
+SYSTEM_PROMPT = system_prompt()
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
@@ -460,9 +471,10 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
         db.add_message(session_id, "assistant", {"text": "Dismissed.", "tool_calls": []})
         return ChatResult("Dismissed.", [{"kind": "dismissed"}])
     events: list[dict] = []
+    prompt = system_prompt(vocabulary_of(db))
     for _ in range(MAX_ROUNDS):
         try:
-            turn = provider.complete(SYSTEM_PROMPT, history_for_provider(db, session_id), TOOLS)
+            turn = provider.complete(prompt, history_for_provider(db, session_id), TOOLS)
         except ProviderError as e:
             db.add_message(session_id, "assistant", {"text": f"The model provider failed: {e}", "tool_calls": []})
             raise

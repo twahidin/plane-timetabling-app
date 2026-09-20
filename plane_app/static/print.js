@@ -166,6 +166,6 @@
     });
   });
 
-  // Preselected open from the prism panel: window.openPrint('teacher', 'lee').
+  // Preselected open from the Selected card: window.openPrint('teacher', 'lee').
   window.openPrint = (kind, id) => { openDialog(kind, id).catch((e) => showError(e.message)); };
 })();

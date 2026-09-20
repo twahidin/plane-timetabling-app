@@ -35,24 +35,9 @@
   // docs/superpowers/specs/2026-09-20-start-wizard-design.md §5). Education's words are the
   // default and already match the tables' plain English headings ("Staff", "Requirements",
   // "classes"), so those stay as they are; only a plan the wizard configured for another domain
-  // (a ward, a clinic, a court) swaps them in.
-  const DEFAULT_VOCABULARY = { person: 'teacher', group: 'class', requirement: 'lesson', venue: 'room' };
+  // (a ward, a clinic, a court) swaps them in. pluralize/capitalize/DEFAULT live in words.js,
+  // shared across the app (window.Words).
   let divisionsClassesLabel = 'classes';
-
-  function isDefaultVocabulary(v) {
-    return DEFAULT_VOCABULARY.person === v.person && DEFAULT_VOCABULARY.group === v.group
-      && DEFAULT_VOCABULARY.requirement === v.requirement && DEFAULT_VOCABULARY.venue === v.venue;
-  }
-  // A plain-English plural: "nurse" -> "nurses", "coach" -> "coaches", "match" -> "matches",
-  // "consulting room" -> "consulting rooms" (only the last word takes the plural).
-  function pluralize(word) {
-    const w = String(word || '');
-    const parts = w.split(' ');
-    const last = parts.pop();
-    const plural = /[sxz]$|[cs]h$/i.test(last) ? last + 'es' : /[^aeiou]y$/i.test(last) ? last.slice(0, -1) + 'ies' : last + 's';
-    return parts.concat([plural]).join(' ');
-  }
-  function capitalize(word) { return word ? word.charAt(0).toUpperCase() + word.slice(1) : word; }
 
   function heading(tableId) {
     const table = el(tableId);
@@ -63,12 +48,14 @@
   // Called once the plan is (re)loaded: swaps the table headings and the "classes" column for
   // the plan's own vocabulary, or leaves the ordinary wording alone when none was set.
   function applyVocabulary(vocabulary) {
-    const v = vocabulary || DEFAULT_VOCABULARY;
-    const custom = !isDefaultVocabulary(v);
+    const Words = window.Words;
+    Words.set(vocabulary);
+    const v = Words.get();
+    const custom = !Words.isDefault(v);
     const reqHeading = heading('plan-requirements'), staffHeading = heading('plan-staff');
-    if (reqHeading) reqHeading.textContent = custom ? capitalize(pluralize(v.requirement)) : 'Requirements';
-    if (staffHeading) staffHeading.textContent = custom ? capitalize(pluralize(v.person)) : 'Staff';
-    divisionsClassesLabel = custom ? pluralize(v.group) : 'classes';
+    if (reqHeading) reqHeading.textContent = custom ? Words.capitalize(Words.pluralize(v.requirement)) : 'Requirements';
+    if (staffHeading) staffHeading.textContent = custom ? Words.capitalize(Words.pluralize(v.person)) : 'Staff';
+    divisionsClassesLabel = custom ? Words.pluralize(v.group) : 'classes';
     const classesColumn = REQ_COLUMNS.find((c) => c.key === 'classes');
     if (classesColumn) classesColumn.label = divisionsClassesLabel;
   }

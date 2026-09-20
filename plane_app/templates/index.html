@@ -12,7 +12,7 @@
   <div>
     <div class="eyebrow">Live timetable</div>
     <h1>Plane Timetabling</h1>
-    <p class="lede">Every person is a plane. Time runs along it, location runs up it, and its shape is the person's contract. A lesson or shift is a prism that pierces every plane it needs at the same time and place. Rest is a row of its own.</p>
+    <p class="lede">Upload your documents or answer a few questions in the chat, and get a checked timetable you can print. <a href="#" id="why-plane">Why "Plane"?</a></p>
   </div>
   <div class="links">
     <div class="timetables" id="timetables">
@@ -35,6 +35,22 @@
 
 <main class="wrap">
   <section class="stage">
+    <div class="seg stage-tabs" id="stage-tabs" role="tablist" aria-label="Main view">
+      <button id="stage-grid" class="on" type="button" role="tab" aria-selected="true">Timetable</button>
+      <button id="stage-model" type="button" role="tab" aria-selected="false">3D model <small>expert view</small></button>
+    </div>
+    <div id="grid-view">
+      <div class="grid-pick">
+        <select id="grid-kind" aria-label="What to show"></select>
+        <input id="grid-filter" type="text" placeholder="type to find" aria-label="Find" autocomplete="off">
+        <select id="grid-target" aria-label="Which one"></select>
+        <label class="grid-week">Week of <input id="grid-date" type="date" aria-label="Week of"></label>
+        <button class="btn" id="grid-print" type="button" title="Print or download this timetable">Print this</button>
+        <button class="btn" id="rebuild" title="Place everything again from the draft">Rebuild from draft</button>
+      </div>
+      <div class="tt-wrap"><div id="grid"><p class="empty">No timetable yet.</p></div></div>
+    </div>
+    <div id="model-view">
     <div class="toolbar">
       <div class="seg" role="group" aria-label="View direction">
         <button id="view-orbit" class="on" data-view="orbit">Orbit</button>
@@ -47,36 +63,36 @@
           <button id="zoom-in" aria-label="Zoom in">+</button>
           <button id="zoom-out" aria-label="Zoom out">&minus;</button>
         </div>
-        <button class="btn" id="rebuild" title="Send the draft to the engine and reload">Rebuild</button>
       </div>
     </div>
     <div class="view" id="view">
       <canvas id="c"></canvas>
-      <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; person planes</div>
+      <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; people</div>
       <div class="hint" id="hint">Drag to rotate &middot; scroll to zoom &middot; click a tile</div>
     </div>
     <div class="legend" id="legend"></div>
+    </div><!-- /model-view -->
   </section>
 
   <aside class="panel">
     <section class="card">
-      <h2>Reviewer <span class="eyebrow">four projections, one integral</span></h2>
+      <h2>Checks</h2>
       <div class="checks" id="checks"></div>
       <div class="verdict"><span class="dot" id="verdict-dot"></span><span id="verdict"></span></div>
       <ul class="clashes" id="clash-list"></ul>
     </section>
 
     <section class="card">
-      <h2>Selected prism <span class="eyebrow">click a tile</span></h2>
-      <div id="selected"><p class="empty">Nothing selected. Click any tile in the model to see the prism it belongs to and what the Reviewer says about it.</p></div>
+      <h2>Selected <span data-word="requirement">lesson</span> <span class="eyebrow">click a cell or a tile</span></h2>
+      <div id="selected"><p class="empty">Nothing selected. Click a <span data-word="requirement">lesson</span> in the timetable to see where it is and whether anything is wrong with it.</p></div>
     </section>
 
     <section class="card">
-      <details id="loads-details"><summary><h2 style="display:inline">Load &amp; rest agent</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
+      <details id="loads-details"><summary><h2 style="display:inline">Workload</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
     </section>
 
     <section class="card">
-      <h2>Search agent <span class="eyebrow">routes to one dimension at a time</span></h2>
+      <h2>Ask</h2>
       <div class="q">
         <select id="q-type" aria-label="Question type">
           <option value="where">Where is a person at a time?</option>
@@ -88,22 +104,22 @@
         <button class="btn primary" id="q-run">Ask</button>
       </div>
       <div class="answer" id="q-answer"></div>
-      <ul class="trace" id="q-trace"></ul>
+      <details id="q-trace-details"><summary>How this was answered</summary><ul class="trace" id="q-trace"></ul></details>
     </section>
   </aside>
 </main>
 
 <div class="below">
   <section id="intake">
-    <div class="section-title">Intake <span class="eyebrow">documents to draft to build</span> <button class="btn" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">Start wizard</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
+    <div class="section-title">Intake <span class="eyebrow">upload, check, build</span> <button class="btn" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">Start wizard</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
     <div id="drop" class="drop">Drop files here or <input type="file" id="files" multiple accept=".pdf,.csv,.xlsx"></div>
     <div class="import-options">
       <label for="import-mode">If the file is a timetable export (aSc)</label>
       <select id="import-mode" aria-label="Import mode">
         <option value="keep" selected>Keep the existing placement, then check it</option>
-        <option value="rebuild">Rebuild: unplace every lesson and let the engine re-place it</option>
+        <option value="rebuild">Start again: place everything afresh</option>
       </select>
-      <label class="check"><input type="checkbox" id="classes-as-planes"> Treat classes as planes <span class="hint">(shows subject banding as clashes)</span></label>
+      <label class="check"><input type="checkbox" id="classes-as-planes"> Also check each <span data-word="group">class</span> for clashes <span class="hint">(a <span data-word="group">class</span> is checked like a person)</span></label>
     </div>
     <div id="notes" class="notes"></div>
 
@@ -114,9 +130,9 @@
 
     <div id="draft-panel">
       <div id="solve-bar" class="solve-bar" hidden>
-        <button class="btn" id="build" type="button" title="The engine's greedy build: instant, no soft rules">Build <small>instant, greedy</small></button>
+        <button class="btn" id="build" type="button" title="Places everything in seconds, without polishing">Quick timetable</button>
         <span class="or">or</span>
-        <label for="solve-preset">Preset</label>
+        <label for="solve-preset">Prefer</label>
         <select id="solve-preset" aria-label="Solve preset">
           <option value="close">Keep it close</option>
           <option value="balanced">Balanced</option>
@@ -125,11 +141,11 @@
         </select>
         <label for="solve-time">Time limit</label>
         <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
-        <button class="btn primary" id="solve" type="button" title="Search for the best timetable under the soft rules, up to the time limit">Solve</button>
-        <button class="btn" id="score-live" type="button" title="Score the live timetable under the current weights, without solving">Score live</button>
+        <button class="btn primary" id="solve" type="button" title="Looks for the best arrangement under your preferences, up to the time limit">Best timetable</button>
+        <button class="btn" id="score-live" type="button" title="How good is the current timetable under these preferences?">Score current</button>
       </div>
       <div id="solve-progress" class="progress" hidden>
-        <div class="row"><span class="spinner"></span><span id="solve-label">Solving…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
+        <div class="row"><span class="spinner"></span><span id="solve-label">Finding the best timetable…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
         <div class="bar"><i id="solve-fill"></i></div>
         <div class="meta" id="solve-meta"></div>
       </div>
@@ -143,7 +159,7 @@
         <label class="plan-upload-label" for="plan-upload">Upload workbook
           <input type="file" id="plan-upload" multiple accept=".xlsx,.csv">
         </label>
-        <button class="btn primary" id="plan-generate" type="button" title="Turn the plan into a draft organisation">Generate draft</button>
+        <button class="btn primary" id="plan-generate" type="button" title="Turn the plan into a draft timetable">Generate draft</button>
       </div>
       <div id="plan-issues" class="plan-issues"></div>
       <div class="plan-section">
@@ -172,11 +188,20 @@
       <div id="wizard-candidates" class="wizard-candidates"></div>
       <div id="wizard-downloads" class="wizard-downloads" hidden></div>
     </div>
-    <div class="section-title">Assistant <span class="eyebrow">asks the engine, edits the draft</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
+    <div class="section-title">Assistant <span class="eyebrow">ask, propose, confirm</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
     <div id="chat-log" class="chat-log"></div>
     <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
   </section>
 </div>
+
+<dialog id="why-dialog" class="dialog">
+  <form method="dialog">
+    <h2>Why "Plane"?</h2>
+    <p class="dialog-text">Every person is a plane. Time runs along it, location runs up it, and its shape is the person's contract. A lesson or shift is a prism that pierces every plane it needs at the same time and place. Rest is a row of its own.</p>
+    <p class="dialog-text">You never need this picture; the Timetable tab shows the same thing as a grid.</p>
+    <div class="dialog-actions"><button type="submit" class="btn primary">Close</button></div>
+  </form>
+</dialog>
 
 <dialog id="tt-dialog" class="dialog">
   <form method="dialog" id="tt-form">
@@ -214,11 +239,13 @@
 </dialog>
 
 <script src="/static/three.min.js"></script>
+<script src="/static/words.js"></script>
 <script src="/static/model.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/plan.js"></script>
 <script src="/static/wizard.js"></script>
 <script src="/static/timetables.js"></script>
 <script src="/static/print.js"></script>
+<script src="/static/grid.js"></script>
 </body>
 </html>

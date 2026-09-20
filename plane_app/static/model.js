@@ -44,8 +44,14 @@
     };
   }
 
+  // ---------- Why "Plane"? ----------
+  // Above the Three.js guard below: the dialog is page copy, and must open even with no 3D library.
+  document.getElementById('why-plane').addEventListener('click', (ev) => {
+    ev.preventDefault(); document.getElementById('why-dialog').showModal();
+  });
+
   // ---------- Three.js scene ----------
-  const ZS = 1.5;           // spacing between person planes
+  const ZS = 1.5;           // spacing between one person's plane and the next
   const canvas = document.getElementById('c');
   const viewEl = document.getElementById('view');
   if (typeof THREE === 'undefined') {
@@ -155,7 +161,7 @@
     });
     const axT = makeLabel('T  time \u2192', th.muted, { size: 20, anchor: [0, 0.5] }); axT.position.set(nT + 0.3, -1.05, zFront); world.add(axT);
     const axL = makeLabel('L  location \u2191', th.muted, { size: 20, anchor: [1, 0.5] }); axL.position.set(-0.35, nL - 0.2, zFront); world.add(axL);
-    const axP = makeLabel('P  person planes \u27f6', th.muted, { size: 20, anchor: [0, 0.5] }); axP.position.set(nT + 0.3, -0.5, extents.d); world.add(axP);
+    const axP = makeLabel('P  people \u27f6', th.muted, { size: 20, anchor: [0, 0.5] }); axP.position.set(nT + 0.3, -0.5, extents.d); world.add(axP);
 
     // Events: a tile on every member plane, plus a faint prism binding the group together
     ds.events.forEach((e) => {
@@ -210,10 +216,14 @@
   function activeCam() { return state.view === 'orbit' ? persp : ortho; }
   function resize() {
     const w = viewEl.clientWidth, h = viewEl.clientHeight;
+    if (!w || !h) return;   // the 3D tab is hidden: sizing from a zero box would blank the canvas
     renderer.setSize(w, h, false);
     persp.aspect = w / h; persp.updateProjectionMatrix();
     layoutCamera(); invalidate();
   }
+  // grid.js calls this when the 3D tab is shown again: the canvas is sized from its box, which was
+  // zero while the tab was hidden.
+  window.resizeModel = () => { resize(); invalidate(); };
   function layoutCamera() {
     const w = viewEl.clientWidth || 1, h = viewEl.clientHeight || 1, aspect = w / h;
     if (state.view === 'orbit') {
@@ -239,7 +249,7 @@
     const hint = document.getElementById('hint');
     hint.textContent = v === 'orbit' ? 'Drag to rotate \u00b7 scroll to zoom \u00b7 click a tile' : 'Drag to pan \u00b7 scroll to zoom \u00b7 click a tile';
     const axes = document.getElementById('axes');
-    axes.innerHTML = v === 'orbit' ? 'T \u2192 time<br>L \u2191 location<br>P \u27f6 person planes'
+    axes.innerHTML = v === 'orbit' ? 'T \u2192 time<br>L \u2191 location<br>P \u27f6 people'
       : v === 'P' ? 'Looking along P<br>every plane collapses onto one<br>T \u2192 time \u00b7 L \u2191 location'
       : v === 'L' ? 'Looking along L<br>rooms collapse, people stay apart<br>T \u2192 time \u00b7 P \u2193 person'
       : 'Looking along T<br>one instant, everyone at once<br>P \u2192 person \u00b7 L \u2191 location';
@@ -289,12 +299,12 @@
   }
   // ---------- Panels ----------
   const el = (id) => document.getElementById(id);
-  const CHECKS = [
-    { key: 'person', name: 'One place at a time', how: 'project along L' },
-    { key: 'location', name: 'Room holds one event, under capacity', how: 'project along P' },
-    { key: 'sync', name: 'Group starts together', how: 'per sync group' },
-    { key: 'plane', name: 'Tile stays on its plane', how: 'per tile' },
-    { key: 'load', name: 'Load and rest within budget', how: 'integrate along T per plane' },
+  const CHECKS = () => [
+    { key: 'person', name: 'Nobody is in two places at once' },
+    { key: 'location', name: `No ${Words.word('venue')} is double-booked or over capacity` },
+    { key: 'sync', name: `${Words.word('requirement', { plural: true, cap: true })} that must start together do` },
+    { key: 'plane', name: 'Everyone works only when and where they may' },
+    { key: 'load', name: 'Nobody is overloaded or without rest' },
   ];
   const clashesFor = (e) => { const pre = e.id + '@'; return state.clashes.filter((c) => (c.tiles || []).some((t) => t.startsWith(pre))); };
 
@@ -303,16 +313,16 @@
     state.clashes = (check && check.clashes) || [];
     const byType = {};
     state.clashes.forEach((c) => { byType[c.type] = (byType[c.type] || 0) + 1; });
-    el('checks').innerHTML = CHECKS.map((c) => {
+    el('checks').innerHTML = CHECKS().map((c) => {
       const n = byType[c.key] || 0;
-      const chip = check ? `<span class="chip ${n ? 'bad' : 'ok'}">${n ? n + ' clash' + (n > 1 ? 'es' : '') : 'pass'}</span>` : '<span class="chip">\u2014</span>';
-      return `<div><div class="name">${c.name}</div><div class="how">${c.how}</div></div>${chip}`;
+      const chip = check ? `<span class="chip ${n ? 'bad' : 'ok'}">${n ? n + ' problem' + (n > 1 ? 's' : '') : 'ok'}</span>` : '<span class="chip">\u2014</span>';
+      return `<div><div class="name">${esc(c.name)}</div></div>${chip}`;
     }).join('');
     const n = state.clashes.length;
     el('verdict').textContent = !check ? 'Not checked yet.'
-      : n ? `${n} clash${n > 1 ? 'es' : ''} found. The Coordinator must roll back before committing.`
-      : !ds ? 'No clashes.'
-      : `No clashes. ${ds.events.length} prisms across ${ds.persons.length} planes. Safe to commit.`;
+      : n ? `${n} problem${n > 1 ? 's' : ''} found.`
+      : !ds ? 'No problems found.'
+      : `No problems found: ${ds.events.length} ${Words.word('requirement', { plural: ds.events.length !== 1 })}, ${ds.persons.length} ${Words.word('person', { plural: ds.persons.length !== 1 })}.`;
     el('verdict-dot').classList.toggle('bad', n > 0);
     const list = el('clash-list'); list.textContent = '';
     state.clashes.forEach((c) => {
@@ -337,7 +347,7 @@
     el('loads-summary').textContent = 'loading…';   // never blank while the /api/loads call is in flight
     box.textContent = '';
     const cell = (cls, text) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text; box.appendChild(d); return d; };
-    cell('n', ''); cell('n', `load of ${ds.rules.maxLoad}`); cell('n', `run of ${ds.rules.maxRun}`); cell('n', 'rest');
+    cell('n', ''); cell('n', `${ds.timeUnit}s (of ${ds.rules.maxLoad})`); cell('n', `in a row (max ${ds.rules.maxRun})`); cell('n', 'rest');
     let loads = {};
     let failed = null;
     try { loads = (await api('/api/loads')).loads || {}; }     // one engine call for every plane
@@ -348,7 +358,7 @@
       const reports = ds.persons.map((p) => loads[p.id]).filter(Boolean);
       const heaviest = reports.reduce((m, r) => Math.max(m, r.load || 0), 0);
       const over = reports.filter((r) => (r.load || 0) > (r.max_load ?? ds.rules.maxLoad)).length;
-      el('loads-summary').textContent = `${ds.persons.length} teachers, heaviest ${heaviest} of ${ds.rules.maxLoad}, ${over} over budget`;
+      el('loads-summary').textContent = `${ds.persons.length} ${Words.word('person', { plural: true })}, busiest ${heaviest} of ${ds.rules.maxLoad}, ${over} over the limit`;
     } catch (e) {
       el('loads-summary').textContent = 'loads unavailable';   // a failed /api/loads, or anything else that went wrong computing it
     }
@@ -383,8 +393,10 @@
     state.selected = eventId;
     const ds = state.ds, e = ds && ds.events.find((x) => x.id === eventId);
     if (!e) {
-      el('selected').innerHTML = '<p class="empty">Nothing selected. Click any tile in the model to see the prism it belongs to and what the Reviewer says about it.</p>';
-      paint(); return;
+      el('selected').innerHTML = `<p class="empty">Nothing selected. Click a ${esc(Words.word('requirement'))} in the timetable to see where it is and whether anything is wrong with it.</p>`;
+      paint();
+      if (window.gridHighlight) window.gridHighlight(eventId);   // a deselect clears the grid's own 'on' cell
+      return;
     }
     const loc = ds.locations[e.loc];
     const occupancy = eventsIn(ds, e.loc, e.t0).reduce((n, x) => n + x.members.length, 0);
@@ -394,14 +406,14 @@
     const personBad = of('person').concat(of('plane')), locBad = of('location'), loadBad = of('load'), syncBad = of('sync');
     el('selected').innerHTML = `
       <dl class="kv">
-        <dt>prism</dt><dd><strong>${esc(e.name)}</strong></dd>
-        <dt>where</dt><dd>${esc(loc.name)} <span style="color:var(--muted)">(L = ${e.loc})</span></dd>
-        <dt>when</dt><dd>${esc(spanLabel(ds, e))} <span style="color:var(--muted)">(T = ${e.t0}, ${e.dur} ${esc(ds.timeUnit)}${e.dur > 1 ? 's' : ''})</span></dd>
-        <dt>planes</dt><dd class="members">${e.members.map((p) => `<span>${esc(ds.persons[p].name)}</span>`).join('')}</dd>
-        <dt>Person</dt><dd>${chip(!personBad.length, personBad.length ? first(personBad) : `all ${e.members.length} planes free and in range`)}</dd>
-        <dt>Location</dt><dd>${chip(!locBad.length, locBad.length ? first(locBad) : `${occupancy} of ${loc.cap} seats${loc.shared ? ', shared room' : ''}`)}</dd>
-        <dt>Load</dt><dd>${chip(!loadBad.length, isRestEvent(ds, e) ? 'rest tile, not counted as load' : loadBad.length ? first(loadBad) : 'every member within budget')}</dd>
-        <dt>Time</dt><dd>${chip(!syncBad.length, syncBad.length ? first(syncBad) : e.sync ? 'sync group aligned' : 'single prism, members bound by shape')}</dd>
+        <dt>what</dt><dd><strong>${esc(e.name)}</strong></dd>
+        <dt>where</dt><dd>${esc(loc.name)}</dd>
+        <dt>when</dt><dd>${esc(spanLabel(ds, e))}</dd>
+        <dt>who</dt><dd class="members">${e.members.map((p) => `<span>${esc(ds.persons[p].name)}</span>`).join('')}</dd>
+        <dt>People</dt><dd>${chip(!personBad.length, personBad.length ? first(personBad) : 'everyone is free')}</dd>
+        <dt>${esc(Words.word('venue', { cap: true }))}</dt><dd>${chip(!locBad.length, locBad.length ? first(locBad) : `${occupancy} of ${loc.cap} seats${loc.shared ? `, shared ${Words.word('venue')}` : ''}`)}</dd>
+        <dt>Workload</dt><dd>${chip(!loadBad.length, isRestEvent(ds, e) ? 'rest, not counted' : loadBad.length ? first(loadBad) : 'within limits')}</dd>
+        <dt>Timing</dt><dd>${chip(!syncBad.length, syncBad.length ? first(syncBad) : e.sync ? 'starts with its group' : 'on its own')}</dd>
         <dt></dt><dd class="actions">${e.fixed ? '' : '<a class="move" href="#">Move…</a> '}<a class="book" href="#">Book this room</a></dd>
         <dt>print</dt><dd class="actions">${e.members.filter((p) => String(ds.persons[p].role || '').startsWith('Teacher'))
           .map((p) => `<a class="print-teacher" href="#" data-id="${esc(ds.persons[p].id)}">Print ${esc(ds.persons[p].name)}</a>`).join(' ')}
@@ -422,7 +434,9 @@
       ev.preventDefault(); if (window.openPrint) window.openPrint('room', a.dataset.id);
     }));
     paint();
+    if (window.gridHighlight) window.gridHighlight(eventId);   // the grid view (if any) follows the model
   }
+  window.selectEvent = select;
 
   // Search agent: the question goes to the engine; the panel only routes and renders
   function qArgs() {
@@ -463,9 +477,9 @@
 
   function renderLegend() {
     const ds = state.ds;
-    el('legend').innerHTML = `<span><span class="sw plane"></span>person plane, width = working window</span>` +
+    el('legend').innerHTML = `<span><span class="sw plane"></span>one strip per ${esc(Words.word('person'))}, as wide as their working hours</span>` +
       ds.locations.map((l, i) => `<span><span class="sw" style="background:${l.rest ? 'var(--rest)' : 'var(--loc-' + ((i % 5) + 1) + ')'}"></span>${esc(l.name)}${l.rest ? ' (rest row)' : l.shared ? ' (shared)' : ''}</span>`).join('') +
-      `<span><span class="sw prism"></span>sync prism through the group</span><span><span class="sw bad"></span>clash</span>`;
+      `<span><span class="sw prism"></span>${esc(Words.word('requirement', { plural: true }))} that must start together</span><span><span class="sw bad"></span>problem</span>`;
   }
 
   // ---------- Status strip ----------
@@ -495,17 +509,21 @@
   async function loadFromApi() {
     const data = await api('/api/solid');
     state.check = data.check;
+    if (window.Words) { Words.set(data.vocabulary); Words.apply(document); }   // the timetable's own words, page-wide
     if (!data.organisation) {
       state.ds = null; state.selected = null;
       el('empty').hidden = false; el('view').hidden = true;
       renderReview(); select(null); qArgs(); el('loads').textContent = ''; el('legend').textContent = '';
       el('loads-summary').textContent = 'no timetable yet';
-      await renderStatus(data); return;
+      await renderStatus(data);
+      if (window.gridReload) window.gridReload();
+      return;
     }
     el('empty').hidden = true; el('view').hidden = false;
     state.ds = toInternal(data.organisation); state.selected = null;
     renderLegend(); build(); renderReview(); select(null); qArgs(); await renderLoads();
     await renderStatus(data);   // after the loads call, so the usage counts include it
+    if (window.gridReload) window.gridReload();
   }
   window.reloadModel = loadFromApi;
 
