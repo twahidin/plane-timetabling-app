@@ -13,6 +13,7 @@ from . import calendar as cal_mod
 from . import names
 from . import periods
 from . import proposals
+from . import relief
 from .db import Db
 from .engine_client import EngineClient, EngineError
 from .intake import IntakeError, apply_patch, empty_organisation, summarise
@@ -74,7 +75,17 @@ A PERIOD timetable is in force for a date range and a scope (whole school, level
 from the normal timetable with period_create; on those dates every date question (where, who, free_venues,
 printing a week) uses it automatically. Say 'period' and 'normal timetable' to the user. To ask where or who
 on a date, give where/who the date and the offset within that day instead of a slot; period_list shows the
-periods and period_refresh re-copies the normal timetable's lessons into one."""
+periods and period_refresh re-copies the normal timetable's lessons into one.
+RELIEF: when a teacher is away, record it with absence_add (a name is fine; dates YYYY-MM-DD; a part day as
+[first, one past last] offsets within the day, breaks counted; give it back to the user by the labels the
+result returns) and offer cover with relief_plan, which makes one card per
+lesson. The choice of who covers is: the relief pool first, then the same subject, then whoever has covered least this term, then the lightest day.
+Cover cards wait for a yes like every proposal: show them and stop; never apply one in the reply that made
+it. Each card is applied on its own, and a yes applies the first card that has a teacher on it. absence_list shows who is away and how many
+lessons are covered, relief_ledger counts each teacher's covers this term, and relief_settings changes the
+relief pool and the most covers a teacher takes in a day straight away (tell the user what you changed).
+Dated questions already reflect applied covers: where/who with a date and a printed week show the covering
+teacher."""
 
 
 def system_prompt(vocabulary: dict | None = None) -> str:
@@ -178,6 +189,31 @@ TOOLS: list[ToolSpec] = [
               "required": ["name", "from", "to", "scope"]}),
     ToolSpec("period_refresh", "Re-copy the normal timetable's out-of-scope lessons into a period timetable, keeping the period's own lessons.",
              {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+    ToolSpec("absence_add", "Record that a teacher is away: from one date to another (default the same day), the whole "
+                            "day or a part of it. Resolves the name; asks when several teachers match.",
+             {"type": "object", "properties": {
+                 "person": {"type": "string", "description": "A name or id"},
+                 "from": {"type": "string", "description": "YYYY-MM-DD"},
+                 "to": {"type": "string", "description": "YYYY-MM-DD, default the same day"},
+                 "slots": {"type": "array", "items": {"type": "integer"},
+                           "description": "[first, one past last] offsets within the day for a part day (0 = the "
+                                          "day's first slot; a break counts as a slot); omit for the whole day"},
+                 "reason": {"type": "string"}}, "required": ["person", "from"]}),
+    ToolSpec("absence_list", "The absences, each with how many of its lessons are covered.",
+             {"type": "object", "properties": {}}),
+    ToolSpec("relief_plan", "Propose cover for an absence: one card per lesson with the best teacher chosen and two "
+                            "others free. Changes nothing: show the cards and wait for the user's yes.",
+             {"type": "object", "properties": {
+                 "absence": {"type": "string", "description": "An absence id, or the absent teacher's name when they have one absence"},
+                 "choices": {"type": "object", "description": "{event id: person id} to pick another free teacher for a lesson"}},
+              "required": ["absence"]}),
+    ToolSpec("relief_ledger", "Covers per teacher since the start of term (or since a date), most first.",
+             {"type": "object", "properties": {"since": {"type": "string", "description": "YYYY-MM-DD"}}}),
+    ToolSpec("relief_settings", "Change the relief pool (teachers asked first) and the most covers a teacher takes in a "
+                                "day. Applied straight away; tell the user what changed.",
+             {"type": "object", "properties": {
+                 "pool": {"type": "array", "items": {"type": "string"}, "description": "Names or ids; replaces the pool"},
+                 "max_per_day": {"type": "integer"}}}),
     ToolSpec("wizard_library", "The start wizard's template library: domains and, in each, the templates' id, name, "
                                "summary, when_to_choose and knobs with defaults. Optionally filter to one domain.",
              {"type": "object", "properties": {"domain": {"type": "string", "enum": ["education", "health", "business", "sports"]}}}),
@@ -266,7 +302,87 @@ def _applied_events(kind: str, res: dict) -> list[dict]:
         if kind == "undo":
             out.append({"kind": "undone", "description": res["description"]})
         out.append({"kind": "bookings_updated"})
+        if kind in ("cover", "undo"):                  # the Relief card's counts (an undo may take a cover back)
+            out.append({"kind": "relief"})
     return out
+
+
+def _cover_cards_left(db: Db, session_id: str, ok: bool) -> str:
+    """The sentence after a yes on a cover card, when cover cards remain: they stay on offer either way."""
+    n = sum(1 for p in proposals.pending(db, session_id) if p.get("kind") == "cover")
+    if not n:
+        return ""
+    cards = f"{n} {'more ' if ok else ''}cover card{'' if n == 1 else 's'}"
+    return f" {cards} {'waiting' if ok else 'still waiting'}: say yes for the next" + (", or pick one." if ok else ".")
+
+
+def _absence_id(db: Db, arg) -> str:
+    """An absence id, or the one absence of the teacher `arg` names."""
+    arg = str(arg or "").strip()
+    if relief.get_absence(db, arg) is not None:
+        return arg
+    if not relief.resolve_person(db, arg):
+        raise relief.ReliefError(f"no absence {arg!r}: absence_list shows them")
+    pid = relief.person_id(db, arg)
+    theirs = [a for a in relief.list_absences(db) if a["person"] == pid]
+    if len(theirs) == 1:
+        return theirs[0]["id"]
+    if not theirs:
+        raise relief.ReliefError(f"no absence {arg!r}")
+    raise relief.ReliefError(f"{arg} has several absences: " + ", ".join(f"{a['id']} ({a['from']} to {a['to']})" for a in theirs)
+                             + ". Give the id.")
+
+
+def _relief_tool(call: ToolCall, db: Db, events: list[dict], session_id: str, run: str) -> str:
+    if call.name == "absence_add":
+        matches = relief.resolve_person(db, call.args.get("person"))
+        if len(matches) != 1:
+            if not matches:
+                return json.dumps({"error": f"no teacher matching {str(call.args.get('person') or '')!r}"})
+            return json.dumps({"matches": matches, "note": "Several teachers match: ask the user which one."})
+        who = matches[0]
+        rec = relief.add_absence(db, who["id"], call.args.get("from"), call.args.get("to"), call.args.get("slots"),
+                                 call.args.get("reason") or "")
+        events.append({"kind": "relief"})
+        row = relief.absence_row(db, rec)
+        return json.dumps({"ok": True, "absence": rec, "name": who["name"], "lessons": row["lessons"],
+                           "part_of_day": row["slot_labels"] or "the whole day",
+                           "note": "Call relief_plan with this absence's id to propose cover."})
+    if call.name == "absence_list":
+        return json.dumps({"absences": relief.absence_rows(db)})
+    if call.name == "relief_plan":
+        aid = _absence_id(db, call.args.get("absence"))
+        cards = relief.plan(db, aid, call.args.get("choices") or None, session_id, run)
+        mine = [c for c in cards if c["absence"] == aid]
+        events.append({"kind": "proposals", "items": cards})
+        return json.dumps({"proposals": [{"id": c["id"], "text": c["text"], "uncovered": c["uncovered"],
+                                          "event": c["event"], "date": c["date"],
+                                          "candidates": [x["name"] for x in c["candidates"]]} for c in mine],
+                           "other_pending": len(cards) - len(mine),
+                           "note": "Show these to the user and wait for a yes before calling apply. Saying yes "
+                                   "applies the first card; each card is applied on its own, or name one by its id. "
+                                   "To pick another free teacher, call relief_plan again with choices."})
+    if call.name == "relief_ledger":
+        return json.dumps({"items": relief.ledger(db, call.args.get("since"))})
+    if call.name == "relief_settings":
+        patch = {}
+        if call.args.get("pool") is not None:
+            pool = call.args["pool"]
+            if not isinstance(pool, list):
+                return json.dumps({"error": "pool is a list of names or ids"})
+            patch["pool"] = [relief.person_id(db, p) for p in pool]
+        if call.args.get("max_per_day") is not None:
+            patch["max_per_day"] = call.args["max_per_day"]
+        if not patch:
+            return json.dumps({"settings": relief.settings(db), "pool_names": relief.pool_names(db)})
+        new = relief.set_settings(db, patch)
+        events.append({"kind": "relief"})
+        return json.dumps({"ok": True, "settings": new, "pool_names": relief.pool_names(db),
+                           "note": "Applied. Tell the user the pool and daily limit as they now stand."})
+    return json.dumps({"error": f"unknown tool {call.name}"})
+
+
+_RELIEF_TOOLS = {"absence_add", "absence_list", "relief_plan", "relief_ledger", "relief_settings"}
 
 
 def _plan_issue_dict(i: Issue) -> dict:
@@ -378,6 +494,8 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             res = proposals.apply(db, engine, pid, session_id)
             events.extend(_applied_events((item or {}).get("kind", ""), res))
             return json.dumps(res)
+        if call.name in _RELIEF_TOOLS:
+            return _relief_tool(call, db, events, session_id, run)
         if call.name == "undo":
             item = proposals.propose_undo(db, session_id, run)
             if item is None:
@@ -579,12 +697,24 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
     pend = proposals.pending(db, session_id)
     if pend and norm in CONFIRM_WORDS:
         # A yes is the confirmation the gate waits for: apply the first pending option here, so no
-        # model turn stands between the user's word and the change.
-        res = proposals.apply(db, engine, pend[0]["id"], session_id)
+        # model turn stands between the user's word and the change. The list is the most recent run's
+        # (a new card set replaces the old, and relief_plan puts its own absence's cards first); an
+        # uncovered cover card has nothing to apply, so a yes takes the first card that has.
+        first = next((p for p in pend if not p.get("uncovered")), pend[0])
+        res = proposals.apply(db, engine, first["id"], session_id)
         text = (("Applied: " if res["ok"] else "Not applied: ") + res["description"]
                 + (" — " + "; ".join(c["message"] for c in res["clashes"]) if not res["ok"] and res["clashes"] else ""))
+        if first["kind"] == "cover":
+            if not res["ok"]:
+                # A refused cover card cannot become applicable by asking again: drop it, so the rest
+                # are renewed and the next yes moves on to them instead of hitting this one forever.
+                proposals.take(db, first["id"], session_id)
+            left = _cover_cards_left(db, session_id, res["ok"])
+            if left:
+                text = text.rstrip(".") + "."             # "<description>. N cover cards … waiting: …"
+            text += left
         db.add_message(session_id, "assistant", {"text": text, "tool_calls": []})
-        return ChatResult(text, _applied_events(pend[0]["kind"], res))
+        return ChatResult(text, _applied_events(first["kind"], res))
     if pend and norm in DECLINE_WORDS:
         # The mirror of the yes: the card goes, every run of it, and the model never sees the turn.
         proposals.clear_pending(db, session_id)

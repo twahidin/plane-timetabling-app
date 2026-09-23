@@ -12,6 +12,11 @@ token in `chat.run_chat`).
 timetable through the change log, makes the change and re-checks it. Anything that goes wrong after
 the snapshot — a clash, an unreachable engine, a vanished event — is rolled back through
 `changes.undo`, so a half-applied proposal cannot survive this call.
+
+A cover card (relief) changes no organisation, so it runs no engine check: `relief.refusal`
+re-checks the card instead (the covering teacher must still be free, the lesson not yet covered),
+and the change log records the one cover it adds. Applying it removes that card only: an absence
+stages one card per lesson, each applied on its own (`take`); every other apply clears the list.
 """
 from __future__ import annotations
 
@@ -59,6 +64,24 @@ def clear_pending(db, session_id: str = "") -> None:
     cards, runs = dict(store.get("cards") or {}), dict(store.get("runs") or {})
     cards.pop(session_id, None)
     runs.pop(session_id, None)
+    _write(db, cards, runs)
+
+
+def take(db, pid: str, session_id: str = "") -> None:
+    """Remove the one card `pid` and keep the rest (a cover card: each lesson is applied on its own).
+    The rest are renewed for one more message, as if the message that applied this card had made
+    them, so the user can work down the list one yes at a time."""
+    store = _store(db)
+    cards, runs = dict(store.get("cards") or {}), dict(store.get("runs") or {})
+    rec = cards.get(session_id)
+    if rec is None:
+        return
+    items = [i for i in rec.get("items") or [] if i.get("id") != pid]
+    if not items:
+        cards.pop(session_id, None)
+        runs.pop(session_id, None)
+    else:
+        cards[session_id] = {"run": runs.get(session_id, rec.get("run")), "items": items}
     _write(db, cards, runs)
 
 
@@ -216,6 +239,25 @@ def _stale(db, item: dict) -> str | None:
     return None
 
 
+def _apply_cover(db, item: dict, session_id: str) -> dict:
+    from . import relief                                # relief imports this module: import lazily
+    if (why := relief.refusal(db, item)) is not None:
+        return {"ok": False, "description": why, "clashes": []}
+    cover = relief.cover_of(item)
+    description = relief.cover_text(item)
+    changes.record(db, "cover", description, cover=cover)
+    try:
+        relief.add_cover(db, cover)
+    except relief.ReliefError as ex:                    # the card could not become a cover: say why
+        changes.undo(db)
+        return {"ok": False, "description": str(ex), "clashes": []}
+    except Exception:                  # noqa: BLE001 - a cover that failed to land must leave no log entry
+        changes.undo(db)
+        raise
+    take(db, item["id"], session_id)                    # the other lessons' cards stay on offer
+    return {"ok": True, "description": description, "clashes": []}
+
+
 def apply(db, engine, pid: str, session_id: str = "") -> dict:
     """Make one pending proposal real, or say why not."""
     item = next((p for p in pending(db, session_id) if p["id"] == pid), None)
@@ -230,6 +272,8 @@ def apply(db, engine, pid: str, session_id: str = "") -> dict:
         if undone is None:
             return {"ok": False, "description": "nothing to undo", "clashes": []}
         return {"ok": True, "description": f"Undone: {undone}", "clashes": []}
+    if item["kind"] == "cover":
+        return _apply_cover(db, item, session_id)
     if item["kind"] != "booking" and (why := _stale(db, item)) is not None:
         return {"ok": False, "description": why, "clashes": []}
     if item["kind"] == "booking" and any(x["id"] == item["booking"]["id"] for x in bookings.list_all(db)):

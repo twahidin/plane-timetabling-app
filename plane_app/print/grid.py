@@ -22,6 +22,7 @@ class DayRow:
     label: str
     cells: list[Cell]
     off: bool = False
+    timetable: str | None = None    # a dated week's row: the timetable in force that day (None: the grid's own)
 
 
 @dataclass
@@ -173,7 +174,14 @@ def all_grids(org: dict, kind: str) -> list[Grid]:
     raise KeyError(kind)
 
 
-def week_grid(org: dict, grid: Grid, cal: dict, time: dict, date: str, bookings=()) -> Grid:
+def week_grid(org: dict, grid: Grid, cal: dict, time: dict, date: str, bookings=(), day_grids: dict[str, Grid] | None = None,
+              day_tids: dict[str, str] | None = None, day_notes: dict[str, str] | None = None) -> Grid:
+    """The Monday-to-Friday week of `date`, each weekday's cells taken from its cycle day. With
+    `day_grids` (ISO date -> this grid built from that date's organisation: the timetable in force that
+    day, with that day's covers), each weekday reads its own grid, and a weekday missing from it is an
+    off row; without, every weekday reads `grid`. `day_tids` names each row's timetable
+    (`DayRow.timetable`); `day_notes` says why a school day has no grid ("no timetable built"), added
+    to that off row's label so it is not taken for a holiday."""
     if not cal.get("term_start"):
         raise ValueError("set the term calendar in Settings to print a dated week")
     d = _date.fromisoformat(date)
@@ -183,10 +191,13 @@ def week_grid(org: dict, grid: Grid, cal: dict, time: dict, date: str, bookings=
         day = monday + timedelta(days=i)
         iso, label = day.isoformat(), day.strftime("%a %-d %b")
         k = cal_mod.cycle_day(cal, time, iso)
-        if k is None or k >= len(grid.days):
-            rows.append(DayRow(label, [Cell("free") for _ in grid.slots], off=True))
+        src = grid if day_grids is None else day_grids.get(iso)
+        tid = (day_tids or {}).get(iso)
+        if k is None or src is None or k >= len(src.days):
+            why = (day_notes or {}).get(iso) if k is not None and src is None else None
+            rows.append(DayRow(f"{label} · {why}" if why else label, [Cell("free") for _ in grid.slots], off=True, timetable=tid))
             continue
-        cells = [Cell(c.kind, c.text, c.sub, c.span, list(c.events)) for c in grid.days[k].cells]
+        cells = [Cell(c.kind, c.text, c.sub, c.span, list(c.events)) for c in src.days[k].cells]
         if grid.kind == "room":
             spd = _spd(org)
             for b in bookings:
@@ -196,5 +207,5 @@ def week_grid(org: dict, grid: Grid, cal: dict, time: dict, date: str, bookings=
                         cells[s] = Cell("booking", b["title"], b.get("booked_by", ""), b["dur"])
                         for t in range(s + 1, min(s + b["dur"], len(cells))):
                             cells[t] = Cell("continued")
-        rows.append(DayRow(label, cells))
+        rows.append(DayRow(label, cells, timetable=tid))
     return Grid(grid.title, f"Week of {monday.strftime('%-d %B %Y')}", grid.slots, rows, grid.kind, grid.id)

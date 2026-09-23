@@ -440,3 +440,31 @@
   .period-scope { border: 0; padding: 0; margin: 10px 0 0; font-size: 13px; }
   .period-scope legend { padding: 0; margin-bottom: 2px; }
   #period-dialog .period-scope label { display: inline-flex; align-items: center; gap: 5px; margin: 4px 14px 0 0; }
+
+  /* ---- relief: the Relief card (absences, relief settings) and the Add absence dialog ---- */
+  .relief { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+  .relief .empty { color: var(--ink-2); font-size: 12.5px; }
+  .relief .absence { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .absence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .absence-meta { color: var(--ink-2); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+  .absence-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+  .absence-btns .btn, #absence-new, #relief-ledger { padding: 4px 9px; font-size: 12px; }
+  #relief-ledger { text-decoration: none; }
+  .relief-ask { color: var(--ink); font-size: 12.5px; }
+  .badge.warn { background: var(--booking-soft); color: var(--ink); }
+  .relief-note { color: var(--ink-2); font-size: 12.5px; margin: 8px 0 0; }
+  .relief-hint { color: var(--muted); font-size: 12px; font-weight: normal; }
+  .relief-settings { margin-top: 10px; font-size: 13px; }
+  .relief-settings summary { cursor: pointer; color: var(--ink-2); }
+  .relief-settings label { display: block; margin-top: 8px; }
+  .relief-settings select, .relief-settings input[type="number"] { display: block; width: 100%; margin-top: 4px; font: inherit;
+    padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .relief-settings input[type="number"] { width: 6em; }
+  .relief-settings-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  #absence-dialog label { margin-top: 10px; }
+  #absence-dialog input[type="date"], #absence-dialog select { display: block; width: 100%; margin-top: 4px;
+    font: inherit; font-size: 14px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .absence-slots { border: 0; padding: 0; margin: 10px 0 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 0 10px; }
+  .absence-slots legend { padding: 0; margin-bottom: 2px; }
+  .absence-slots label { flex: 1; min-width: 7em; }
+  #absence-dialog .absence-slots label { margin-top: 4px; }

@@ -281,13 +281,19 @@ def timetable_for(db, date, tid=None) -> str:
 
 def org_for(db, date, tid=None) -> tuple[str, dict | None]:
     """(tid, live organisation of the timetable in force on `date` with the base's bookings
-    injected); the organisation is None when that timetable has no live one."""
+    injected and that date's relief covers overlaid); the organisation is None when that timetable
+    has no live one."""
+    from . import relief                              # relief imports this module: import lazily
     base = base_tid(db, tid)
     t = timetable_for(db, date, base)
     org = db.get_org("live", tid=t)
     if org is None:
         return t, None
-    return t, bookings.inject(org, list(db.get_value("bookings", tid=base) or []))
+    org = bookings.inject(org, list(db.get_value("bookings", tid=base) or []))
+    covers = [c for c in relief.covers_for(db, date, base) if c.get("timetable") in (None, "", t)]
+    if covers:
+        org = relief.overlay(org, covers, absent=relief.absent_on(db, date, base))
+    return t, org
 
 
 def no_live_message(db, tid, default: str) -> str:
@@ -298,13 +304,15 @@ def no_live_message(db, tid, default: str) -> str:
 
 
 def base_changes(db, rec: dict, base=None) -> int:
-    """How many of the base's change-log entries were made after the period `rec` was created."""
+    """How many of the base's change-log entries that changed its organisation were made after the
+    period `rec` was created (bookings and covers live on the base for both, so they do not count)."""
     base = base or base_tid(db)
     try:
         since = calendar.timegm(time.strptime(rec["created"], "%Y-%m-%dT%H:%M:%SZ"))
     except (KeyError, TypeError, ValueError):
         return 0
-    return sum(1 for e in changes.list_all(db, tid=base) if (e.get("when") or 0) > since)
+    shared = changes.BOOKING_ADDED + changes.BOOKING_REMOVED + changes.COVER_ADDED
+    return sum(1 for e in changes.list_all(db, tid=base) if (e.get("when") or 0) > since and e.get("kind") not in shared)
 
 
 OWN_LISTS = ("persons", "locations", "groups", "bands")

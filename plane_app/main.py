@@ -35,6 +35,7 @@ from .periods_api import make_router as periods_router
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
 from .promote import promote_build
+from .relief_api import make_router as relief_router
 from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
@@ -334,6 +335,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         return _timetables_payload()
 
     app.include_router(periods_router(db, engine, _delete_instance))
+    app.include_router(relief_router(db))
 
     @app.get("/api/draft")
     def get_draft(sid: str = Depends(auth.require_session)):

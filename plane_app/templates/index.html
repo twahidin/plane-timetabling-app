@@ -103,6 +103,19 @@
       <p id="periods-note" class="periods-note" hidden></p>
     </section>
 
+    <section class="card" id="relief-card">
+      <h2>Relief <button class="btn" id="absence-new" type="button">Add absence</button> <a class="btn" id="relief-ledger" href="/print/relief" target="_blank" rel="noopener" title="Covers taken by each teacher this term, as a printable page">Ledger</a></h2>
+      <ul class="relief" id="relief-list"></ul>
+      <p id="relief-note" class="relief-note" hidden></p>
+      <details id="relief-settings" class="relief-settings">
+        <summary>Relief settings <span id="relief-settings-summary" class="eyebrow"></span></summary>
+        <label for="relief-pool">Relief pool <span class="relief-hint">teachers asked first; hold Ctrl or ⌘ to pick several</span>
+          <select id="relief-pool" multiple size="6"></select></label>
+        <label for="relief-max-per-day">Most covers a teacher takes in a day <input id="relief-max-per-day" type="number" min="1" max="20" step="1"></label>
+        <div class="relief-settings-actions"><button class="btn" id="relief-settings-save" type="button">Save</button> <span id="relief-settings-note" class="relief-hint"></span></div>
+      </details>
+    </section>
+
     <section class="card">
       <h2>Ask</h2>
       <div class="q">
@@ -253,6 +266,29 @@
   </form>
 </dialog>
 
+<dialog id="absence-dialog" class="dialog">
+  <form method="dialog" id="absence-form">
+    <h2>Add absence</h2>
+    <p class="dialog-text">Who is away and when. Then press Plan cover on the Relief card: the assistant offers a teacher for each lesson, and nothing changes until you apply a card.</p>
+    <label for="absence-person">Teacher <select id="absence-person"></select></label>
+    <div class="period-dates">
+      <label for="absence-from">From <input id="absence-from" type="date"></label>
+      <label for="absence-to">To <input id="absence-to" type="date"></label>
+    </div>
+    <fieldset class="absence-slots">
+      <legend>Only some of the day <span class="relief-hint">leave blank for the whole day</span></legend>
+      <label for="absence-slots-from">From <select id="absence-slots-from"></select></label>
+      <label for="absence-slots-to">to <select id="absence-slots-to"></select></label>
+    </fieldset>
+    <label for="absence-reason">Reason <span class="relief-hint">optional</span> <input id="absence-reason" type="text" autocomplete="off" maxlength="120" placeholder="for example medical leave, course"></label>
+    <p id="absence-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="absence-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="absence-ok">Add</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="period-remove-dialog" class="dialog">
   <form method="dialog" id="period-remove-form">
     <h2 id="period-remove-title">Remove the period?</h2>
@@ -296,6 +332,7 @@
 <script src="/static/wizard.js"></script>
 <script src="/static/timetables.js"></script>
 <script src="/static/periods.js"></script>
+<script src="/static/relief.js"></script>
 <script src="/static/print.js"></script>
 <script src="/static/grid.js"></script>
 </body>

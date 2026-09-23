@@ -30,6 +30,7 @@
     if (window.reloadModel) await window.reloadModel().catch(() => {});
     if (window.reloadIntake) await window.reloadIntake().catch(() => {});
     if (window.loadPeriods) await window.loadPeriods().catch(() => {});
+    if (window.loadRelief) await window.loadRelief().catch(() => {});
   }
 
   async function load() {

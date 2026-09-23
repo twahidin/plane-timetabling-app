@@ -51,7 +51,9 @@
   // A card per pending option: the model's `propose`/`book`/`undo` tools only stage a change; nothing
   // is real until Apply is clicked (or a confirm word / later `apply` call takes the same route
   // server-side). Every card in the batch that made the id being applied or the dismiss call is
-  // greyed out together, since the server clears the whole pending list on either action.
+  // greyed out together, since the server clears the whole pending list on either action, except
+  // after applying a cover card (relief): the server takes that one card and keeps the rest on offer,
+  // so only it is greyed out and the other lessons' cards stay clickable.
   function fmtDelta(delta) {
     return Object.entries(delta || {}).filter(([, v]) => v)
       .map(([k, v]) => `${k} ${v > 0 ? '+' : ''}${v}`).join(' · ');
@@ -59,13 +61,17 @@
   function markBatchDone(ids) {
     (ids || []).forEach((id) => { const c = el('proposal-' + id); if (c) c.classList.add('done'); });
   }
-  async function applyProposal(id, batchIds) {
+  async function applyProposal(item, batchIds) {
     let res;
-    try { res = await api('/api/proposals/apply', { method: 'POST', body: JSON.stringify({ id }) }); }
+    try { res = await api('/api/proposals/apply', { method: 'POST', body: JSON.stringify({ id: item.id }) }); }
     catch (e) { appendBubble('error', e.message); return; }
-    markBatchDone(batchIds);
+    // A cover card is greyed out alone and only once applied: a refused one stays on offer (the
+    // server keeps it pending, and it may become applicable once something else changes).
+    if (item.kind !== 'cover' || res.ok) markBatchDone(item.kind === 'cover' ? [item.id] : batchIds);
     if (res.ok) {
       appendBubble('assistant', 'Applied: ' + res.description);
+      // The Relief card's counts: a cover adds one, and an undo may take one back.
+      if ((item.kind === 'cover' || item.kind === 'undo') && window.loadRelief) window.loadRelief().catch(() => {});
       if (window.reloadModel) window.reloadModel().catch(() => {});
       loadDraft();
     } else {
@@ -77,6 +83,15 @@
     try { await api('/api/proposals/dismiss', { method: 'POST' }); }
     catch (e) { appendBubble('error', e.message); return; }
     markBatchDone(batchIds);
+    if (window.loadRelief) window.loadRelief().catch(() => {});   // dismissed cover cards no longer wait in the chat
+  }
+  // Card ids can repeat: a cover plan returns every pending cover card again, with ids made from the
+  // absence, date and lesson, so replanning restages cards already in the chat. The newest copy
+  // replaces the old one, keeping one card (and one Apply) per id.
+  function replaceProposalCard(card) {
+    const old = el(card.id);
+    if (old) old.remove();
+    log.appendChild(card);
   }
   function appendProposals(items) {
     const batchIds = (items || []).map((i) => i.id);
@@ -90,11 +105,12 @@
       const actions = node('div', 'actions');
       const applyBtn = node('button', 'btn apply', 'Apply'); applyBtn.type = 'button';
       const dismissBtn = node('button', 'btn dismiss', 'Dismiss'); dismissBtn.type = 'button';
-      applyBtn.addEventListener('click', () => applyProposal(item.id, batchIds));
+      applyBtn.hidden = !!item.uncovered;           // a cover card with no teacher free has nothing to apply
+      applyBtn.addEventListener('click', () => applyProposal(item, batchIds));
       dismissBtn.addEventListener('click', () => dismissProposals(batchIds));
       actions.appendChild(applyBtn); actions.appendChild(dismissBtn);
       card.appendChild(actions);
-      log.appendChild(card);
+      replaceProposalCard(card);
     });
     scrollLog();
   }
@@ -116,8 +132,10 @@
       } else if (ev.kind === 'dismissed') {
         document.querySelectorAll('.proposal').forEach((c) => c.classList.add('done'));
         appendBubble('assistant', 'Dismissed.');
+        if (window.loadRelief) window.loadRelief().catch(() => {});
       } else if (ev.kind === 'undone') reload = true;
       else if (ev.kind === 'bookings_updated') loadBookings();
+      else if (ev.kind === 'relief') { if (window.loadRelief) window.loadRelief().catch(() => {}); }
       else if (ev.kind === 'periods') { if (window.loadPeriods) window.loadPeriods().catch(() => {}); if (window.loadTimetables) window.loadTimetables(); }
       else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
       else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
@@ -138,7 +156,11 @@
     try {
       const res = await api('/api/undo', { method: 'POST' });
       appendBubble('assistant', res.ok ? 'Undid: ' + res.undone : 'Nothing to undo');
-      if (res.ok) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
+      if (res.ok) {
+        if (window.reloadModel) window.reloadModel().catch(() => {});
+        loadDraft();
+        if (window.loadRelief) window.loadRelief().catch(() => {});   // the change undone may have been a cover
+      }
     } catch (e) { appendBubble('error', e.message); }
     finally { btn.disabled = false; }
   });

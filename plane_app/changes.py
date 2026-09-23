@@ -12,6 +12,10 @@ timetables, while each of those keeps its own log; restoring a whole bookings li
 would wipe a booking made since through another. So a booking change records the one booking it
 adds or removes, and undoing it reverses exactly that booking by id; undoing any other change never
 touches bookings.
+
+Covers (relief) are not snapshotted either: they live on the base too and change no organisation. A
+cover change records the one cover it adds, and undoing it removes that cover by id and nothing else:
+not the live organisation, not the last check.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from .db import CHANGE_SNAP_PREFIX
 KEEP = 20
 BOOKING_ADDED = ("booking",)                 # `proposals.apply` records a booking card under its kind
 BOOKING_REMOVED = ("booking_removed",)       # DELETE /api/bookings/{bid}
+COVER_ADDED = ("cover",)                     # `proposals.apply` records a cover card under its kind
 
 
 def _entries(db, tid=None) -> list[dict]:
@@ -43,13 +48,20 @@ def _base(db) -> str:
     return periods.base_tid(db)
 
 
-def record(db, kind: str, description: str, booking: dict | None = None) -> None:
+def record(db, kind: str, description: str, booking: dict | None = None, cover: dict | None = None) -> None:
     """Snapshot the selected timetable's live organisation and last check. For a booking kind,
-    `booking` is the booking the change adds (BOOKING_ADDED) or removes (BOOKING_REMOVED)."""
+    `booking` is the booking the change adds (BOOKING_ADDED) or removes (BOOKING_REMOVED). For a
+    cover kind, `cover` is the cover the change adds (COVER_ADDED); nothing else is kept, since
+    undoing it touches no organisation."""
     if (kind in BOOKING_ADDED or kind in BOOKING_REMOVED) and booking is None:
         raise ValueError(f"a {kind!r} change needs the booking it adds or removes")
+    if kind in COVER_ADDED and cover is None:
+        raise ValueError(f"a {kind!r} change needs the cover it adds")
     n = _next_seq(db)
-    snapshot = {"live": db.get_org("live"), "last_check": db.get_value("last_check")}
+    if kind in COVER_ADDED:
+        snapshot = {"cover": dict(cover)}
+    else:
+        snapshot = {"live": db.get_org("live"), "last_check": db.get_value("last_check")}
     if booking is not None:
         snapshot["booking"] = dict(booking)
     db.set_value(_snap_key(n), snapshot)
@@ -83,9 +95,15 @@ def undo(db) -> str | None:
         return None
     top, rest = entries[0], entries[1:]
     snapshot = db.get_value(_snap_key(top["snap"]))
-    db.set_org("live", snapshot["live"])
-    _undo_booking(db, top["kind"], snapshot)
-    db.set_value("last_check", snapshot["last_check"])
+    description = top["description"]
+    if top["kind"] in COVER_ADDED:
+        from . import relief                            # relief imports proposals, which imports this module
+        if relief.remove_cover(db, snapshot["cover"]["id"]) is None:
+            description += " (already removed)"        # consumed like any entry; nothing was left to take back
+    else:
+        db.set_org("live", snapshot["live"])
+        _undo_booking(db, top["kind"], snapshot)
+        db.set_value("last_check", snapshot["last_check"])
     db.set_value(_snap_key(top["snap"]), None)
     db.set_value("changes", rest)
-    return top["description"]
+    return description

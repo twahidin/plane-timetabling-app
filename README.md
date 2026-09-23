@@ -74,6 +74,27 @@ to use them. Bookings stay on
 the normal timetable and show in its periods too. **Remove** takes the period off the list and
 asks whether to delete its timetable as well; kept, it becomes an ordinary timetable.
 
+## Relief cover
+
+When a teacher is away, the **Relief** card in the side panel records the absence and offers cover.
+**Add absence** takes the teacher, the first and last day (at most 31 days), optionally only some of
+the day (picked by the timetable's own labels, such as P5 to P7, breaks left out; leave both blank for
+the whole day) and a reason; or say it in chat ("Ms Lee is away on 6 October"). Each absence shows how
+many of its lessons are covered: "open", "2 cards waiting in the chat", "1 of 3 covered", "all 3
+covered". **Plan cover** puts one cover card per lesson in the chat, each with the teacher
+chosen and two others who are also free. The choice is the relief pool first, then a teacher of the
+same subject, then whoever has covered least this term, then the lightest day; a teacher never takes
+more than their load allows or more covers in a day than the relief settings say. Apply the cards
+you want one at a time — the others stay on offer — or say yes to take them in order. A lesson no
+one can take gets a card saying who came nearest, with nothing to apply.
+
+A cover never changes the timetable itself: the week of that date (the grid's "Week of", a printed
+week, the assistant's where/who on a date) shows the covering teacher, with "(cover for …)" after
+the lesson. **Undo** takes the last cover back; **Remove** on an absence removes it with its covers.
+**Relief settings** on the card set the relief pool (the teachers asked first) and the most covers a
+teacher takes in a day. **Ledger** opens a printable page of the covers each teacher has taken this
+term, most first, with the dates — for claims and moderation.
+
 ## Printing
 
 **Print**, beside the timetable selector, opens a dialog: pick a teacher, class, group or room —

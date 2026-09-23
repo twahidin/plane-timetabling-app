@@ -23,9 +23,12 @@ def bad_by_event(check: dict | None) -> dict[str, list[str]]:
     return out
 
 
-def grid_json(grid: G.Grid, bad: dict[str, list[str]]) -> dict:
+def grid_json(grid: G.Grid, bad: dict[str, list[str]], row_bad=None) -> dict:
+    """`bad` marks every row's cells; `row_bad(row)`, when given, marks a row instead (a dated week's
+    rows may come from different timetables, each with its own last check)."""
     days = []
     for d in grid.days:
+        marks = bad if row_bad is None else row_bad(d)
         cells = []
         for c in d.cells:
             if c.kind == "continued":
@@ -33,7 +36,7 @@ def grid_json(grid: G.Grid, bad: dict[str, list[str]]) -> dict:
                 continue
             msgs: list[str] = []
             for e in c.events:
-                msgs.extend(m for m in bad.get(e, []) if m not in msgs)
+                msgs.extend(m for m in marks.get(e, []) if m not in msgs)
             cells.append({"kind": c.kind, "text": c.text, "sub": c.sub, "span": c.span, "events": list(c.events), "bad": msgs})
         days.append({"label": d.label, "off": d.off, "cells": cells})
     return {"title": grid.title, "subtitle": grid.subtitle, "kind": grid.kind, "id": grid.id,
@@ -46,6 +49,12 @@ def make_router(db) -> APIRouter:
     @r.get("/api/grid/{kind}/{id}")
     def one(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
         tid, grid = view_in_force(db, kind, id, view, date)     # a week in a period: that timetable's marks
-        return grid_json(grid, bad_by_event(db.get_value("last_check", tid=tid)))
+        checks: dict[str, dict[str, list[str]]] = {}
+
+        def bad_of(t: str) -> dict[str, list[str]]:
+            if t not in checks:
+                checks[t] = bad_by_event(db.get_value("last_check", tid=t))
+            return checks[t]
+        return grid_json(grid, bad_of(tid), lambda row: bad_of(row.timetable or tid))    # each weekday: its own timetable's
 
     return r
