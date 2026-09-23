@@ -1,4 +1,4 @@
-"""Relief over HTTP: absences, the cover plan, the relief settings and the ledger (spec
+"""Relief over HTTP: absences, the cover plan, removing one cover, the relief settings and the ledger (spec
 docs/superpowers/specs/2026-09-23-relief-agent-design.md §5). Everything reads and writes the base
 timetable's record (`relief`), so a period timetable's page sees the same absences.
 
@@ -22,7 +22,8 @@ def make_router(db) -> APIRouter:
         return HTTPException(400, str(e))
 
     def _settings_payload() -> dict:
-        return {"settings": relief.settings(db), "pool_names": relief.pool_names(db)}
+        # `term_start`: the date the ledger counts from (the relief settings' own, else the calendar's)
+        return {"settings": relief.settings(db), "pool_names": relief.pool_names(db), "term_start": relief.term_start(db)}
 
     @r.get("/api/relief")
     def overview(sid: str = Depends(auth.require_session)):
@@ -44,6 +45,15 @@ def make_router(db) -> APIRouter:
         if rec is None:
             raise HTTPException(404, f"no absence {aid}")
         return {"removed": rec}
+
+    @r.delete("/api/relief/covers/{cid}")
+    def remove_cover(cid: str, sid: str = Depends(auth.require_session)):
+        # Logged before it is removed, so Undo puts the cover back. No event: the page reloads the card.
+        rec = relief.withdraw_cover(db, cid)
+        if rec is None:
+            raise HTTPException(404, f"no cover {cid}")
+        absence = relief.get_absence(db, rec.get("absence"))
+        return {"removed": rec, "row": relief.absence_row(db, absence) if absence else None}
 
     @r.get("/api/relief/plan/{aid}")
     def plan(aid: str, sid: str = Depends(auth.require_session)):

@@ -90,10 +90,15 @@ one can take gets a card saying who came nearest, with nothing to apply.
 
 A cover never changes the timetable itself: the week of that date (the grid's "Week of", a printed
 week, the assistant's where/who on a date) shows the covering teacher, with "(cover for …)" after
-the lesson. **Undo** takes the last cover back; **Remove** on an absence removes it with its covers.
-**Relief settings** on the card set the relief pool (the teachers asked first) and the most covers a
-teacher takes in a day. **Ledger** opens a printable page of the covers each teacher has taken this
-term, most first, with the dates — for claims and moderation.
+the lesson. Each absence lists the covers applied for it ("Tue 6 Oct P3 Maths, set A — Mr Tan"),
+each with its own **Remove** to take that one cover back (or say it in chat: "take back Mr Tan's
+cover on 6 October"); **Undo** puts a removed cover back, and takes the last applied cover back.
+**Remove** on an absence removes it with its covers. **Relief settings** on the card set the relief
+pool (the teachers asked first), the most covers a teacher takes in a day and the day the term
+starts (leave it blank to use the term calendar's); the card says which day the ledger counts from.
+**Ledger** opens a printable page of the covers each teacher has taken since then, most first, with
+the dates — for claims and moderation. An absence's lesson count is taken again once it has ended,
+so a timetable change during the absence does not leave a stale count.
 
 ## Printing
 

@@ -2,7 +2,9 @@
 (spec docs/superpowers/specs/2026-09-23-relief-agent-design.md §2–§4).
 
 Everything is stored on the base timetable under `relief`, like bookings: a period timetable reads and
-writes its base's record. Covers never change an organisation; `overlay` swaps the covering teacher
+writes its base's record. Every write goes through `_mutate`, which reads, changes and saves the record
+under one lock per base timetable, so two requests at once never lose each other's change; reads take
+no lock. Covers never change an organisation; `overlay` swaps the covering teacher
 in on a dated view only. Load and runs are counted here from the organisation dict (work slots are
 events not at a rest location), so no engine call is needed to rank candidates."""
 from __future__ import annotations
@@ -11,10 +13,11 @@ import copy
 import hashlib
 import re
 import secrets
+import threading
 import time
 from datetime import date as _date, timedelta
 
-from . import calendar as cal, names as names_mod, periods, proposals
+from . import calendar as cal, changes, names as names_mod, periods, proposals
 from .db import THREAD
 from .print import grid as grid_mod
 
@@ -41,8 +44,30 @@ def _doc(db, tid=None) -> dict:
             "settings": {**DEFAULT_SETTINGS, **(v.get("settings") or {})}}
 
 
-def _save(db, doc: dict) -> None:
-    db.set_value(_KEY, doc, tid=_base(db))
+def _save(db, doc: dict, base: str | None = None) -> None:
+    db.set_value(_KEY, doc, tid=base or _base(db))
+
+
+_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(base: str) -> threading.Lock:
+    """The lock of one base timetable's relief record."""
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(base, threading.Lock())
+
+
+def _mutate(db, fn):
+    """Read the relief record, change it with `fn(doc)` and save it, under the base's lock; returns what
+    `fn` returns. If `fn` raises, nothing is saved. The lock is a plain one: `fn` must not call another
+    writer, so each writer checks what it is given (reads) before it gets here."""
+    base = _base(db)                      # read once: a timetable switch mid-mutation must not move the save
+    with _lock_for(base):
+        doc = _doc(db, base)
+        result = fn(doc)
+        _save(db, doc, base)
+        return result
 
 
 def _now() -> str:
@@ -54,6 +79,11 @@ def _parse(s, what="date") -> _date:
         return _date.fromisoformat(str(s).strip())
     except (TypeError, ValueError):
         raise ReliefError(f"{s!r} is not a {what} (YYYY-MM-DD)") from None
+
+
+def iso_date(s) -> str:
+    """`s` as an ISO date, or a ReliefError."""
+    return _parse(s).isoformat()
 
 
 def _base_org(db) -> dict | None:
@@ -94,25 +124,22 @@ def settings(db) -> dict:
 def set_settings(db, patch: dict) -> dict:
     if not isinstance(patch, dict):
         raise ReliefError("relief settings must be an object")
-    doc = _doc(db)
-    new = dict(doc["settings"])
     have_org = _base_org(db) is not None
     known = _teacher_ids(db)
-    stored = [p for p in new.get("pool") or []]
     # A stored pool member who is no longer a teacher of the base timetable is dropped silently (they
     # are gone, and the page sends the stored pool back on every save); only a newly added id that is
     # not a teacher (a student, a group, no one) is refused. With no organisation to read (none built
     # or drafted yet) the stored pool is left as it is.
-    if have_org:
-        new["pool"] = [p for p in stored if p in known]
+    upd: dict = {}
     if "pool" in patch:
         pool = patch["pool"] or []
         if not isinstance(pool, list):
             raise ReliefError("the relief pool is a list of person ids")
+        stored = settings(db)["pool"]
         unknown = [str(p) for p in pool if str(p) not in known and str(p) not in stored]
         if unknown:
             raise ReliefError(f"not a teacher in the timetable: {', '.join(unknown)}")
-        new["pool"] = list(dict.fromkeys(str(p) for p in pool if str(p) in known or not have_org))
+        upd["pool"] = list(dict.fromkeys(str(p) for p in pool if str(p) in known or not have_org))
     if "max_per_day" in patch:
         try:
             n = int(patch["max_per_day"])
@@ -120,13 +147,19 @@ def set_settings(db, patch: dict) -> dict:
             raise ReliefError("max_per_day must be a whole number") from None
         if n < 1 or isinstance(patch["max_per_day"], bool):
             raise ReliefError("max_per_day must be at least 1")
-        new["max_per_day"] = n
+        upd["max_per_day"] = n
     if "term_start" in patch:
         ts = str(patch["term_start"] or "").strip()
-        new["term_start"] = _parse(ts).isoformat() if ts else ""
-    doc["settings"] = new
-    _save(db, doc)
-    return copy.deepcopy(new)
+        upd["term_start"] = _parse(ts).isoformat() if ts else ""
+
+    def change(doc):
+        new = dict(doc["settings"])
+        if have_org:
+            new["pool"] = [p for p in new.get("pool") or [] if p in known]
+        new.update(upd)
+        doc["settings"] = new
+        return copy.deepcopy(new)
+    return _mutate(db, change)
 
 
 def term_start(db) -> str:
@@ -163,9 +196,7 @@ def add_absence(db, person, date_from, date_to=None, slots=None, reason="") -> d
         slots = [a, b]
     rec = {"id": "abs-" + secrets.token_hex(3), "person": person, "from": f.isoformat(), "to": t.isoformat(),
            "slots": slots, "reason": str(reason or "").strip(), "created": _now()}
-    doc = _doc(db)
-    doc["absences"].append(rec)
-    _save(db, doc)
+    _mutate(db, lambda doc: doc["absences"].append(rec))
     return rec
 
 
@@ -179,14 +210,13 @@ def get_absence(db, aid) -> dict | None:
 
 def remove_absence(db, aid) -> dict | None:
     """Remove an absence and every cover made for it."""
-    doc = _doc(db)
-    rec = next((a for a in doc["absences"] if a["id"] == aid), None)
-    if rec is None:
-        return None
-    doc["absences"] = [a for a in doc["absences"] if a["id"] != aid]
-    doc["covers"] = [c for c in doc["covers"] if c.get("absence") != aid]
-    _save(db, doc)
-    return rec
+    def change(doc):
+        rec = next((a for a in doc["absences"] if a["id"] == aid), None)
+        if rec is not None:
+            doc["absences"] = [a for a in doc["absences"] if a["id"] != aid]
+            doc["covers"] = [c for c in doc["covers"] if c.get("absence") != aid]
+        return rec
+    return _mutate(db, change)
 
 
 def day_labels(db) -> list[str]:
@@ -222,16 +252,16 @@ def slot_labels(db, slots, labels: list[str] | None = None) -> str:
     return f"{name(a)} only" if b - a == 1 else f"{name(a)} to {name(b - 1)}"
 
 
-def _store_counts(db, aid: str, lessons: int | None, covered: int) -> None:
-    """Keep an absence's lesson count (covered plus still to cover) and covered count on its record,
-    for the overview of an absence that has ended."""
-    doc = _doc(db)
-    for a in doc["absences"]:
-        if a["id"] == aid:
-            if lessons is not None:
-                a["lessons"] = lessons
-            a["covered"] = covered
-    _save(db, doc)
+def _store_counts(db, aid: str, left: int) -> None:
+    """Keep an absence's lesson count (covered plus the `left` still to cover) and covered count on its
+    record, with the day they were taken (`counted_on`), for the overview of an absence that has ended.
+    The covered count is taken from the record under the lock, so a cover applied meanwhile counts."""
+    def change(doc):
+        covered = sum(1 for c in doc["covers"] if c.get("absence") == aid)
+        for a in doc["absences"]:
+            if a["id"] == aid:
+                a.update(lessons=covered + left, covered=covered, counted_on=_today())
+    _mutate(db, change)
 
 
 def resolve_person(db, query) -> list[dict]:
@@ -263,23 +293,26 @@ def person_id(db, query) -> str:
 
 def _lessons_count(db, absence: dict, covered: int, cache: dict) -> int | None:
     """The lessons that needed cover: those covered plus those still to cover. An absence that has
-    ended reads the count stored on it (at planning, or by the first overview after it ended) instead
-    of reading its dates again; None when the dates cannot be read."""
+    ended reads the count stored on it instead of reading its dates again, but only a count taken
+    after it ended (`counted_on` later than its last day): one taken while it ran (at planning) may
+    have changed since. Otherwise the dates are read once more, and after the end the count is stored
+    for good. None when the dates cannot be read."""
     past = absence["to"] < _today()
-    if past and absence.get("lessons") is not None:
+    if past and absence.get("lessons") is not None and str(absence.get("counted_on") or "") > absence["to"]:
         return max(int(absence["lessons"]), covered)
     try:
         left = sum(1 for x in lessons_needing_cover(db, absence, cache) if not x["already_staffed"])
-    except ReliefError:
-        return None
+    except ReliefError:                   # the dates cannot be read now: an earlier count beats nothing
+        return max(int(absence["lessons"]), covered) if absence.get("lessons") is not None else None
     if past:
-        _store_counts(db, absence["id"], covered + left, covered)
+        _store_counts(db, absence["id"], left)
     return covered + left
 
 
 def absence_row(db, absence: dict, doc: dict | None = None, names: dict | None = None,
                 cache: dict | None = None) -> dict:
-    """One absence with the absent person's name, the covers applied for it (`covered`), the lessons
+    """One absence with the absent person's name, the covers applied for it (`covered`, and `covers`:
+    each as {id, date, covering, text: "Tue 6 Oct P3 Maths, set A — Mr Tan"}, by day), the lessons
     that needed cover (`lessons`: those covered plus those still to cover; lessons another teacher
     still teaches are not counted; None when the dates cannot be read), the cover cards for it waiting
     in the chat (`pending`) and its part of the day in the day's labels (`slot_labels`, "" for the
@@ -296,9 +329,13 @@ def absence_row(db, absence: dict, doc: dict | None = None, names: dict | None =
     aid = absence["id"]
     pending = sum(1 for c in cache["pending"]
                   if c.get("absence") == aid or any(x.get("absence") == aid for x in c.get("also_for") or []))
+    mine = sorted((c for c in doc["covers"] if c.get("absence") == aid),
+                  key=lambda c: (str(c.get("date") or ""), int(c.get("slot") or 0)))
+    covers = [{"id": c["id"], "date": c.get("date"), "covering": c.get("covering"),
+               "text": cover_line(cover_parts(db, c, cache))} for c in mine]
     return {**absence, "name": names.get(absence["person"], absence["person"]), "covered": covered,
             "lessons": _lessons_count(db, absence, covered, cache), "pending": pending,
-            "slot_labels": slot_labels(db, absence.get("slots"), cache["labels"])}
+            "slot_labels": slot_labels(db, absence.get("slots"), cache["labels"]), "covers": covers}
 
 
 def absence_rows(db) -> list[dict]:
@@ -347,8 +384,7 @@ def add_cover(db, cover: dict) -> dict:
     own), else in the base's."""
     if not isinstance(cover, dict):
         raise ReliefError("a cover is an object")
-    doc = _doc(db)
-    absence = next((a for a in doc["absences"] if a["id"] == cover.get("absence")), None)
+    absence = get_absence(db, cover.get("absence"))
     if absence is None:
         raise ReliefError(f"no absence {cover.get('absence')!r}")
     covering = str(cover.get("covering") or "")
@@ -367,22 +403,102 @@ def add_cover(db, cover: dict) -> dict:
            "absent": absence["person"], "date": _parse(cover.get("date")).isoformat(),
            "timetable": str(cover.get("timetable") or _base(db)), "event": str(cover.get("event") or ""),
            "slot": slot, "dur": dur, "covering": covering, "applied": cover.get("applied") or _now()}
-    doc["covers"] = [c for c in doc["covers"] if c["id"] != rec["id"]] + [rec]
-    absence["covered"] = sum(1 for c in doc["covers"] if c.get("absence") == absence["id"])
-    _save(db, doc)
+
+    def change(doc):
+        if not any(a["id"] == rec["absence"] for a in doc["absences"]):
+            raise ReliefError(f"no absence {rec['absence']!r}")        # removed while the cover was checked
+        doc["covers"] = [c for c in doc["covers"] if c["id"] != rec["id"]] + [rec]
+        _recount(doc, rec["absence"])
+    _mutate(db, change)
     return rec
 
 
-def remove_cover(db, cid) -> dict | None:
-    doc = _doc(db)
-    rec = next((c for c in doc["covers"] if c["id"] == cid), None)
-    if rec is not None:
-        doc["covers"] = [c for c in doc["covers"] if c["id"] != cid]
-        for a in doc["absences"]:
-            if a["id"] == rec.get("absence"):
-                a["covered"] = sum(1 for c in doc["covers"] if c.get("absence") == a["id"])
-        _save(db, doc)
-    return rec
+def _recount(doc: dict, aid) -> None:
+    """Set the covered count on the absence `aid` from the covers of `doc`."""
+    for a in doc["absences"]:
+        if a["id"] == aid:
+            a["covered"] = sum(1 for c in doc["covers"] if c.get("absence") == aid)
+
+
+def list_covers(db) -> list[dict]:
+    return _doc(db)["covers"]
+
+
+def get_cover(db, cid) -> dict | None:
+    return next((c for c in list_covers(db) if c["id"] == cid), None)
+
+
+def remove_cover(db, cid, before_persist=None) -> dict | None:
+    """Remove the cover `cid`, returning it (None when there is none). `before_persist(cover)`, if
+    given, runs under the lock before the removal is saved (the change log's entry for it): if it
+    raises, nothing is removed."""
+    def change(doc):
+        rec = next((c for c in doc["covers"] if c["id"] == cid), None)
+        if rec is not None:
+            if before_persist is not None:
+                before_persist(rec)
+            doc["covers"] = [c for c in doc["covers"] if c["id"] != cid]
+            _recount(doc, rec.get("absence"))
+        return rec
+    return _mutate(db, change)
+
+
+def restore_cover(db, cover: dict) -> dict | None:
+    """Put back a cover exactly as it was (undoing its removal). The change log restores, it does not
+    decide again: the covering teacher is not checked. Nothing is put back (None) when a cover with its
+    id is already there, or its absence has been removed since (it would cover no one's lesson)."""
+    rec = dict(cover)
+
+    def change(doc):
+        if any(c["id"] == rec.get("id") for c in doc["covers"]) \
+                or not any(a["id"] == rec.get("absence") for a in doc["absences"]):
+            return None
+        doc["covers"].append(rec)
+        _recount(doc, rec["absence"])
+        return rec
+    return _mutate(db, change)
+
+
+def withdraw_cover(db, cid) -> dict | None:
+    """Take one applied cover back (the Relief card's Remove, the chat's cover_remove), logging it
+    first so Undo puts it back: "cover removed: Ms Lee's Maths, set A on Tue 6 Oct P3 by Mr Tan".
+    Returns the removed cover, or None when there is none."""
+    def log(rec):
+        changes.record(db, "cover_removed", cover_removed_text(cover_parts(db, rec)), cover=rec)
+    return remove_cover(db, cid, before_persist=log)
+
+
+def cover_parts(db, cover: dict, cache: dict | None = None) -> dict:
+    """The words for an applied cover, read from the timetable it names (else the base's): the absent
+    and covering teachers' names, the lesson and when ("Tue 6 Oct P3"). `cache` is shared by one read
+    of several covers."""
+    cache = {} if cache is None else cache
+    tid = str(cover.get("timetable") or _base(db))
+
+    def live():
+        try:
+            return db.get_org("live", tid=tid)
+        except KeyError:                               # the period was deleted since
+            return None
+    org = _cached(cache, ("live", tid), live) or _cached(cache, "base_org", lambda: _base_org(db)) or {}
+    events = _cached(cache, ("events", tid), lambda: {e["id"]: e for e in org.get("events") or []})
+    names = _cached(cache, ("names", tid), lambda: {p["id"]: p.get("name", p["id"]) for p in
+                                                   ((_base_org(db) or {}).get("persons") or []) + (org.get("persons") or [])})
+    e = events.get(cover.get("event"))
+    lesson = _COVER_SUFFIX.sub("", str(e.get("name") or e["id"])) if e else str(cover.get("event") or "a lesson")
+    st = _cached(cache, "settings", lambda: _base_settings(db))
+    when = _when(db, org, str(cover.get("date")), int(cover.get("slot") or 0), int(cover.get("dur") or 1), st)
+    return {"absent_name": names.get(cover.get("absent"), cover.get("absent") or "the absent teacher"),
+            "lesson": lesson, "when": when, "covering_name": names.get(cover.get("covering"), cover.get("covering"))}
+
+
+def cover_line(parts: dict) -> str:
+    """One cover on the Relief card: "Tue 6 Oct P3 Maths, set A — Mr Tan"."""
+    return f"{parts['when']} {parts['lesson']} — {parts['covering_name']}"
+
+
+def cover_removed_text(parts: dict) -> str:
+    return f"cover removed: {parts['absent_name']}'s {parts['lesson']} on {parts['when']} by {parts['covering_name']}"
 
 
 def ledger(db, since=None) -> list[dict]:
@@ -714,8 +830,8 @@ def _card_id(absence_id: str, date: str, event: str) -> str:
     return "cov-" + hashlib.sha256(f"{absence_id}|{date}|{event}".encode()).hexdigest()[:10]
 
 
-def _when(db, org: dict, date: str, slot: int, dur: int) -> str:
-    s = _base_settings(db)
+def _when(db, org: dict, date: str, slot: int, dur: int, settings_: dict | None = None) -> str:
+    s = _base_settings(db) if settings_ is None else settings_
     labels = org.get("time_labels") or s["time"].get("labels") or []
     day = cal.describe(s["calendar"], s["time"], date).split(":")[0]
 
@@ -813,8 +929,7 @@ def plan(db, absence_id, choices=None, session_id="", run="") -> list[dict]:
                       "absent_name": absent_name, "lesson": lesson["name"], "when": when})
         for other in shared.get((date, lesson["event"]), ()):
             _fold(db, cards[-1], other)
-    covered = sum(1 for c in _doc(db)["covers"] if c.get("absence") == absence["id"])
-    _store_counts(db, absence["id"], covered + len(lessons), covered)
+    _store_counts(db, absence["id"], len(lessons))
     return proposals.set_pending(db, cards + kept, session_id, run)
 
 

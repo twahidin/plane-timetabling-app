@@ -1,5 +1,6 @@
 // Relief: the Relief card (absences with how many of their lessons are covered or have cards waiting in
-// the chat, Add absence, Plan cover, Remove, the relief settings and the Ledger link) and the Add absence
+// the chat and the covers applied for them, each with its own Remove, Add absence, Plan cover, Remove,
+// the relief settings with the term start the ledger counts from, and the Ledger link) and the Add absence
 // dialog, whose part of the day is picked by the timetable's own labels. Plan cover stages one
 // cover card per lesson in the chat thread; the cards appear in the chat and are applied there like
 // every proposal. Relief lives on the base timetable, so a period timetable shows the same absences.
@@ -78,6 +79,26 @@
     btns.append(yes, no);
   }
 
+  // One cover taken back: logged first, so Undo puts it back. The dated views may show it: reload them.
+  async function removeCover(c, row) {
+    row.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      await api(`/api/relief/covers/${encodeURIComponent(c.id)}`, { method: 'DELETE' });
+      note(`Cover removed: ${c.text}. Undo puts it back.`);
+      if (window.reloadModel) window.reloadModel().catch(() => {});
+      await window.loadRelief(true);
+    } catch (e) { note(e.message); row.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
+  }
+
+  function askRemoveCover(c, row) {             // asks inline, like the absence's Remove
+    row.textContent = '';
+    row.appendChild(node('span', 'relief-ask', 'Remove this cover?'));
+    const yes = button('Remove'), no = button('Keep');
+    yes.addEventListener('click', () => removeCover(c, row));
+    no.addEventListener('click', renderList);
+    row.append(yes, no);
+  }
+
   function renderList() {
     const list = el('relief-list');
     list.textContent = '';
@@ -97,6 +118,14 @@
       li.appendChild(head);
       const meta = [dates(a), a.slot_labels, a.reason].filter(Boolean).join(' · ');   // "P5 to P7": the day's own labels
       li.appendChild(node('div', 'absence-meta', meta));
+      (a.covers || []).forEach((c) => {           // "Tue 6 Oct P3 Maths, set A — Mr Tan"
+        const row = node('div', 'absence-btns absence-cover');
+        row.appendChild(node('span', 'absence-meta', c.text));
+        const rm = button('Remove', 'Take this cover back (Undo puts it back)');
+        rm.addEventListener('click', () => askRemoveCover(c, row));
+        row.appendChild(rm);
+        li.appendChild(row);
+      });
       const btns = node('div', 'absence-btns');
       const plan = button('Plan cover', 'Offer a teacher for each lesson, as cards in the chat');
       plan.disabled = !a.lessons || a.covered >= a.lessons;
@@ -110,7 +139,7 @@
   }
 
   function renderSettings() {
-    const s = (data && data.settings) || { pool: [], max_per_day: 2 };
+    const s = (data && data.settings) || { pool: [], max_per_day: 2, term_start: '' };
     const pool = el('relief-pool');
     pool.textContent = '';
     teachers.forEach((t) => {
@@ -122,6 +151,10 @@
     unlisted = s.pool.filter((id) => !teachers.some((t) => t.id === id));
     el('relief-settings-save').disabled = !teachers.length;
     el('relief-max-per-day').value = s.max_per_day;
+    el('relief-term-start').value = s.term_start || '';            // blank: the term calendar's
+    const since = data && data.term_start;
+    el('relief-since').textContent = !data ? '' : since ? `Ledger counts covers since ${dayDate(since)} ${since.slice(0, 4)}.`
+      : 'Ledger counts every cover: no term start is set (Relief settings, or the term calendar in Settings).';
     const names = (data && data.pool_names) || [];
     el('relief-settings-summary').textContent = (names.length ? `pool: ${names.join(', ')}` : 'no relief pool') +
       ` · at most ${s.max_per_day} a day`;
@@ -143,11 +176,11 @@
   el('relief-settings-save').addEventListener('click', async () => {
     const btn = el('relief-settings-save'), msg = el('relief-settings-note');
     const body = { pool: Array.from(el('relief-pool').selectedOptions).map((o) => o.value).concat(unlisted),
-      max_per_day: Number(el('relief-max-per-day').value) };
+      max_per_day: Number(el('relief-max-per-day').value), term_start: el('relief-term-start').value };
     btn.disabled = true; msg.textContent = '';
     try {
       const r = await api('/api/relief/settings', { method: 'PUT', body: JSON.stringify(body) });
-      if (data) { data.settings = r.settings; data.pool_names = r.pool_names; }
+      if (data) { data.settings = r.settings; data.pool_names = r.pool_names; data.term_start = r.term_start; }
       renderSettings();
       msg.textContent = 'Saved.';
     } catch (e) { msg.textContent = e.message; }

@@ -14,8 +14,9 @@ adds or removes, and undoing it reverses exactly that booking by id; undoing any
 touches bookings.
 
 Covers (relief) are not snapshotted either: they live on the base too and change no organisation. A
-cover change records the one cover it adds, and undoing it removes that cover by id and nothing else:
-not the live organisation, not the last check.
+cover change records the one cover it adds or removes; undoing it removes that cover by id, or puts
+the removed cover back exactly as it was (no candidate check: the log restores, it does not decide
+again), and nothing else: not the live organisation, not the last check.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ KEEP = 20
 BOOKING_ADDED = ("booking",)                 # `proposals.apply` records a booking card under its kind
 BOOKING_REMOVED = ("booking_removed",)       # DELETE /api/bookings/{bid}
 COVER_ADDED = ("cover",)                     # `proposals.apply` records a cover card under its kind
+COVER_REMOVED = ("cover_removed",)           # DELETE /api/relief/covers/{cid}, the chat's cover_remove
 
 
 def _entries(db, tid=None) -> list[dict]:
@@ -51,14 +53,14 @@ def _base(db) -> str:
 def record(db, kind: str, description: str, booking: dict | None = None, cover: dict | None = None) -> None:
     """Snapshot the selected timetable's live organisation and last check. For a booking kind,
     `booking` is the booking the change adds (BOOKING_ADDED) or removes (BOOKING_REMOVED). For a
-    cover kind, `cover` is the cover the change adds (COVER_ADDED); nothing else is kept, since
-    undoing it touches no organisation."""
+    cover kind, `cover` is the cover the change adds (COVER_ADDED) or removes (COVER_REMOVED);
+    nothing else is kept, since undoing it touches no organisation."""
     if (kind in BOOKING_ADDED or kind in BOOKING_REMOVED) and booking is None:
         raise ValueError(f"a {kind!r} change needs the booking it adds or removes")
-    if kind in COVER_ADDED and cover is None:
-        raise ValueError(f"a {kind!r} change needs the cover it adds")
+    if (kind in COVER_ADDED or kind in COVER_REMOVED) and cover is None:
+        raise ValueError(f"a {kind!r} change needs the cover it adds or removes")
     n = _next_seq(db)
-    if kind in COVER_ADDED:
+    if kind in COVER_ADDED or kind in COVER_REMOVED:
         snapshot = {"cover": dict(cover)}
     else:
         snapshot = {"live": db.get_org("live"), "last_check": db.get_value("last_check")}
@@ -97,9 +99,15 @@ def undo(db) -> str | None:
     snapshot = db.get_value(_snap_key(top["snap"]))
     description = top["description"]
     if top["kind"] in COVER_ADDED:
-        from . import relief                            # relief imports proposals, which imports this module
+        from . import relief                            # relief imports this module
         if relief.remove_cover(db, snapshot["cover"]["id"]) is None:
             description += " (already removed)"        # consumed like any entry; nothing was left to take back
+    elif top["kind"] in COVER_REMOVED:
+        from . import relief
+        cover = snapshot["cover"]
+        if relief.restore_cover(db, cover) is None:     # consumed like any entry; nothing was put back
+            gone = relief.get_absence(db, cover.get("absence")) is None
+            description += " (its absence has been removed)" if gone else " (already back)"
     else:
         db.set_org("live", snapshot["live"])
         _undo_booking(db, top["kind"], snapshot)

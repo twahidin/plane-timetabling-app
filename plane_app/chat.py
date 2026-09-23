@@ -83,7 +83,9 @@ lesson. The choice of who covers is: the relief pool first, then the same subjec
 Cover cards wait for a yes like every proposal: show them and stop; never apply one in the reply that made
 it. Each card is applied on its own, and a yes applies the first card that has a teacher on it. absence_list shows who is away and how many
 lessons are covered, relief_ledger counts each teacher's covers this term, and relief_settings changes the
-relief pool and the most covers a teacher takes in a day straight away (tell the user what you changed).
+relief pool, the most covers a teacher takes in a day and the term start the ledger counts from straight
+away (tell the user what you changed). cover_remove takes one applied cover back straight away; say what
+was removed and that Undo puts it back.
 Dated questions already reflect applied covers: where/who with a date and a printed week show the covering
 teacher."""
 
@@ -209,11 +211,21 @@ TOOLS: list[ToolSpec] = [
               "required": ["absence"]}),
     ToolSpec("relief_ledger", "Covers per teacher since the start of term (or since a date), most first.",
              {"type": "object", "properties": {"since": {"type": "string", "description": "YYYY-MM-DD"}}}),
-    ToolSpec("relief_settings", "Change the relief pool (teachers asked first) and the most covers a teacher takes in a "
-                                "day. Applied straight away; tell the user what changed.",
+    ToolSpec("relief_settings", "Change the relief pool (teachers asked first), the most covers a teacher takes in a "
+                                "day and the term start the ledger counts covers from. Applied straight away; tell "
+                                "the user what changed.",
              {"type": "object", "properties": {
                  "pool": {"type": "array", "items": {"type": "string"}, "description": "Names or ids; replaces the pool"},
-                 "max_per_day": {"type": "integer"}}}),
+                 "max_per_day": {"type": "integer"},
+                 "term_start": {"type": "string", "description": "YYYY-MM-DD; \"\" to use the term calendar's"}}}),
+    ToolSpec("cover_remove", "Take back one applied cover. Say which by any of: the absence, the date, a teacher "
+                             "(absent or covering) and the lesson. Several matching: they are listed, ask the user "
+                             "which. Applied straight away; Undo puts it back.",
+             {"type": "object", "properties": {
+                 "absence": {"type": "string", "description": "An absence id, or the absent teacher's name when they have one absence"},
+                 "date": {"type": "string", "description": "YYYY-MM-DD"},
+                 "person": {"type": "string", "description": "The absent or the covering teacher, a name or id"},
+                 "event": {"type": "string", "description": "The lesson: an event id or part of its name"}}}),
     ToolSpec("wizard_library", "The start wizard's template library: domains and, in each, the templates' id, name, "
                                "summary, when_to_choose and knobs with defaults. Optionally filter to one domain.",
              {"type": "object", "properties": {"domain": {"type": "string", "enum": ["education", "health", "business", "sports"]}}}),
@@ -373,16 +385,56 @@ def _relief_tool(call: ToolCall, db: Db, events: list[dict], session_id: str, ru
             patch["pool"] = [relief.person_id(db, p) for p in pool]
         if call.args.get("max_per_day") is not None:
             patch["max_per_day"] = call.args["max_per_day"]
+        if call.args.get("term_start") is not None:
+            patch["term_start"] = call.args["term_start"]
         if not patch:
-            return json.dumps({"settings": relief.settings(db), "pool_names": relief.pool_names(db)})
+            return json.dumps({"settings": relief.settings(db), "pool_names": relief.pool_names(db),
+                               "term_start": relief.term_start(db)})
         new = relief.set_settings(db, patch)
         events.append({"kind": "relief"})
         return json.dumps({"ok": True, "settings": new, "pool_names": relief.pool_names(db),
-                           "note": "Applied. Tell the user the pool and daily limit as they now stand."})
+                           "term_start": relief.term_start(db),
+                           "note": "Applied. Tell the user the pool, daily limit and term start as they now stand."})
+    if call.name == "cover_remove":
+        return _cover_remove(call, db, events)
     return json.dumps({"error": f"unknown tool {call.name}"})
 
 
-_RELIEF_TOOLS = {"absence_add", "absence_list", "relief_plan", "relief_ledger", "relief_settings"}
+def _cover_remove(call: ToolCall, db: Db, events: list[dict]) -> str:
+    """Resolve cover_remove's arguments to exactly one applied cover and take it back (undoable)."""
+    args = call.args
+    if not any(str(args.get(k) or "").strip() for k in ("absence", "date", "person", "event")):
+        return json.dumps({"error": "say which cover: give the absence, the date, a teacher or the lesson"})
+    covers = relief.list_covers(db)
+    if str(args.get("absence") or "").strip():
+        aid = _absence_id(db, args["absence"])
+        covers = [c for c in covers if c.get("absence") == aid]
+    if str(args.get("date") or "").strip():
+        date = relief.iso_date(args["date"])
+        covers = [c for c in covers if c.get("date") == date]
+    if str(args.get("person") or "").strip():
+        pid = relief.person_id(db, args["person"])
+        covers = [c for c in covers if pid in (c.get("covering"), c.get("absent"))]
+    cache: dict = {}
+    parts = {c["id"]: relief.cover_parts(db, c, cache) for c in covers}
+    if str(args.get("event") or "").strip():
+        q = str(args["event"]).strip()
+        covers = [c for c in covers if c.get("event") == q or q.lower() in parts[c["id"]]["lesson"].lower()]
+    if not covers:
+        return json.dumps({"error": "no applied cover matches that: absence_list shows each absence's covers"})
+    if len(covers) > 1:
+        return json.dumps({"matches": [{"id": c["id"], "absence": c.get("absence"), "date": c.get("date"),
+                                        "event": c.get("event"), "text": relief.cover_line(parts[c["id"]])} for c in covers],
+                           "note": "Several covers match: ask the user which one (the date and the lesson narrow it)."})
+    rec = relief.withdraw_cover(db, covers[0]["id"])
+    if rec is None:
+        return json.dumps({"error": "that cover has just been removed"})
+    events.append({"kind": "relief"})
+    return json.dumps({"ok": True, "removed": rec, "text": relief.cover_removed_text(parts[rec["id"]]),
+                       "note": "Removed. Tell the user which cover was removed and that Undo puts it back."})
+
+
+_RELIEF_TOOLS = {"absence_add", "absence_list", "relief_plan", "relief_ledger", "relief_settings", "cover_remove"}
 
 
 def _plan_issue_dict(i: Issue) -> dict:

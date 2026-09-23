@@ -107,11 +107,14 @@
       <h2>Relief <button class="btn" id="absence-new" type="button">Add absence</button> <a class="btn" id="relief-ledger" href="/print/relief" target="_blank" rel="noopener" title="Covers taken by each teacher this term, as a printable page">Ledger</a></h2>
       <ul class="relief" id="relief-list"></ul>
       <p id="relief-note" class="relief-note" hidden></p>
+      <p id="relief-since" class="relief-note"></p>
       <details id="relief-settings" class="relief-settings">
         <summary>Relief settings <span id="relief-settings-summary" class="eyebrow"></span></summary>
         <label for="relief-pool">Relief pool <span class="relief-hint">teachers asked first; hold Ctrl or ⌘ to pick several</span>
           <select id="relief-pool" multiple size="6"></select></label>
         <label for="relief-max-per-day">Most covers a teacher takes in a day <input id="relief-max-per-day" type="number" min="1" max="20" step="1"></label>
+        <label for="relief-term-start">Term starts <span class="relief-hint">the ledger and the fairness order count covers from this day; leave blank to use the term calendar's</span>
+          <input id="relief-term-start" type="date"></label>
         <div class="relief-settings-actions"><button class="btn" id="relief-settings-save" type="button">Save</button> <span id="relief-settings-note" class="relief-hint"></span></div>
       </details>
     </section>

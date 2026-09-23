@@ -311,7 +311,7 @@ def base_changes(db, rec: dict, base=None) -> int:
         since = calendar.timegm(time.strptime(rec["created"], "%Y-%m-%dT%H:%M:%SZ"))
     except (KeyError, TypeError, ValueError):
         return 0
-    shared = changes.BOOKING_ADDED + changes.BOOKING_REMOVED + changes.COVER_ADDED
+    shared = changes.BOOKING_ADDED + changes.BOOKING_REMOVED + changes.COVER_ADDED + changes.COVER_REMOVED
     return sum(1 for e in changes.list_all(db, tid=base) if (e.get("when") or 0) > since and e.get("kind") not in shared)
 
 
