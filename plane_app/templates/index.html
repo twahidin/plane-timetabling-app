@@ -31,6 +31,12 @@
 
 <div class="status" id="status"></div>
 
+<div class="period-banner" id="period-banner" role="status" hidden>
+  <span id="period-banner-text"></span>
+  <button class="btn" id="period-banner-open" type="button" hidden>Open</button>
+  <button class="btn" id="period-banner-back" type="button" hidden>Back to the normal timetable</button>
+</div>
+
 <div id="empty" class="empty-state" hidden>No timetable yet. Drop a PDF, CSV or Excel file below to rebuild from data, or press "Start wizard" and answer a few questions in the chat.</div>
 
 <main class="wrap">
@@ -89,6 +95,12 @@
 
     <section class="card">
       <details id="loads-details"><summary><h2 style="display:inline">Workload</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
+    </section>
+
+    <section class="card" id="periods-card">
+      <h2>Periods <button class="btn" id="period-new" type="button">New period</button></h2>
+      <ul class="periods" id="periods-list"></ul>
+      <p id="periods-note" class="periods-note" hidden></p>
     </section>
 
     <section class="card">
@@ -216,6 +228,44 @@
   </form>
 </dialog>
 
+<dialog id="period-dialog" class="dialog">
+  <form method="dialog" id="period-form">
+    <h2>New period</h2>
+    <p class="dialog-text">A timetable in force from one day to another, such as an exam week. It starts as a copy of the normal timetable: lessons of the classes it covers are left out for you to plan, every other lesson stays where it is.</p>
+    <label for="period-name">Name <input id="period-name" type="text" autocomplete="off" maxlength="80" placeholder="for example Sec 4 exam week"></label>
+    <div class="period-dates">
+      <label for="period-from">From <input id="period-from" type="date"></label>
+      <label for="period-to">To <input id="period-to" type="date"></label>
+    </div>
+    <fieldset id="period-scope" class="period-scope">
+      <legend>For</legend>
+      <label><input type="radio" name="period-scope" value="all" checked> The whole school</label>
+      <label><input type="radio" name="period-scope" value="levels"> Some levels</label>
+      <label><input type="radio" name="period-scope" value="classes"> Some classes</label>
+    </fieldset>
+    <label id="period-levels-label" for="period-levels" hidden>Levels <select id="period-levels" multiple size="4"></select></label>
+    <label id="period-classes-label" for="period-classes" hidden>Classes <select id="period-classes" multiple size="6"></select></label>
+    <p id="period-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="period-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="period-ok">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="period-remove-dialog" class="dialog">
+  <form method="dialog" id="period-remove-form">
+    <h2 id="period-remove-title">Remove the period?</h2>
+    <p class="dialog-text">Also delete its timetable? Kept, it stays in the timetable list as an ordinary timetable.</p>
+    <p id="period-remove-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="period-remove-cancel">Cancel</button>
+      <button type="button" class="btn" id="period-remove-keep">Keep its timetable</button>
+      <button type="button" class="btn primary" id="period-remove-delete">Delete its timetable too</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="print-dialog" class="dialog">
   <form method="dialog" id="print-form">
     <h2>Print timetables</h2>
@@ -245,6 +295,7 @@
 <script src="/static/plan.js"></script>
 <script src="/static/wizard.js"></script>
 <script src="/static/timetables.js"></script>
+<script src="/static/periods.js"></script>
 <script src="/static/print.js"></script>
 <script src="/static/grid.js"></script>
 </body>

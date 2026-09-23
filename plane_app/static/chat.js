@@ -118,6 +118,7 @@
         appendBubble('assistant', 'Dismissed.');
       } else if (ev.kind === 'undone') reload = true;
       else if (ev.kind === 'bookings_updated') loadBookings();
+      else if (ev.kind === 'periods') { if (window.loadPeriods) window.loadPeriods().catch(() => {}); if (window.loadTimetables) window.loadTimetables(); }
       else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
       else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
       else if (ev.kind === 'settings_updated') {

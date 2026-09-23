@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import secrets
 
-from . import bookings, calendar as cal, changes
+from . import bookings, calendar as cal, changes, periods
 from .bookings import BookingError
 
 STALE = "the timetable changed since this was proposed"
@@ -139,7 +139,20 @@ def _overlapping_event(org: dict, b: dict) -> dict | None:
     return None
 
 
+DUPLICATE = "That booking already exists."
+
+
 def book(db, b: dict, session_id: str = "", run: str = "") -> dict:
+    # Before validating: the venue check reads the timetable in force on the date, which may not have
+    # the venue, and a duplicate must be named as one. Applying a duplicate would be worse than
+    # useless: a rollback's undo-by-id would delete the booking that was already there.
+    bid = bookings.id_of(b) if isinstance(b, dict) else None
+    if bid is not None and any(x["id"] == bid for x in bookings.list_all(db)):
+        raise BookingError(DUPLICATE)
+    if db.get_org("live") is None:                           # nothing for the engine to check the booking against
+        _base, rec = periods.record_of(db, db.current_timetable())
+        raise BookingError(f"{rec['name']} has no built timetable yet: make the booking from the normal timetable, "
+                           f"or build the period first" if rec else "There is no live timetable yet.")
     b = bookings.validate(db, b)
     # Against the organisation the engine would see, so an existing booking is found too: a booking
     # holds its cycle slot on every cycle, which is not obvious from a date and deserves saying.
@@ -150,9 +163,9 @@ def book(db, b: dict, session_id: str = "", run: str = "") -> dict:
             raise BookingError(f"{b['venue']} is already booked on {held['date']} "
                                f"(bookings block the same slot in every cycle; see Settings › calendar)")
         raise BookingError(f"{b['venue']} is used by {clash['name']} at that time")
-    s = db.get_settings()
+    s = db.get_settings(tid=periods.base_tid(db))            # dated: the base's term calendar
     labels = s["time"]["labels"]
-    venue_name = next((l["name"] for l in db.get_org("live")["locations"] if l["id"] == b["venue"]), b["venue"])
+    venue_name = next((l["name"] for l in bookings.venues_org(db, b["date"])["locations"] if l["id"] == b["venue"]), b["venue"])
     day = cal.describe(s["calendar"], s["time"], b["date"]).split(":")[0]
     span = labels[b["start"]] + (f"–{labels[b['start'] + b['dur'] - 1]}" if b["dur"] > 1 else "")
     item = {"id": b["id"], "kind": "booking", "booking": b, "review": [],
@@ -219,12 +232,16 @@ def apply(db, engine, pid: str, session_id: str = "") -> dict:
         return {"ok": True, "description": f"Undone: {undone}", "clashes": []}
     if item["kind"] != "booking" and (why := _stale(db, item)) is not None:
         return {"ok": False, "description": why, "clashes": []}
+    if item["kind"] == "booking" and any(x["id"] == item["booking"]["id"] for x in bookings.list_all(db)):
+        return {"ok": False, "description": DUPLICATE, "clashes": []}     # made meanwhile: undo-by-id would take it
     # What the timetable already clashes on before this change. A school's live timetable is rarely
     # clean (a keep-mode import promotes with its clashes), and a proposal's review is scoped to the
     # event it moves, so without this baseline every apply would roll back citing a clash elsewhere.
     live = bookings.live_for_engine(db)
     base = engine.check(live)["clashes"] if live is not None else []
-    changes.record(db, item["kind"], item["text"])      # snapshot first, so everything below can be undone
+    # Snapshot first, so everything below can be undone; a booking is logged as the one booking it
+    # adds, so undoing it (here or later, from either log of a base and its periods) removes only that.
+    changes.record(db, item["kind"], item["text"], booking=item["booking"] if item["kind"] == "booking" else None)
     try:
         if item["kind"] == "booking":
             bookings.add(db, item["booking"])

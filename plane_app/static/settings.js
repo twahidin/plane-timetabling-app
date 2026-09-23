@@ -13,7 +13,7 @@
     openrouter: 'https://openrouter.ai/api/v1',
     tokenrouter: 'https://api.tokenrouter.io/v1',
   };
-  const DEFAULT_MODEL = { anthropic: 'claude-opus-5' };
+  const DEFAULT_MODEL = { anthropic: 'claude-opus-5-5' };
   // Mirrors plane_app.db.PRESETS (the server is the authority; these fill the inputs when a preset is picked)
   const RULES = ['spread', 'stability', 'compact', 'even_days', 'edge', 'venue'];
   const PRESETS = {

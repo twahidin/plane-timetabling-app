@@ -51,6 +51,29 @@ dated bookings so the assistant can reason about term breaks and holidays. The c
 documents you dropped and any option waiting for your yes belong to the timetable, not to your
 browser: log in from another device and carry on where you left off.
 
+## Period timetables
+
+A period is a timetable in force for some dates — an exam week, a camp, a block of weeks after the
+exams — for the whole school, some levels or some classes. It is its own timetable, made from the
+normal one: the lessons of the classes it covers are left out for you to plan, and every other
+lesson is copied in and pinned where it is. Create one from the **Periods** card in the side panel
+(**New period**: a name, the first and last day, and whole school, levels or classes) or ask in
+chat ("make a Sec 4 exam week from 6 to 10 October"). The card opens the new period straight away;
+fill it in by chat, workbook or plan, then Quick or Best timetable. The timetable selector marks it
+"· period", and a banner says which timetable you are looking at, with **Back to the normal
+timetable**. Two periods cannot overlap for the same classes.
+
+Dated views switch by themselves: on a date inside a period, the grid's "Week of", the print
+dialog's week of a date and the assistant's where/who and free_venues questions on a date use the
+period's timetable. While today falls inside a period, the normal timetable shows a banner saying it
+is in force, with **Open**. When the normal timetable changes, the card counts the changes made to
+it since the period was made, and **Refresh** copies its other lessons into the period's draft
+again, keeping what the period has of its own (its exam papers, its own rooms). The copied lessons
+take effect once the period is built again: build it again — Quick or Best timetable — for its dates
+to use them. Bookings stay on
+the normal timetable and show in its periods too. **Remove** takes the period off the list and
+asks whether to delete its timetable as well; kept, it becomes an ordinary timetable.
+
 ## Printing
 
 **Print**, beside the timetable selector, opens a dialog: pick a teacher, class, group or room —

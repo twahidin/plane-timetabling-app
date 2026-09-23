@@ -27,9 +27,11 @@ from . import asc_import
 from .grid_api import make_router as grid_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
+from . import periods
 from . import proposals
 from .plan import importer as plan_importer
 from .plan.model import vocabulary_of
+from .periods_api import make_router as periods_router
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
 from .promote import promote_build
@@ -300,23 +302,38 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             raise HTTPException(400, "give the timetable a name")
         if tid not in {t["id"] for t in db.timetables()}:
             raise HTTPException(404, f"no timetable {tid}")
-        db.rename_timetable(tid, name)
+        base, rec = periods.record_of(db, tid)
+        if rec is not None:                           # a period instance: its record and orgs follow the name
+            periods.update(db, rec["id"], base=base, name=name)
+        else:
+            db.rename_timetable(tid, name)
         return _timetables_payload()
 
-    @app.delete("/api/timetables/{tid}")
-    def delete_timetable(tid: str, sid: str = Depends(auth.require_session)):
-        try:
-            paths = db.delete_timetable(tid)
-        except KeyError:
-            raise HTTPException(404, f"no timetable {tid}")
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+    def _delete_instance(tid: str) -> None:
+        """Delete a timetable, unlink its uploads and drop its locks. KeyError when unknown,
+        ValueError when it is the last one. A period's record goes from its base first, so no period
+        ever points at a gone timetable."""
+        if len(db.timetables()) > 1:                  # the last one is refused below: touch nothing then
+            periods.forget_instance(db, tid)
+            periods.release_instances(db, tid)        # a deleted base's periods become ordinary timetables
+        paths = db.delete_timetable(tid)
         for path in paths:
             _unlink_quietly(path)
         with solve_locks_guard:                       # the deleted timetable's locks are never needed again
             app.state.solve_locks.pop(tid, None)
-            app.state.chat_locks.pop(tid, None)
+            app.state.chat_locks.pop(tid, None)       # chat locks are keyed by base: a period's tid has none, its base's stays
+
+    @app.delete("/api/timetables/{tid}")
+    def delete_timetable(tid: str, sid: str = Depends(auth.require_session)):
+        try:
+            _delete_instance(tid)
+        except KeyError:
+            raise HTTPException(404, f"no timetable {tid}")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         return _timetables_payload()
+
+    app.include_router(periods_router(db, engine, _delete_instance))
 
     @app.get("/api/draft")
     def get_draft(sid: str = Depends(auth.require_session)):
@@ -486,16 +503,16 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     # ---- bookings --------------------------------------------------------------
     @app.get("/api/bookings")
     def list_bookings(sid: str = Depends(auth.require_session)):
-        s = db.get_settings()
+        s = db.get_settings(tid=periods.base_tid(db))      # dated: the base's term calendar
         items = bookings.list_all(db)
         return {"items": items, "describe": {b["id"]: cal_mod.describe(s["calendar"], s["time"], b["date"]) for b in items}}
 
     @app.delete("/api/bookings/{bid}")
     def delete_booking(bid: str, sid: str = Depends(auth.require_session)):
         def snapshot_before_removal(booking: dict) -> None:
-            # runs before the removal is persisted, so the change log's "before" snapshot still
-            # includes the booking (undo must be able to restore it).
-            changes.record(db, "booking_removed", f"Removed booking: {booking['title']} on {booking['date']}")
+            # runs before the removal is persisted; the entry carries the removed booking, which
+            # undo puts back by id (never the whole list: the base and its periods share it).
+            changes.record(db, "booking_removed", f"Removed booking: {booking['title']} on {booking['date']}", booking=booking)
 
         if bookings.remove(db, bid, before_persist=snapshot_before_removal) is None:
             raise HTTPException(404, "no such booking")
@@ -546,7 +563,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         text = (body.get("text") or "").strip()
         if not text:
             raise HTTPException(400, "empty message")
-        lock = app.state.chat_locks[db.current_timetable()]
+        lock = app.state.chat_locks[periods.base_tid(db)]    # a base and its periods share one lock (and one bookings list)
         if not lock.acquire(timeout=CHAT_LOCK_TIMEOUT):
             raise HTTPException(409, "Another message on this timetable is still being answered; try again in a moment.")
         try:

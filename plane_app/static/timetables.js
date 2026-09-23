@@ -19,7 +19,7 @@
     data.items.forEach((t) => {
       const o = document.createElement('option');
       o.value = t.id;
-      o.textContent = t.name + (t.has_live ? ' · built' : t.has_draft ? ' · draft' : ' · empty');
+      o.textContent = t.name + (t.period_base ? ' · period' : '') + (t.has_live ? ' · built' : t.has_draft ? ' · draft' : ' · empty');
       if (t.id === data.current) { o.selected = true; currentName = t.name; }
       sel.appendChild(o);
     });
@@ -29,11 +29,14 @@
   async function refreshEverything() {
     if (window.reloadModel) await window.reloadModel().catch(() => {});
     if (window.reloadIntake) await window.reloadIntake().catch(() => {});
+    if (window.loadPeriods) await window.loadPeriods().catch(() => {});
   }
 
   async function load() {
     try { render(await api('/api/timetables')); } catch (e) { /* the status strip reports API failures */ }
   }
+  window.loadTimetables = load;                 // periods.js reloads the switcher after creating or removing one
+  window.refreshTimetable = refreshEverything;  // ... and everything the current timetable feeds after switching
 
   // ---------- dialog ----------
   const dlg = el('tt-dialog'), form = el('tt-form'), nameInput = el('tt-name'), errBox = el('tt-dialog-error');
@@ -68,7 +71,7 @@
   // ---------- actions ----------
   sel.addEventListener('change', async () => {
     try { render(await api(`/api/timetables/${encodeURIComponent(sel.value)}/select`, { method: 'POST' })); await refreshEverything(); }
-    catch (e) { await load(); }
+    catch (e) { await load(); if (window.loadPeriods) window.loadPeriods().catch(() => {}); }
   });
   el('tt-new').addEventListener('click', () => openDialog({
     title: 'New timetable', text: 'Starts empty. Drop documents or press "Start from criteria" to fill it.',

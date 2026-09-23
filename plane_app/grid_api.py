@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 
 from . import auth
 from .print import grid as G
-from .print.routes import apply_week, live_org, resolve_grid
+from .print.routes import view_in_force
 
 
 def bad_by_event(check: dict | None) -> dict[str, list[str]]:
@@ -45,9 +45,7 @@ def make_router(db) -> APIRouter:
 
     @r.get("/api/grid/{kind}/{id}")
     def one(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
-        org = live_org(db)
-        grid = resolve_grid(org, kind, id)
-        [grid] = apply_week(db, org, [grid], view, date)
-        return grid_json(grid, bad_by_event(db.get_value("last_check")))
+        tid, grid = view_in_force(db, kind, id, view, date)     # a week in a period: that timetable's marks
+        return grid_json(grid, bad_by_event(db.get_value("last_check", tid=tid)))
 
     return r

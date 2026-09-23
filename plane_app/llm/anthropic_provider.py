@@ -40,6 +40,7 @@ class AnthropicProvider:
         try:
             resp = self.client.messages.create(
                 model=self.model, max_tokens=8000, system=system,
+                output_config={"effort": "high"},   # Opus 5.5 defaults to medium; keep the depth Opus 5 ran at
                 messages=to_anthropic_messages(messages),
                 tools=[{"name": t.name, "description": t.description, "input_schema": t.schema} for t in tools],
             )
@@ -58,7 +59,7 @@ class AnthropicProvider:
             resp = self.client.messages.create(
                 model=self.model, max_tokens=16000, system=system,
                 messages=[{"role": "user", "content": user}],
-                output_config={"format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)}},
+                output_config={"effort": "high", "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)}},
             )
         except anthropic.APIError as e:
             raise ProviderError(f"Anthropic: {e}")

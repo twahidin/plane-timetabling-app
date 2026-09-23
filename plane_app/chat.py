@@ -5,11 +5,13 @@ import json
 import re
 import secrets
 from dataclasses import dataclass, field
+from datetime import date as _date
 from urllib.parse import quote
 
 from . import bookings
 from . import calendar as cal_mod
 from . import names
+from . import periods
 from . import proposals
 from .db import Db
 from .engine_client import EngineClient, EngineError
@@ -67,7 +69,12 @@ in plain words, calling wizard_preview again as the knobs settle. When the user 
 wizard_instantiate; it writes the settings, the plan's vocabulary and returns three links — a workbook to
 fill in, a sample PDF of what the printed timetable will look like, and a one-page guide. Give the user all
 three links and tell them to drop the filled workbook back into the chat when it is ready. The user may
-still start from criteria instead ("start an empty draft"), which skips the wizard."""
+still start from criteria instead ("start an empty draft"), which skips the wizard.
+A PERIOD timetable is in force for a date range and a scope (whole school, levels or classes) and is created
+from the normal timetable with period_create; on those dates every date question (where, who, free_venues,
+printing a week) uses it automatically. Say 'period' and 'normal timetable' to the user. To ask where or who
+on a date, give where/who the date and the offset within that day instead of a slot; period_list shows the
+periods and period_refresh re-copies the normal timetable's lessons into one."""
 
 
 def system_prompt(vocabulary: dict | None = None) -> str:
@@ -91,11 +98,21 @@ _PLAN_PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"requirements\": {\"ma-
                     "A described requirement like \"Sec 3 Science: 6 periods, two doubles, in a lab, Mr Tan\" becomes one "
                     "requirement patch.")
 
+_DATED = {"date": {"type": "string", "description": "YYYY-MM-DD; use instead of slot"},
+          "offset": {"type": "integer", "description": "slot within that day, from 0 (default 0)"}}
+
+_SCOPE_DOC = ("{\"all\": true} for the whole school, or {\"levels\": [\"4\"], \"classes\": [\"3a1\"]} for some "
+              "levels and/or classes")
+
 TOOLS: list[ToolSpec] = [
-    ToolSpec("where", "Where a person is at a slot in the live timetable.",
-             {"type": "object", "properties": {"person": {"type": "string"}, "slot": {"type": "integer"}}, "required": ["person", "slot"]}),
-    ToolSpec("who", "Who is in a location at a slot in the live timetable.",
-             {"type": "object", "properties": {"location": {"type": "string"}, "slot": {"type": "integer"}}, "required": ["location", "slot"]}),
+    ToolSpec("where", "Where a person is at a slot in the live timetable; or, given a date and the offset within that "
+                      "day, in the timetable in force on that date (a period timetable when one is).",
+             {"type": "object", "properties": {"person": {"type": "string"}, "slot": {"type": "integer"}, **_DATED},
+              "required": ["person"]}),
+    ToolSpec("who", "Who is in a location at a slot in the live timetable; or, given a date and the offset within that "
+                    "day, in the timetable in force on that date (a period timetable when one is).",
+             {"type": "object", "properties": {"location": {"type": "string"}, "slot": {"type": "integer"}, **_DATED},
+              "required": ["location"]}),
     ToolSpec("both_free", "Slots where two people are both free in the live timetable.",
              {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "required": ["a", "b"]}),
     ToolSpec("load", "How loaded a person is in the live timetable.",
@@ -149,6 +166,18 @@ TOOLS: list[ToolSpec] = [
              {"type": "object", "properties": {"patch": {"type": "object"}}, "required": ["patch"]}),
     ToolSpec("plan_generate", "Generate a draft organisation from the curriculum plan. Refuses while any blocking issue exists.",
              {"type": "object", "properties": {}}),
+    ToolSpec("period_list", "The normal timetable's periods (name, dates, scope, dropped lessons), with the one in force today flagged.",
+             {"type": "object", "properties": {}}),
+    ToolSpec("period_create", "Create a period timetable from the normal timetable: in force from one date to another for a "
+                              "scope, with the in-scope lessons dropped and every other lesson kept where it is. Touches "
+                              "nothing live; the user then fills it in.",
+             {"type": "object", "properties": {"name": {"type": "string"},
+                                               "from": {"type": "string", "description": "YYYY-MM-DD"},
+                                               "to": {"type": "string", "description": "YYYY-MM-DD"},
+                                               "scope": {"type": "object", "description": _SCOPE_DOC}},
+              "required": ["name", "from", "to", "scope"]}),
+    ToolSpec("period_refresh", "Re-copy the normal timetable's out-of-scope lessons into a period timetable, keeping the period's own lessons.",
+             {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
     ToolSpec("wizard_library", "The start wizard's template library: domains and, in each, the templates' id, name, "
                                "summary, when_to_choose and knobs with defaults. Optionally filter to one domain.",
              {"type": "object", "properties": {"domain": {"type": "string", "enum": ["education", "health", "business", "sports"]}}}),
@@ -196,6 +225,35 @@ def _find_print_target(org: dict, kind: str, query: str) -> list[dict]:
     return names.find(org, query, kinds=(_PRINT_FIND_KIND[kind],))
 
 
+def _dated_slot(db: Db, date: str, offset) -> int | str:
+    """The absolute slot of `offset` (default 0) within `date` on the normal timetable's calendar,
+    or the calendar's description of why that date has none."""
+    s = db.get_settings(tid=periods.base_tid(db))
+    rng = cal_mod.slot_range(s["calendar"], s["time"], date)
+    if rng is None:
+        why = cal_mod.describe(s["calendar"], s["time"], date)
+        return why if s["calendar"].get("term_start") else f"{why}: set the term calendar in Settings if the term has started"
+    off = int(offset or 0)
+    if not 0 <= off < rng[1] - rng[0]:
+        return f"the offset must be 0–{rng[1] - rng[0] - 1} on that day"
+    return rng[0] + off
+
+
+def _dated_query(db: Db, engine: EngineClient, name: str, args: dict) -> dict:
+    """`where`/`who` on a date: the slot through the calendar, the answer from the timetable in force."""
+    date = str(args.get("date") or "")
+    slot = _dated_slot(db, date, args.get("offset"))
+    if isinstance(slot, str):
+        return {"error": slot}
+    tid, org = periods.org_for(db, date)
+    if org is None:
+        return {"error": periods.no_live_message(db, tid, "There is no live timetable for that date yet.")}
+    query = {k: v for k, v in args.items() if k not in ("date", "offset")} | {"slot": slot}
+    res = engine.query(org, name, query)
+    res["timetable"] = next((t["name"] for t in db.timetables() if t["id"] == tid), tid)
+    return res
+
+
 @dataclass
 class ChatResult:
     text: str
@@ -230,6 +288,10 @@ def _plan_summary_dict(db: Db, plan: dict, issues: list[Issue] | None = None) ->
 def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
               session_id: str = "", run: str = "") -> str:
     try:
+        if call.name in ("where", "who") and call.args.get("date"):
+            return json.dumps(_dated_query(db, engine, call.name, call.args))
+        if call.name in ("where", "who") and call.args.get("slot") is None:
+            return json.dumps({"error": "give a slot, or a date and the offset within that day"})
         if call.name in ("where", "who", "both_free", "load"):
             live = bookings.live_for_engine(db)
             if live is None:
@@ -287,17 +349,19 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                                "note": "Show these to the user and wait for a yes before calling apply. "
                                        "Saying yes applies the first option; name another by its id."})
         if call.name == "free_venues":
-            live = bookings.live_for_engine(db)
-            if live is None:
-                return json.dumps({"error": "There is no live timetable yet."})
             slot = call.args.get("slot")
             if slot is None:
-                s = db.get_settings()
                 date = str(call.args.get("date") or "")
-                rng = cal_mod.slot_range(s["calendar"], s["time"], date)
-                if rng is None:
-                    return json.dumps({"error": cal_mod.describe(s["calendar"], s["time"], date)})
-                slot = rng[0] + int(call.args.get("offset") or 0)
+                slot = _dated_slot(db, date, call.args.get("offset"))
+                if isinstance(slot, str):
+                    return json.dumps({"error": slot})
+                tid, live = periods.org_for(db, date)
+                if live is None:
+                    return json.dumps({"error": periods.no_live_message(db, tid, "There is no live timetable for that date yet.")})
+            else:
+                live = bookings.live_for_engine(db)
+                if live is None:
+                    return json.dumps({"error": "There is no live timetable yet."})
             venues = engine.free_venues(live, int(slot), int(call.args.get("dur") or 1),
                                         int(call.args.get("min_cap") or 0), call.args.get("kind"))["venues"]
             return json.dumps({"slot": int(slot), "venues": venues})
@@ -398,6 +462,39 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             if len(issues) > ISSUE_LIMIT:
                 result["more"] = len(issues) - ISSUE_LIMIT
             return json.dumps(result)
+        if call.name == "period_list":
+            today = {p["id"] for p in periods.in_force(db, _date.today().isoformat())}
+            return json.dumps({"periods": [{k: v for k, v in p.items() if k != "carved"} | {"today": p["id"] in today}
+                                           for p in periods.list_for(db)]})
+        if call.name == "period_create":
+            try:
+                rec = periods.create(db, call.args.get("name"), call.args.get("from"), call.args.get("to"), call.args.get("scope"))
+            except periods.PeriodError as e:
+                return json.dumps({"error": str(e)})
+            events.append({"kind": "periods"})
+            return json.dumps({"period": {k: v for k, v in rec.items() if k != "carved"}, "dropped": rec["dropped"],
+                               "note": "Open it from the timetable list, fill it in (chat, workbook or plan), "
+                                       "then Quick or Best timetable."})
+        if call.name == "period_refresh":
+            pid = str(call.args.get("id", ""))
+            rec = periods.get(db, pid)
+            if rec is None:
+                return json.dumps({"error": f"no period {pid!r}"})
+            try:
+                res = periods.refresh(db, pid)
+            except periods.PeriodError as e:
+                return json.dumps({"error": str(e)})
+            events.append({"kind": "periods"})                        # the Periods card reloads
+            if rec["timetable"] == db.current_timetable():
+                events.append({"kind": "draft_updated"})              # and the draft, when it is the one on screen
+            draft = db.get_org("draft", tid=rec["timetable"])
+            try:                                          # a check, not a build: nothing is stored
+                clashes = len(engine.check(bookings.inject(draft, bookings.list_all(db)))["clashes"])
+            except EngineError:
+                clashes = None                            # the refresh stands; the engine could not say
+            return json.dumps({"ok": True, **res, "clashes": clashes,
+                               "note": "This updated the period's draft only. Build it again — Quick or Best "
+                                       "timetable — for its dates to use this."})
         if call.name == "wizard_library":
             domains = wiz_library.domains()
             domain = call.args.get("domain")

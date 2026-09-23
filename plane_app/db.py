@@ -33,7 +33,7 @@ DEFAULT_SETTINGS = {
              "labels": ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"], "window": "day"},
     "rules": {"max_load": 6, "max_run": 4, "mandatory_rest": []},
     "solve": {"preset": "balanced", "time_limit": 300, "weights": dict(DEFAULT_SOFT)},
-    "provider": {"kind": "anthropic", "base_url": "", "api_key": "", "model": "claude-opus-5"},
+    "provider": {"kind": "anthropic", "base_url": "", "api_key": "", "model": "claude-opus-5-5"},
     "engine": {"url": "", "key": ""},
     "calendar": {"term_start": "", "first_week": "odd", "non_teaching_dates": []},
 }
@@ -49,7 +49,7 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "wizard")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "wizard", "periods", "period_base", "relief")  # get_value/set_value keys that are scoped
 # The one chat thread of a timetable. Messages, uploads and pending proposals are keyed by this
 # rather than by the browser's login session, so a user who logs in on another device (or after
 # the cookie expired) continues the same conversation. The login session id still authenticates
@@ -93,6 +93,17 @@ class Db:
             if row is not None:
                 con.execute("insert into kv (k, v) values (?, ?) on conflict(k) do nothing", (new, row["v"]))
                 con.execute("delete from kv where k=?", (old,))
+        # Claude Opus 5 -> Claude Opus 5.5 (23 Sep 2026): a stored provider model still on the old
+        # default moves to the new one; a model the user chose deliberately (anything else) is kept.
+        row = con.execute("select v from kv where k='settings'").fetchone()
+        if row is not None:
+            try:
+                doc = json.loads(row["v"])
+                if isinstance(doc, dict) and (doc.get("provider") or {}).get("model") == "claude-opus-5":
+                    doc["provider"]["model"] = "claude-opus-5-5"
+                    con.execute("update kv set v=? where k='settings'", (json.dumps(doc),))
+            except (ValueError, TypeError):
+                pass
         if con.execute("select 1 from kv where k='current_timetable'").fetchone() is None:
             con.execute("insert into kv values ('current_timetable', ?)", (json.dumps(DEFAULT_TIMETABLE),))
         # Fold every browser session's chat rows into the timetable's one thread (see THREAD). A
@@ -135,7 +146,8 @@ class Db:
             for r in rows:
                 has = lambda k: con.execute("select 1 from kv where k=?", (k,)).fetchone() is not None
                 out.append({"id": r["id"], "name": r["name"], "created_at": r["created_at"],
-                            "has_live": has(f"org:{r['id']}:live"), "has_draft": has(f"org:{r['id']}:draft")})
+                            "has_live": has(f"org:{r['id']}:live"), "has_draft": has(f"org:{r['id']}:draft"),
+                            "period_base": self._get(f"period_base:{r['id']}")})
         return out
 
     def current_timetable(self) -> str:
@@ -171,8 +183,8 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"wizard:{tid}"))
+            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}"))
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
             con.execute("delete from timetables where id=?", (tid,))
@@ -184,6 +196,16 @@ class Db:
 
     def _tid(self) -> str:
         return self.current_timetable()
+
+    def _scope(self, tid: str | None) -> str:
+        """Resolve the timetable id an accessor should read or write: the current one when `tid`
+        is omitted, otherwise `tid` itself once checked to exist (unknown id -> KeyError)."""
+        if tid is None:
+            return self._tid()
+        with self._con() as con:
+            if con.execute("select 1 from timetables where id=?", (tid,)).fetchone() is None:
+                raise KeyError(tid)
+        return tid
 
     def _con(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path)
@@ -206,22 +228,27 @@ class Db:
             else:
                 con.execute("insert into kv (k, v) values (?, ?) on conflict(k) do update set v=excluded.v", (k, json.dumps(value)))
 
-    def get_settings(self) -> dict:
-        """Global provider and engine settings plus the current timetable's time, rules and solve settings.
-        Groups a stored document lacks (a database from before they existed) come from the defaults."""
+    def get_settings(self, tid: str | None = None) -> dict:
+        """Global provider and engine settings plus the given (default: current) timetable's time,
+        rules and solve settings. Groups a stored document lacks (a database from before they
+        existed) come from the defaults. Unknown `tid` -> KeyError."""
         base = self._get("settings") or {}
         s = {k: copy.deepcopy(base.get(k, v)) for k, v in DEFAULT_SETTINGS.items()}
-        per = self._get(f"tt:{self._tid()}") or {}
+        per = self._get(f"tt:{self._scope(tid)}") or {}
         for k in PER_TIMETABLE_SETTINGS:
             if k in per:
                 s[k] = copy.deepcopy(per[k])
         return s
 
-    def set_settings(self, settings: dict) -> None:
+    def set_settings(self, settings: dict, tid: str | None = None) -> None:
         settings = copy.deepcopy(settings)
+        scoped = self._scope(tid)
         per = {k: settings.get(k, DEFAULT_SETTINGS[k]) for k in PER_TIMETABLE_SETTINGS}
-        self._set(f"tt:{self._tid()}", per)
-        self._set("settings", settings)      # the global copy keeps time/rules/solve as defaults for new timetables
+        self._set(f"tt:{scoped}", per)
+        if scoped == self._tid():
+            # The global copy tracks the *current* timetable's settings (it seeds new timetables and
+            # holds the truly global provider/engine groups); writing for another tid must not disturb it.
+            self._set("settings", settings)
 
     def _clean_solve(self, given: dict, current: dict) -> dict:
         """Keep the solve group well-formed whatever the caller sent: a known preset, a time limit
@@ -275,19 +302,19 @@ class Db:
     def _is_scoped(self, key: str) -> bool:
         return key in PER_TIMETABLE_VALUES or key.startswith(CHANGE_SNAP_PREFIX) or key.startswith(PRINT_CUSTOM_PREFIX)
 
-    def get_value(self, key: str):
-        return self._get(f"{key}:{self._tid()}" if self._is_scoped(key) else key)
+    def get_value(self, key: str, tid: str | None = None):
+        return self._get(f"{key}:{self._scope(tid)}" if self._is_scoped(key) else key)
 
-    def set_value(self, key: str, value) -> None:
-        self._set(f"{key}:{self._tid()}" if self._is_scoped(key) else key, value)
+    def set_value(self, key: str, value, tid: str | None = None) -> None:
+        self._set(f"{key}:{self._scope(tid)}" if self._is_scoped(key) else key, value)
 
-    def get_org(self, kind: str) -> dict | None:
+    def get_org(self, kind: str, tid: str | None = None) -> dict | None:
         assert kind in ("live", "draft")
-        return self._get(f"org:{self._tid()}:{kind}")
+        return self._get(f"org:{self._scope(tid)}:{kind}")
 
-    def set_org(self, kind: str, org: dict | None) -> None:
+    def set_org(self, kind: str, org: dict | None, tid: str | None = None) -> None:
         assert kind in ("live", "draft")
-        self._set(f"org:{self._tid()}:{kind}", org)
+        self._set(f"org:{self._scope(tid)}:{kind}", org)
 
     def promote(self, live_org: dict, check: dict | None = None) -> None:
         """Set the live organisation, drop the draft and record the last check in one transaction."""

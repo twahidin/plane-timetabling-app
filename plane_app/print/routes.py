@@ -1,4 +1,5 @@
-"""Print pages and downloads. Reads the live organisation, settings and bookings; never the engine."""
+"""Print pages and downloads. Reads the live organisation, settings and bookings; never the engine.
+A dated week view reads the timetable in force on that date (a period timetable, else the base)."""
 from __future__ import annotations
 
 import secrets
@@ -7,7 +8,7 @@ from datetime import date as _date
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
-from .. import auth, bookings
+from .. import auth, bookings, periods
 from . import grid as G, html as H, pdf as P
 
 KINDS = {"teacher": G.teacher_grid, "group": G.group_grid, "class": G.class_grid, "room": G.room_grid}
@@ -44,55 +45,112 @@ def apply_week(db, org: dict, grids: list[G.Grid], view: str, date: str | None) 
         raise HTTPException(400, str(e))
 
 
+def _in_force(db, date: str) -> tuple[str, str, dict, str | None]:
+    """(base tid, tid, organisation, period name or None) for the timetable in force on `date`: 404 when
+    that timetable has no live organisation. The injected bookings are stripped again — the week
+    grid paints the base's bookings itself, as booking cells on their date."""
+    try:
+        tid, org = periods.org_for(db, date)
+    except periods.PeriodError as e:
+        raise HTTPException(400, str(e))
+    if org is None:
+        raise HTTPException(404, periods.no_live_message(db, tid, "no live timetable for that date"))
+    base = periods.base_tid(db)
+    hit = next((p for p in periods.in_force(db, date, base) if p["timetable"] == tid), None)
+    return base, tid, bookings.strip(org), (hit["name"] if hit else None)
+
+
+def _weeks(db, base: str, org: dict, grids: list[G.Grid], date: str, period: str | None) -> list[G.Grid]:
+    """Each grid widened to its calendar week on the base's calendar and times, with the base's
+    bookings; the subtitle names the period when one is in force."""
+    s = db.get_settings(tid=base)
+    items = bookings.list_all(db)
+    try:
+        out = [G.week_grid(org, g, s["calendar"], s["time"], date, items) for g in grids]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if period:
+        for w in out:
+            w.subtitle = f"{w.subtitle} · {period}"
+    return out
+
+
+def view_in_force(db, kind: str, id: str, view: str, date: str | None) -> tuple[str, G.Grid]:
+    """(tid the grid was read from, grid) for one teacher/group/class/room: the cycle grid of the
+    selected live timetable, or for `view == "week"` the week of `date` (default today) in the
+    timetable in force on that date."""
+    if view != "week":
+        return db.current_timetable(), resolve_grid(live_org(db), kind, id)
+    date = date or _date.today().isoformat()
+    base, tid, org, period = _in_force(db, date)
+    [week] = _weeks(db, base, org, [resolve_grid(org, kind, id)], date, period)
+    return tid, week
+
+
+def grids_for_view(db, kind: str, id: str, view: str, date: str | None) -> tuple[str, list[G.Grid]]:
+    """`view_in_force`'s tid and its grid as a list — for the print routes."""
+    tid, grid = view_in_force(db, kind, id, view, date)
+    return tid, [grid]
+
+
+def all_for_view(db, kind: str, view: str, date: str | None) -> tuple[str, list[G.Grid]]:
+    """(tid read from, every grid of one kind: teachers, classes, rooms), by the same rules as `grids_for_view`."""
+    if kind not in ALL:
+        raise HTTPException(404, f"unknown kind {kind}")
+    if view != "week":
+        return db.current_timetable(), G.all_grids(live_org(db), kind)
+    date = date or _date.today().isoformat()
+    base, tid, org, period = _in_force(db, date)
+    return tid, _weeks(db, base, org, G.all_grids(org, kind), date, period)
+
+
 def make_router(db, templates) -> APIRouter:
     r = APIRouter()
 
     def live() -> dict:
         return live_org(db)
 
-    def meta() -> tuple[str, str]:
-        name = next((t["name"] for t in db.timetables() if t["id"] == db.current_timetable()), "")
+    def meta(tid: str) -> tuple[str, str]:
+        name = next((t["name"] for t in db.timetables() if t["id"] == tid), "")
         return _date.today().strftime("%-d %b %Y"), name
 
-    def grids_for(kind: str, id: str) -> list[G.Grid]:
-        org = live()
-        if kind == "custom":
+    def grids_for(kind: str, id: str, view: str, date: str | None) -> tuple[str, list[G.Grid]]:
+        if kind == "custom":                            # picks ids of the selected live: stays on it
+            org = live()
             spec = db.get_value(f"print_custom:{id}")
             if spec is None:
                 raise HTTPException(404, "no such custom timetable")
-            return [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
-        return [resolve_grid(org, kind, id)]
+            grids = [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
+            return db.current_timetable(), apply_week(db, org, grids, view, date)
+        return grids_for_view(db, kind, id, view, date)
 
-    def apply_view(grids: list[G.Grid], view: str, date: str | None) -> list[G.Grid]:
-        return apply_week(db, live(), grids, view, date)
-
-    def respond(grids, as_pdf: bool, filename: str):
-        generated, name = meta()
+    def respond(tid_grids: tuple[str, list[G.Grid]], as_pdf: bool, filename: str):
+        tid, grids = tid_grids                          # named after the timetable the grids were read from
+        generated, name = meta(tid)
+        if name:                                        # a period's week subtitle already ends with its name: once is enough
+            for g in grids:
+                if g.subtitle.endswith(f" · {name}"):
+                    g.subtitle = g.subtitle[: -len(f" · {name}")]
         if as_pdf:
             return Response(P.render(grids, generated, name), media_type="application/pdf",
                             headers={"Content-Disposition": f'attachment; filename="{filename}.pdf"'})
         return HTMLResponse(H.render(templates, grids, generated, name))
 
-    def _all(kind: str):
-        if kind not in ALL:
-            raise HTTPException(404, f"unknown kind {kind}")
-        return G.all_grids(live(), kind)
-
     @r.get("/print/all/{kind}.pdf")
     def all_pdf(kind: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
-        return respond(apply_view(_all(kind), view, date), True, f"all-{kind}")
+        return respond(all_for_view(db, kind, view, date), True, f"all-{kind}")
 
     @r.get("/print/all/{kind}")
     def all_html(kind: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
-        return respond(apply_view(_all(kind), view, date), False, f"all-{kind}")
+        return respond(all_for_view(db, kind, view, date), False, f"all-{kind}")
 
     @r.get("/print/{kind}/{id}.pdf")
     def one_pdf(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
-        return respond(apply_view(grids_for(kind, id), view, date), True, f"{kind}-{id}")
+        return respond(grids_for(kind, id, view, date), True, f"{kind}-{id}")
 
     @r.get("/print/{kind}/{id}")
     def one_html(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
-        return respond(apply_view(grids_for(kind, id), view, date), False, f"{kind}-{id}")
+        return respond(grids_for(kind, id, view, date), False, f"{kind}-{id}")
 
     @r.get("/api/print/targets")
     def targets(sid: str = Depends(auth.require_session)):
