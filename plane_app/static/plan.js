@@ -69,11 +69,12 @@
   }
 
   // ---------- tabs ----------
-  // Three tabs below the timetable: the draft (lessons about to be placed), the plan (what the
-  // timetable must provide) and the start wizard (setting up a new timetable by chat).
-  const TABS = { draft: ['tab-draft', 'draft-panel'], plan: ['tab-plan', 'plan'], wizard: ['tab-wizard', 'wizard-panel'] };
+  // Three tabs below the timetable, full width: the draft (lessons about to be placed), the plan
+  // (what the timetable must provide) and the assistant (the chat, with the start wizard's options).
+  const TABS = { draft: ['tab-draft', 'draft-panel'], plan: ['tab-plan', 'plan'], assistant: ['tab-assistant', 'assistant-panel'] };
   function showTab(which) {
-    if (!TABS[which]) which = 'draft';
+    if (which === 'wizard') which = 'assistant';          // the wizard lives in the assistant tab now
+    if (!TABS[which]) which = 'assistant';
     Object.entries(TABS).forEach(([k, [tab, panel]]) => {
       el(tab).classList.toggle('on', k === which);
       el(tab).setAttribute('aria-selected', String(k === which));
@@ -81,7 +82,10 @@
     });
     try { localStorage.setItem('plane.intakeTab', which); } catch (e) { /* private mode, etc. */ }
     if (which === 'plan') loadPlan();
-    if (which === 'wizard' && window.loadWizard) window.loadWizard().catch(() => {});
+    if (which === 'assistant') {
+      if (window.loadWizard) window.loadWizard().catch(() => {});
+      const log = el('chat-log'); if (log) log.scrollTop = log.scrollHeight;
+    }
   }
   window.showIntakeTab = showTab;
   Object.keys(TABS).forEach((k) => el(TABS[k][0]).addEventListener('click', () => showTab(k)));
@@ -374,7 +378,7 @@
     finally { renderIssues(); }
   });
 
-  let initialTab = 'draft';
-  try { initialTab = localStorage.getItem('plane.intakeTab') || 'draft'; } catch (e) { /* ignore */ }
+  let initialTab = 'assistant';
+  try { initialTab = localStorage.getItem('plane.intakeTab') || 'assistant'; } catch (e) { /* ignore */ }
   showTab(initialTab);
 })();

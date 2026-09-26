@@ -123,7 +123,7 @@
         else showNotes([], [], [{ cls: 'error', text: `Build did not settle: ${(ev.unplaced || []).length} unplaced, ${(ev.clashes || []).length} clashes.` }]
           .concat((ev.clashes || []).map((c) => ({ cls: 'error', text: c.message || String(c) }))));
       } else if (ev.kind === 'draft_updated') reload = true;
-      else if (ev.kind === 'proposals') appendProposals(ev.items);
+      else if (ev.kind === 'proposals') { showAssistant(); appendProposals(ev.items); }
       else if (ev.kind === 'applied') {
         const clashText = (ev.clashes || []).map((c) => c.message || String(c)).join('; ');
         appendBubble(ev.ok ? 'assistant' : 'error', (ev.ok ? 'Applied: ' : 'Not applied: ') + ev.description
@@ -148,8 +148,11 @@
   }
   window.handleEvents = handleEvents;
 
-  window.sendChat = (text) => { el('chat-text').value = text; el('chat-form').requestSubmit(); };
-  window.draftChat = (text) => { const input = el('chat-text'); input.value = text; input.focus(); };
+  // Anything that talks to the assistant (Fix…, Move…, Book this room, Plan cover, Start wizard)
+  // opens its tab first, so the reply and any cards to confirm are in view.
+  const showAssistant = () => { if (window.showIntakeTab) window.showIntakeTab('assistant'); };
+  window.sendChat = (text) => { showAssistant(); el('chat-text').value = text; el('chat-form').requestSubmit(); };
+  window.draftChat = (text) => { showAssistant(); const input = el('chat-text'); input.value = text; input.focus(); };
 
   el('undo').addEventListener('click', async () => {
     const btn = el('undo'); btn.disabled = true;
@@ -272,10 +275,8 @@
   drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.classList.remove('over'); upload(ev.dataTransfer && ev.dataTransfer.files); });
   // The old empty-draft button is gone; that path is still reachable through the chat's
   // new_draft tool ("start an empty draft"). Start wizard just asks the assistant to begin.
-  // Start wizard: open its tab below the timetable and begin the conversation in the chat.
-  const startWizard = () => { if (window.showIntakeTab) window.showIntakeTab('wizard'); window.sendChat("I'd like to set up a new timetable"); };
-  el('start-wizard').addEventListener('click', startWizard);
-  el('wizard-begin').addEventListener('click', startWizard);
+  // Start wizard: begin the conversation in the chat (sendChat opens the assistant tab).
+  el('start-wizard').addEventListener('click', () => window.sendChat("I'd like to set up a new timetable"));
 
   window.reloadIntake = async () => { el('notes').textContent = ''; stopFollowing(); await loadMessages(); await loadDraft(); await resumeSolve(); };
 

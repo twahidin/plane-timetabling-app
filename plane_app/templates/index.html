@@ -159,7 +159,7 @@
     <div class="tabs seg" id="intake-tabs" role="tablist" aria-label="Intake view">
       <button id="tab-draft" class="on" type="button" role="tab" aria-selected="true">Draft</button>
       <button id="tab-plan" type="button" role="tab" aria-selected="false">Plan</button>
-      <button id="tab-wizard" type="button" role="tab" aria-selected="false">Wizard</button>
+      <button id="tab-assistant" type="button" role="tab" aria-selected="false">Assistant</button>
     </div>
 
     <div id="draft-panel">
@@ -215,23 +215,22 @@
         <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
       </div>
     </div>
-    <div id="wizard-panel" hidden>
-      <p class="tab-note">The <strong>wizard</strong> sets up a new timetable from a few plain questions in the chat: what you are timetabling, then the options that fit. Choosing one gives you a workbook to fill in, a sample printout and a one-page guide.</p>
-      <div id="wizard" class="card wizard">
-        <p id="wizard-empty" class="empty"></p>
-        <button class="btn primary" id="wizard-begin" type="button">Start in the chat</button>
+    <div id="assistant-panel" hidden>
+      <p class="tab-note">The <strong>assistant</strong> answers questions about the timetable, proposes changes and applies one only after your yes. Try “Where is Ms Lee at P3?”, “Fix Mr Tan's clashes”, “Ms Lee is away on Tuesday”, or <strong>Start wizard</strong> to set up a new timetable from a few plain questions.</p>
+      <div id="wizard" class="card wizard" hidden>
+        <h2>Start wizard <span class="eyebrow">options that fit what you told the assistant</span></h2>
         <div id="wizard-decisions" class="wizard-decisions" hidden></div>
         <div id="wizard-candidates" class="wizard-candidates"></div>
         <div id="wizard-downloads" class="wizard-downloads" hidden></div>
       </div>
+    <section id="chat" class="chat">
+      <div class="section-title">Assistant <span class="eyebrow">ask, propose, confirm</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
+    </section>
     </div>
   </section>
 
-  <section id="chat" class="chat">
-    <div class="section-title">Assistant <span class="eyebrow">ask, propose, confirm</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
-    <div id="chat-log" class="chat-log"></div>
-    <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
-  </section>
 </div>
 
 <dialog id="why-dialog" class="dialog">

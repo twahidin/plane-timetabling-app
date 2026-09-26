@@ -132,8 +132,8 @@
   // ---------- chat events: preview fills the card, done shows the downloads ----------
   // chat.js's handleEvents forwards every `{"kind": "wizard", ...}` event here.
   function renderWizardEvent(ev) {
-    if (window.showIntakeTab) window.showIntakeTab('wizard');
-    setEmpty(null);
+    if (window.showIntakeTab) window.showIntakeTab('assistant');
+    el('wizard').hidden = false;
     if (ev.stage === 'preview') {
       latestCandidates = ev.candidates || [];
       renderDecisions(latestCandidates);
@@ -159,7 +159,7 @@
     try {
       [record, solid, planData] = await Promise.all([api('/api/wizard'), api('/api/solid'), api('/api/plan')]);
     } catch (e) {
-      setEmpty('The wizard could not check this timetable just now. Try again in a moment.', false);
+      el('wizard').hidden = true;
       return;
     }
     const hasRecord = !!(record && record.template);
@@ -168,7 +168,7 @@
     const show = !hasPlan && (solid.organisation == null || hasRecord);
     if (!show) {
       renderCandidates([]); renderDecisions([]); el('wizard-downloads').hidden = true;
-      setEmpty('This timetable is already set up. To set up another one with the wizard, press New beside the timetable name, then start here.', false);
+      el('wizard').hidden = true;
       return;
     }
 
@@ -179,22 +179,15 @@
         const facts = await api('/api/wizard/preview', { method: 'POST', body: JSON.stringify({ template: record.template, knobs: record.knobs }) });
         renderDecisions([{ name: '', facts, knobs: record.knobs }]);
       } catch (e) { renderDecisions([]); }
-      setEmpty(null);
+      el('wizard').hidden = false;
     } else if (!latestCandidates.length) {
       renderCandidates([]);
       renderDecisions([]);
       el('wizard-downloads').hidden = true;
-      setEmpty('Answer a few questions in the chat and the options that fit appear here.', true);
+      el('wizard').hidden = true;             // nothing to show until the chat offers options
     }
   }
 
-  // The card's own line when there is nothing to choose yet (text), or none (null); `begin` shows the
-  // "Start in the chat" button.
-  function setEmpty(text, begin) {
-    el('wizard-empty').textContent = text || '';
-    el('wizard-empty').hidden = !text;
-    el('wizard-begin').hidden = !begin;
-  }
   window.loadWizard = loadWizard;
 
   loadWizard();

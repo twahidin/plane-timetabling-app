@@ -226,7 +226,7 @@
   }
   .toolbar .btn { padding: 7px 12px; }
 
-  .below { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; padding-top: 20px; }
+  .below { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; padding-top: 20px; }
   @media (max-width: 960px) { .below { grid-template-columns: 1fr; } }
   .section-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 8px; }
   .section-title .btn { white-space: nowrap; margin-left: auto; }
@@ -307,9 +307,9 @@
   .chat { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .chat-log {
     display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
-    padding: 12px; height: 420px; overflow-y: auto; font-size: 13px;
+    padding: 12px; height: clamp(360px, 60vh, 680px); overflow-y: auto; font-size: 13px;
   }
-  .msg { max-width: 88%; padding: 7px 10px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg { max-width: min(88%, 76ch); padding: 7px 10px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.user { align-self: flex-end; background: var(--ink); color: var(--bg); border-bottom-right-radius: 3px; }
   .msg.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 3px; }
   .msg.error { align-self: flex-start; background: var(--bad-soft); color: var(--bad); }
@@ -427,9 +427,9 @@
   .tt th.day { position: sticky; left: 0; z-index: 1; }
   .tt thead th.day { z-index: 2; }
   .tab-note { margin: 10px 0 12px; font-size: 13px; color: var(--ink-2); max-width: 80ch; }
-  #wizard-panel .wizard-candidates { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  #assistant-panel .wizard-candidates { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
   .wizard-knobs { margin: 0; padding-left: 18px; font-size: 12px; color: var(--ink-2); }
-  #wizard-begin { align-self: flex-start; }
+  #assistant-panel #wizard { margin-bottom: 12px; }
 
   /* ---- period timetables: banner under the header, the Periods card, the New period dialog ---- */
   .period-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0 0; padding: 8px 12px;
