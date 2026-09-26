@@ -414,8 +414,14 @@
   .tt td.bad { background: var(--bad-soft); box-shadow: inset 0 0 0 2px var(--bad); }
   .tt td.on { outline: 2px solid var(--ink); outline-offset: -2px; }
   /* long cells are clamped; hovering shows everything (grid.js puts it in the title) */
-  .tt td .t { overflow-wrap: anywhere; }
-  .tt td .s { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  /* wrap between words; a single word longer than the cell is the only thing broken */
+  .tt td .t, .tt td .s { overflow-wrap: break-word; word-break: normal; hyphens: auto; }
+  .tt td .s { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  /* time headings: centred, never clipped to "10:0"; the grip on each right edge stretches the columns */
+  .tt thead th:not(.day) { text-align: center; font-size: 11px; padding: 4px 2px; white-space: nowrap; overflow: visible; }
+  .tt-grip { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 3; touch-action: none; }
+  .tt-grip:hover, .tt-dragging .tt-grip { background: color-mix(in srgb, var(--ink) 18%, transparent); }
+  .tt-dragging, .tt-dragging * { cursor: col-resize !important; user-select: none; }
   /* cell size: zoomed columns get a fixed width and the grid scrolls both ways under a sticky day
      column and time row */
   .grid-zoom button { padding: 5px 10px; }

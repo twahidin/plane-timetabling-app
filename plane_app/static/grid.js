@@ -66,10 +66,13 @@
     if (c.kind === 'lesson' || c.kind === 'booking') return `<td ${attrs}><div class="t">${esc(c.text)}</div><div class="s">${esc(c.sub)}</div></td>`;
     return `<td ${attrs}></td>`;
   }
-  // Cell size: "fit" squeezes every column into the page width; the other steps give each column a
-  // fixed width and let the grid scroll sideways under a sticky day column and time row.
-  const ZOOMS = ['fit', 70, 90, 120, 160, 220];
-  let zoom = (() => { const z = store.get('plane.gridZoom'); return ZOOMS.includes(z === 'fit' ? z : Number(z)) ? (z === 'fit' ? z : Number(z)) : 'fit'; })();
+  // Cell size: "fit" squeezes every column into the page width; a number is each column's width in
+  // pixels, and the grid scrolls sideways under a sticky day column and time row. The − / + buttons
+  // step through STEPS; dragging the edge of any time heading sets any width in between.
+  const STEPS = [70, 90, 120, 160, 220, 300];
+  const MIN_COL = 45, MAX_COL = 400;
+  const clampCol = (w) => Math.max(MIN_COL, Math.min(MAX_COL, Math.round(w)));
+  let zoom = (() => { const z = store.get('plane.gridZoom'); const n = Number(z); return z && z !== 'fit' && n >= MIN_COL && n <= MAX_COL ? n : 'fit'; })();
   function applyZoom() {
     const box = el('grid');
     const fit = zoom === 'fit';
@@ -79,12 +82,31 @@
     if (t) t.style.width = fit ? '' : `calc(6em + ${t.dataset.cols} * ${zoom}px)`;
     el('grid-zoom-fit').classList.toggle('on', fit);
     el('grid-zoom-out').disabled = fit;
-    el('grid-zoom-in').disabled = zoom === ZOOMS[ZOOMS.length - 1];
+    el('grid-zoom-in').disabled = zoom !== 'fit' && zoom >= STEPS[STEPS.length - 1];
     store.set('plane.gridZoom', String(zoom));
   }
+  // The next step up or down from wherever the width is now (a dragged width sits between steps);
+  // stepping down from the narrowest step goes back to Fit.
   function stepZoom(d) {
-    const i = Math.max(0, Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + d));
-    zoom = ZOOMS[i]; applyZoom();
+    if (zoom === 'fit') { if (d > 0) zoom = STEPS[0]; }
+    else if (d > 0) zoom = STEPS.find((w) => w > zoom) || STEPS[STEPS.length - 1];
+    else zoom = [...STEPS].reverse().find((w) => w < zoom) || 'fit';
+    applyZoom();
+  }
+  // Dragging the right edge of any time heading stretches every column to match; double-clicking an
+  // edge goes back to Fit. Starts from the column's width on screen, so Fit can be stretched too.
+  function startDrag(ev, th) {
+    ev.preventDefault();
+    const x0 = ev.clientX, w0 = th.getBoundingClientRect().width;
+    document.body.classList.add('tt-dragging');
+    const move = (e) => { zoom = clampCol(w0 + e.clientX - x0); applyZoom(); };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.body.classList.remove('tt-dragging');
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
   }
   el('grid-zoom-out').addEventListener('click', () => stepZoom(-1));
   el('grid-zoom-in').addEventListener('click', () => stepZoom(1));
@@ -93,10 +115,14 @@
   function renderGrid(g) {
     const box = el('grid');
     box.innerHTML = `<div class="tt-head"><span class="tt-title">${esc(g.title)}</span> <span class="tt-sub">${esc(g.subtitle)}</span></div>` +
-      `<div class="tt-scroll"><table class="tt" data-cols="${g.slots.length}"><thead><tr><th class="day"></th>${g.slots.map((s) => `<th>${esc(s)}</th>`).join('')}</tr></thead><tbody>` +
+      `<div class="tt-scroll"><table class="tt" data-cols="${g.slots.length}"><thead><tr><th class="day"></th>${g.slots.map((s) => `<th>${esc(s)}<span class="tt-grip" title="Drag to stretch the columns; double-click to fit"></span></th>`).join('')}</tr></thead><tbody>` +
       g.days.map((d) => `<tr${d.off ? ' class="off"' : ''}><th class="day">${esc(d.label)}</th>${d.cells.map(cellHtml).join('')}</tr>`).join('') +
       '</tbody></table></div>';
     applyZoom();
+    box.querySelectorAll('.tt-grip').forEach((grip) => {
+      grip.addEventListener('pointerdown', (ev) => startDrag(ev, grip.parentElement));
+      grip.addEventListener('dblclick', () => { zoom = 'fit'; applyZoom(); });
+    });
     box.querySelectorAll('td[data-events]').forEach((td) => td.addEventListener('click', () => {
       const first = td.dataset.events.split(' ')[0];
       if (window.selectEvent) window.selectEvent(first);
