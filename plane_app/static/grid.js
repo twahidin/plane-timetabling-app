@@ -58,18 +58,45 @@
     if (c.kind === 'continued') return '';
     const bad = c.bad && c.bad.length;
     const cls = [c.kind, bad ? 'bad' : '', c.events && c.events.includes(selected) ? 'on' : ''].filter(Boolean).join(' ');
+    // hover shows the whole cell (the cell itself clamps long text) and, first, what is wrong with it
+    const tip = [].concat(bad ? c.bad : [], c.text ? [c.text] : [], c.sub ? [c.sub] : []).join('\n');
     const attrs = `class="${cls}"` + (c.span > 1 ? ` colspan="${c.span}"` : '') + (c.events && c.events.length ? ` data-events="${esc(c.events.join(' '))}"` : '')
-      + (bad ? ` title="${esc(c.bad.join('\n'))}"` : '');
+      + (tip ? ` title="${esc(tip)}"` : '');
     if (c.kind === 'rest') return `<td ${attrs}><span class="s">${esc(c.text || 'rest')}</span></td>`;
     if (c.kind === 'lesson' || c.kind === 'booking') return `<td ${attrs}><div class="t">${esc(c.text)}</div><div class="s">${esc(c.sub)}</div></td>`;
     return `<td ${attrs}></td>`;
   }
+  // Cell size: "fit" squeezes every column into the page width; the other steps give each column a
+  // fixed width and let the grid scroll sideways under a sticky day column and time row.
+  const ZOOMS = ['fit', 70, 90, 120, 160, 220];
+  let zoom = (() => { const z = store.get('plane.gridZoom'); return ZOOMS.includes(z === 'fit' ? z : Number(z)) ? (z === 'fit' ? z : Number(z)) : 'fit'; })();
+  function applyZoom() {
+    const box = el('grid');
+    const fit = zoom === 'fit';
+    box.classList.toggle('zoomed', !fit);
+    if (!fit) box.style.setProperty('--tt-col', zoom + 'px'); else box.style.removeProperty('--tt-col');
+    const t = box.querySelector('table.tt');
+    if (t) t.style.width = fit ? '' : `calc(6em + ${t.dataset.cols} * ${zoom}px)`;
+    el('grid-zoom-fit').classList.toggle('on', fit);
+    el('grid-zoom-out').disabled = fit;
+    el('grid-zoom-in').disabled = zoom === ZOOMS[ZOOMS.length - 1];
+    store.set('plane.gridZoom', String(zoom));
+  }
+  function stepZoom(d) {
+    const i = Math.max(0, Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + d));
+    zoom = ZOOMS[i]; applyZoom();
+  }
+  el('grid-zoom-out').addEventListener('click', () => stepZoom(-1));
+  el('grid-zoom-in').addEventListener('click', () => stepZoom(1));
+  el('grid-zoom-fit').addEventListener('click', () => { zoom = 'fit'; applyZoom(); });
+
   function renderGrid(g) {
     const box = el('grid');
     box.innerHTML = `<div class="tt-head"><span class="tt-title">${esc(g.title)}</span> <span class="tt-sub">${esc(g.subtitle)}</span></div>` +
-      `<table class="tt"><thead><tr><th class="day"></th>${g.slots.map((s) => `<th>${esc(s)}</th>`).join('')}</tr></thead><tbody>` +
+      `<div class="tt-scroll"><table class="tt" data-cols="${g.slots.length}"><thead><tr><th class="day"></th>${g.slots.map((s) => `<th>${esc(s)}</th>`).join('')}</tr></thead><tbody>` +
       g.days.map((d) => `<tr${d.off ? ' class="off"' : ''}><th class="day">${esc(d.label)}</th>${d.cells.map(cellHtml).join('')}</tr>`).join('') +
-      '</tbody></table>';
+      '</tbody></table></div>';
+    applyZoom();
     box.querySelectorAll('td[data-events]').forEach((td) => td.addEventListener('click', () => {
       const first = td.dataset.events.split(' ')[0];
       if (window.selectEvent) window.selectEvent(first);

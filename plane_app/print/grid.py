@@ -55,6 +55,9 @@ def day_slot_labels(org: dict) -> tuple[list[str], list[list[str]]]:
     return days, slots
 
 
+NAMES_SHOWN = 3          # names a cell lists before "+N more"
+
+
 def _names(org: dict) -> tuple[dict, dict, dict]:
     persons = {p["id"]: p for p in org["persons"]}
     locs = {l["id"]: l for l in org["locations"]}
@@ -68,7 +71,10 @@ def _sub(index: tuple[dict, dict, dict], e: dict, exclude: set[str], with_room: 
     if with_room and e.get("loc") in locs:
         parts.append(locs[e["loc"]]["name"])
     names = [groups[m]["name"] if m in groups else persons[m]["name"] for m in e["members"] if m not in exclude and (m in persons or m in groups)]
-    return " · ".join(parts + names)[:80]
+    # A whole-school event lists everyone: show the first few and count the rest, so the cell stays short.
+    more = len(names) - NAMES_SHOWN
+    shown = " · ".join(parts + names[:NAMES_SHOWN])[:80]
+    return f"{shown} · +{more} more" if more > 0 else shown
 
 
 def _empty(org: dict) -> list[DayRow]:

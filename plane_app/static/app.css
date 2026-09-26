@@ -413,6 +413,23 @@
   .tt tr.off td { background: var(--surface-2); color: var(--muted); }
   .tt td.bad { background: var(--bad-soft); box-shadow: inset 0 0 0 2px var(--bad); }
   .tt td.on { outline: 2px solid var(--ink); outline-offset: -2px; }
+  /* long cells are clamped; hovering shows everything (grid.js puts it in the title) */
+  .tt td .t { overflow-wrap: anywhere; }
+  .tt td .s { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  /* cell size: zoomed columns get a fixed width and the grid scrolls both ways under a sticky day
+     column and time row */
+  .grid-zoom button { padding: 5px 10px; }
+  .grid-zoom button:disabled { opacity: 0.4; cursor: default; }
+  .tt-scroll { overflow: auto; max-height: 75vh; }
+  #grid.zoomed .tt { table-layout: fixed; }
+  #grid.zoomed .tt th:not(.day), #grid.zoomed .tt td { width: var(--tt-col); }
+  .tt thead th { position: sticky; top: 0; z-index: 1; }
+  .tt th.day { position: sticky; left: 0; z-index: 1; }
+  .tt thead th.day { z-index: 2; }
+  .tab-note { margin: 10px 0 12px; font-size: 13px; color: var(--ink-2); max-width: 80ch; }
+  #wizard-panel .wizard-candidates { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .wizard-knobs { margin: 0; padding-left: 18px; font-size: 12px; color: var(--ink-2); }
+  #wizard-begin { align-self: flex-start; }
 
   /* ---- period timetables: banner under the header, the Periods card, the New period dialog ---- */
   .period-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0 0; padding: 8px 12px;

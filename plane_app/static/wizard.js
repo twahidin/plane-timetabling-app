@@ -44,20 +44,26 @@
   // ---------- decisions: a short recap of what has been chosen so far ----------
   let latestCandidates = [];   // the most recent preview batch this chat turn produced
 
+  // A knob in plain words: "recess after: 4", "bands: yes".
+  const knobLine = (k, v) => `${words(k)}: ${v === true ? 'yes' : v === false ? 'no' : v}`;
+  const knobLines = (knobs) => Object.entries(knobs || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => knobLine(k, v));
+
   function decisionLines(candidates) {
     const lines = [];
     (candidates || []).forEach((c) => {
       const fl = factsLine(c.facts);
       lines.push(c.name ? (fl ? `${c.name}: ${fl}` : c.name) : fl);
-      Object.entries(c.knobs || {}).forEach(([k, v]) => { if (v != null && v !== '') lines.push(`${words(k)}: ${v}`); });
+      lines.push(...knobLines(c.knobs));
     });
     return lines.filter(Boolean);
   }
 
+  // The recap lists one configuration's settings: the chosen one, or the only one on offer. Several
+  // options at once each carry their own settings on their card instead of one long mixed list.
   function renderDecisions(candidates) {
     const box = el('wizard-decisions');
     box.textContent = '';
-    const lines = decisionLines(candidates);
+    const lines = (candidates || []).length === 1 ? decisionLines(candidates) : [];
     if (!lines.length) { box.hidden = true; return; }
     const list = node('ul');
     lines.forEach((l) => list.appendChild(node('li', null, l)));
@@ -86,6 +92,12 @@
     if (trade) card.appendChild(node('p', null, trade));
     const fl = factsLine(c.facts);
     if (fl) card.appendChild(node('div', 'wizard-facts', fl));
+    const kl = knobLines(c.knobs);
+    if (kl.length) {
+      const list = node('ul', 'wizard-knobs');
+      kl.forEach((l) => list.appendChild(node('li', null, l)));
+      card.appendChild(list);
+    }
     const btn = node('button', 'btn primary', 'Choose');
     btn.type = 'button';
     btn.addEventListener('click', () => chooseCandidate(btn, c));
@@ -120,7 +132,8 @@
   // ---------- chat events: preview fills the card, done shows the downloads ----------
   // chat.js's handleEvents forwards every `{"kind": "wizard", ...}` event here.
   function renderWizardEvent(ev) {
-    el('wizard').hidden = false;
+    if (window.showIntakeTab) window.showIntakeTab('wizard');
+    setEmpty(null);
     if (ev.stage === 'preview') {
       latestCandidates = ev.candidates || [];
       renderDecisions(latestCandidates);
@@ -146,15 +159,18 @@
     try {
       [record, solid, planData] = await Promise.all([api('/api/wizard'), api('/api/solid'), api('/api/plan')]);
     } catch (e) {
-      el('wizard').hidden = true;
+      setEmpty('The wizard could not check this timetable just now. Try again in a moment.', false);
       return;
     }
     const hasRecord = !!(record && record.template);
     const hasPlan = !!((planData.plan || {}).requirements || []).length;
 
     const show = !hasPlan && (solid.organisation == null || hasRecord);
-    el('wizard').hidden = !show;
-    if (!show) return;
+    if (!show) {
+      renderCandidates([]); renderDecisions([]); el('wizard-downloads').hidden = true;
+      setEmpty('This timetable is already set up. To set up another one with the wizard, press New beside the timetable name, then start here.', false);
+      return;
+    }
 
     if (hasRecord) {
       renderCandidates([]);
@@ -163,11 +179,21 @@
         const facts = await api('/api/wizard/preview', { method: 'POST', body: JSON.stringify({ template: record.template, knobs: record.knobs }) });
         renderDecisions([{ name: '', facts, knobs: record.knobs }]);
       } catch (e) { renderDecisions([]); }
+      setEmpty(null);
     } else if (!latestCandidates.length) {
       renderCandidates([]);
       renderDecisions([]);
       el('wizard-downloads').hidden = true;
+      setEmpty('Answer a few questions in the chat and the options that fit appear here.', true);
     }
+  }
+
+  // The card's own line when there is nothing to choose yet (text), or none (null); `begin` shows the
+  // "Start in the chat" button.
+  function setEmpty(text, begin) {
+    el('wizard-empty').textContent = text || '';
+    el('wizard-empty').hidden = !text;
+    el('wizard-begin').hidden = !begin;
   }
   window.loadWizard = loadWizard;
 

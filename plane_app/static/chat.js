@@ -272,7 +272,10 @@
   drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.classList.remove('over'); upload(ev.dataTransfer && ev.dataTransfer.files); });
   // The old empty-draft button is gone; that path is still reachable through the chat's
   // new_draft tool ("start an empty draft"). Start wizard just asks the assistant to begin.
-  el('start-wizard').addEventListener('click', () => { window.sendChat("I'd like to set up a new timetable"); });
+  // Start wizard: open its tab below the timetable and begin the conversation in the chat.
+  const startWizard = () => { if (window.showIntakeTab) window.showIntakeTab('wizard'); window.sendChat("I'd like to set up a new timetable"); };
+  el('start-wizard').addEventListener('click', startWizard);
+  el('wizard-begin').addEventListener('click', startWizard);
 
   window.reloadIntake = async () => { el('notes').textContent = ''; stopFollowing(); await loadMessages(); await loadDraft(); await resumeSolve(); };
 

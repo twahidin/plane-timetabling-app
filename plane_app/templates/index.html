@@ -51,6 +51,11 @@
         <input id="grid-filter" type="text" placeholder="type to find" aria-label="Find" autocomplete="off">
         <select id="grid-target" aria-label="Which one"></select>
         <label class="grid-week">Week of <input id="grid-date" type="date" aria-label="Week of"></label>
+        <span class="seg grid-zoom" role="group" aria-label="Cell size">
+          <button id="grid-zoom-out" type="button" title="Narrower columns">&minus;</button>
+          <button id="grid-zoom-fit" type="button" title="Fit the page width">Fit</button>
+          <button id="grid-zoom-in" type="button" title="Wider columns">+</button>
+        </span>
         <button class="btn" id="grid-print" type="button" title="Print or download this timetable">Print this</button>
         <button class="btn" id="rebuild" title="Place everything again from the draft">Rebuild from draft</button>
       </div>
@@ -154,9 +159,11 @@
     <div class="tabs seg" id="intake-tabs" role="tablist" aria-label="Intake view">
       <button id="tab-draft" class="on" type="button" role="tab" aria-selected="true">Draft</button>
       <button id="tab-plan" type="button" role="tab" aria-selected="false">Plan</button>
+      <button id="tab-wizard" type="button" role="tab" aria-selected="false">Wizard</button>
     </div>
 
     <div id="draft-panel">
+      <p class="tab-note">The <strong>draft</strong> is the list of <span data-word="requirement" data-word-plural>lessons</span>, people and <span data-word="venue" data-word-plural>rooms</span> about to be placed. <strong>Quick timetable</strong> or <strong>Best timetable</strong> places it and makes it the timetable shown above. A timetable export (aSc) lands here directly.</p>
       <div id="solve-bar" class="solve-bar" hidden>
         <button class="btn" id="build" type="button" title="Places everything in seconds, without polishing">Quick timetable</button>
         <span class="or">or</span>
@@ -183,6 +190,7 @@
     </div>
 
     <div id="plan" class="plan" hidden>
+      <p class="tab-note">The <strong>plan</strong> is what the timetable must provide: for each group, how many <span data-word="requirement" data-word-plural>lessons</span> of each subject, who teaches them, what kind of <span data-word="venue">room</span>, and when people are free. Upload a staff deployment workbook or describe it in the chat, fix what the issues list says, then <strong>Generate draft</strong>.</p>
       <div class="plan-toolbar">
         <label class="plan-upload-label" for="plan-upload">Upload workbook
           <input type="file" id="plan-upload" multiple accept=".xlsx,.csv">
@@ -207,15 +215,19 @@
         <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
       </div>
     </div>
+    <div id="wizard-panel" hidden>
+      <p class="tab-note">The <strong>wizard</strong> sets up a new timetable from a few plain questions in the chat: what you are timetabling, then the options that fit. Choosing one gives you a workbook to fill in, a sample printout and a one-page guide.</p>
+      <div id="wizard" class="card wizard">
+        <p id="wizard-empty" class="empty"></p>
+        <button class="btn primary" id="wizard-begin" type="button">Start in the chat</button>
+        <div id="wizard-decisions" class="wizard-decisions" hidden></div>
+        <div id="wizard-candidates" class="wizard-candidates"></div>
+        <div id="wizard-downloads" class="wizard-downloads" hidden></div>
+      </div>
+    </div>
   </section>
 
   <section id="chat" class="chat">
-    <div id="wizard" class="card wizard" hidden>
-      <h2>Start wizard <span class="eyebrow">plain words, no timetabling jargon</span></h2>
-      <div id="wizard-decisions" class="wizard-decisions" hidden></div>
-      <div id="wizard-candidates" class="wizard-candidates"></div>
-      <div id="wizard-downloads" class="wizard-downloads" hidden></div>
-    </div>
     <div class="section-title">Assistant <span class="eyebrow">ask, propose, confirm</span> <button class="btn" id="undo" type="button" title="Revert the last applied change">Undo</button> <button class="btn" id="chat-clear" type="button">Clear chat</button></div>
     <div id="chat-log" class="chat-log"></div>
     <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>

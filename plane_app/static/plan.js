@@ -69,19 +69,22 @@
   }
 
   // ---------- tabs ----------
+  // Three tabs below the timetable: the draft (lessons about to be placed), the plan (what the
+  // timetable must provide) and the start wizard (setting up a new timetable by chat).
+  const TABS = { draft: ['tab-draft', 'draft-panel'], plan: ['tab-plan', 'plan'], wizard: ['tab-wizard', 'wizard-panel'] };
   function showTab(which) {
-    const isPlan = which === 'plan';
-    el('tab-draft').classList.toggle('on', !isPlan);
-    el('tab-plan').classList.toggle('on', isPlan);
-    el('tab-draft').setAttribute('aria-selected', String(!isPlan));
-    el('tab-plan').setAttribute('aria-selected', String(isPlan));
-    el('draft-panel').hidden = isPlan;
-    el('plan').hidden = !isPlan;
+    if (!TABS[which]) which = 'draft';
+    Object.entries(TABS).forEach(([k, [tab, panel]]) => {
+      el(tab).classList.toggle('on', k === which);
+      el(tab).setAttribute('aria-selected', String(k === which));
+      el(panel).hidden = k !== which;
+    });
     try { localStorage.setItem('plane.intakeTab', which); } catch (e) { /* private mode, etc. */ }
-    if (isPlan) loadPlan();
+    if (which === 'plan') loadPlan();
+    if (which === 'wizard' && window.loadWizard) window.loadWizard().catch(() => {});
   }
-  el('tab-draft').addEventListener('click', () => showTab('draft'));
-  el('tab-plan').addEventListener('click', () => showTab('plan'));
+  window.showIntakeTab = showTab;
+  Object.keys(TABS).forEach((k) => el(TABS[k][0]).addEventListener('click', () => showTab(k)));
 
   // ---------- parse / format ----------
   function textParse(s) { return s.trim(); }
@@ -372,6 +375,6 @@
   });
 
   let initialTab = 'draft';
-  try { initialTab = localStorage.getItem('plane.intakeTab') === 'plan' ? 'plan' : 'draft'; } catch (e) { /* ignore */ }
+  try { initialTab = localStorage.getItem('plane.intakeTab') || 'draft'; } catch (e) { /* ignore */ }
   showTab(initialTab);
 })();
