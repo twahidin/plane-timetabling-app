@@ -140,34 +140,58 @@ def _eligible_locs(r: dict, locations: list[dict], warnings: list[str]) -> list[
     return non_rest
 
 
+def _band_syncs(plan: dict, group_of_req: dict[str, str]) -> dict[tuple[str, str, int], str]:
+    """(requirement id, lesson length, j) -> the sync id its j-th lesson of that length starts with.
+
+    A band's options run together: the i-th lesson of length k of every option starts with the i-th
+    of the others. An option is one student group (group_of_req), which may be taught as several
+    requirements — the parts of a split (`…-a`, `…-b`) — so an option's lessons are numbered across
+    its parts in id order (part a's first, then b's) and the parts are never synced with each
+    other: they share their students and could not meet at once. An option with fewer lessons of a
+    length than the others simply has no partner past its own count, so those are left unsynced. A
+    lesson length is not capped at a quadruple period (plan.model.LESSON_LENGTH_MAX), so the lengths
+    compared are whatever the options' own `lessons` dicts carry."""
+    reqs = {r["id"]: r for r in plan["requirements"]}
+    sync_of: dict[tuple[str, str, int], str] = {}
+    for b in plan["bands"]:
+        parts_of: dict[str, list[dict]] = {}
+        for o in b["options"]:
+            r = reqs.get(o)
+            if r is not None and o in group_of_req:
+                parts = parts_of.setdefault(group_of_req[o], [])
+                if r not in parts:
+                    parts.append(r)
+        if len(parts_of) < 2:
+            continue
+        numbered: list[dict[str, list[tuple[str, int]]]] = []
+        for parts in parts_of.values():
+            lessons: dict[str, list[tuple[str, int]]] = {}
+            for r in sorted(parts, key=lambda r: r["id"]):
+                for k, count in r["lessons"].items():
+                    lessons.setdefault(k, []).extend((r["id"], j) for j in range(count))
+            numbered.append(lessons)
+        for k in {k for option in numbered for k in option}:
+            together = min(len(option.get(k, ())) for option in numbered)
+            for option in numbered:
+                for i, (req_id, j) in enumerate(option.get(k, [])[:together]):
+                    sync_of[(req_id, k, j)] = _fit_id(b["id"], k, str(i))
+    return sync_of
+
+
 def _events(plan: dict, locations: list[dict], group_of_req: dict[str, str],
             warnings: list[str]) -> list[dict]:
-    reqs = {r["id"]: r for r in plan["requirements"]}
-    # the i-th lesson of length k of every option of a band starts together; an option with
-    # fewer lessons of that length simply has no partner at that i, so it is left unsynced. A
-    # lesson length is not capped at a quadruple period (plan.model.LESSON_LENGTH_MAX), so the
-    # lengths compared here are whatever the options' own `lessons` dicts carry, not a fixed set.
-    synced: dict[str, dict[str, int]] = {}
-    for b in plan["bands"]:
-        options = [reqs[o] for o in b["options"] if o in reqs]
-        if len(options) > 1:
-            lengths = {k for o in options for k in o["lessons"]}
-            synced[b["id"]] = {k: min(o["lessons"].get(k, 0) for o in options) for k in lengths}
-    band_of_req = {o: b["id"] for b in plan["bands"] for o in b["options"] if b["id"] in synced}
-
+    sync_of = _band_syncs(plan, group_of_req)
     events = []
     for r in plan["requirements"]:
         grouped = r["grouping"] != "class"
         label = r["grouping"] if grouped else (r["classes"][0] if r["classes"] else r["id"])
         name = f"{r['subject']} {label}".strip()
         eligible = _eligible_locs(r, locations, warnings)
-        band = band_of_req.get(r["id"])
         members = list(r["teachers"]) + [group_of_req[r["id"]]]
         for k, count in r["lessons"].items():
             for i in range(count):
-                sync = _fit_id(band, k, str(i)) if band and i < synced[band].get(k, 0) else None
                 events.append({"id": _fit_id(r["id"], k, str(i)), "name": name, "members": list(members),
-                               "dur": int(k), "loc": None, "t0": None, "sync": sync,
+                               "dur": int(k), "loc": None, "t0": None, "sync": sync_of.get((r["id"], k, i)),
                                "eligible_locs": list(eligible), "fixed": False, "double": int(k) >= 2})
     return events
 

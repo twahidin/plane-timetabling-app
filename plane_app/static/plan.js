@@ -29,6 +29,7 @@
 
   let plan = null;
   let issues = [];
+  let issueCounts = null;         // the board's { block, warn, more } when it sent only the first issues
 
   // ---------- vocabulary ----------
   // The plan's own words for a person, a group, a requirement and a venue (start wizard, spec
@@ -81,7 +82,7 @@
       el(panel).hidden = k !== which;
     });
     try { localStorage.setItem('plane.intakeTab', which); } catch (e) { /* private mode, etc. */ }
-    if (which === 'plan') loadPlan();
+    if (which === 'plan') { loadPlan(); if (planView === 'board' && window.loadBoard) window.loadBoard(); }
     if (which === 'assistant') {
       if (window.loadWizard) window.loadWizard().catch(() => {});
       const log = el('chat-log'); if (log) log.scrollTop = log.scrollHeight;
@@ -89,6 +90,25 @@
   }
   window.showIntakeTab = showTab;
   Object.keys(TABS).forEach((k) => el(TABS[k][0]).addEventListener('click', () => showTab(k)));
+
+  // ---------- Board | Tables ----------
+  // The deployment board (board.js) is the Plan tab's default view; the tables below it are the
+  // same plan field by field. The choice is remembered per browser.
+  let planView = 'board';
+  try { planView = localStorage.getItem('plane.planView') === 'tables' ? 'tables' : 'board'; } catch (e) { /* ignore */ }
+  function showPlanView(which) {
+    planView = which === 'tables' ? 'tables' : 'board';
+    [['plan-view-board', 'board'], ['plan-view-tables', 'tables']].forEach(([id, v]) => {
+      el(id).classList.toggle('on', v === planView);
+      el(id).setAttribute('aria-selected', String(v === planView));
+    });
+    el('board').hidden = planView !== 'board';
+    el('plan-tables').hidden = planView !== 'tables';
+    try { localStorage.setItem('plane.planView', planView); } catch (e) { /* private mode, etc. */ }
+  }
+  el('plan-view-board').addEventListener('click', () => { showPlanView('board'); if (window.loadBoard) window.loadBoard(); });
+  el('plan-view-tables').addEventListener('click', () => { showPlanView('tables'); loadPlan(); });
+  showPlanView(planView);
 
   // ---------- parse / format ----------
   function textParse(s) { return s.trim(); }
@@ -184,7 +204,7 @@
     const patch = buildPatch(td.dataset.section, td.dataset.id || null, td.dataset.field, value);
     try {
       const res = await api('/api/plan', { method: 'PATCH', body: JSON.stringify({ patch }) });
-      plan = res.plan; issues = res.issues || [];
+      plan = res.plan; issues = res.issues || []; issueCounts = null;
       applyVocabulary(plan.vocabulary);
       td.dataset.orig = text;
       renderIssues();
@@ -289,11 +309,13 @@
   function renderIssues() {
     const box = el('plan-issues');
     box.textContent = '';
-    const blocks = issues.filter((i) => i.level === 'block');
-    const warns = issues.filter((i) => i.level === 'warn');
+    // the board sends the first issues and the counts (issueCounts); the plan routes send them all
+    const nBlocks = issueCounts ? issueCounts.block : issues.filter((i) => i.level === 'block').length;
+    const nWarns = issueCounts ? issueCounts.warn : issues.filter((i) => i.level === 'warn').length;
+    const more = issueCounts ? issueCounts.more : 0;
     const summary = node('div', 'plan-issues-summary');
-    summary.appendChild(node('span', 'chip bad', `${blocks.length} blocking`));
-    summary.appendChild(node('span', 'chip warn', `${warns.length} warning${warns.length === 1 ? '' : 's'}`));
+    summary.appendChild(node('span', 'chip bad', `${nBlocks} blocking`));
+    summary.appendChild(node('span', 'chip warn', `${nWarns} warning${nWarns === 1 ? '' : 's'}`));
     box.appendChild(summary);
     if (issues.length) {
       const list = node('ul', 'plan-issue-list');
@@ -303,9 +325,10 @@
         li.textContent = i.text;
         list.appendChild(li);
       });
+      if (more > 0) list.appendChild(node('li', 'more', `and ${more} more`));
       box.appendChild(list);
     }
-    el('plan-generate').disabled = blocks.length > 0;
+    el('plan-generate').disabled = nBlocks > 0;
   }
 
   function renderSection(section) {
@@ -318,14 +341,27 @@
   function renderAll() {
     ['requirements', 'staff', 'divisions', 'rules'].forEach(renderSection);
     renderIssues();
+    // Export to Excel is a plain link (it downloads through the session cookie): with nothing in
+    // the plan yet it only says so, and the template is the thing to download instead.
+    const empty = !(plan.requirements || []).length && !(plan.staff || []).length;
+    el('plan-export').setAttribute('aria-disabled', empty ? 'true' : 'false');
   }
+
+  // The board's responses carry the plan's issues: the panel above it shows them without another
+  // request. `empty` (no requirements or staff) is what Export to Excel says it has nothing to write.
+  window.showPlanIssues = (list, empty, counts) => {
+    issues = list || [];
+    issueCounts = counts || null;
+    renderIssues();
+    if (typeof empty === 'boolean') el('plan-export').setAttribute('aria-disabled', empty ? 'true' : 'false');
+  };
 
   // ---------- load / upload / generate ----------
   async function loadPlan() {
     let data;
     try { data = await api('/api/plan'); }
     catch (e) { notify('error', e.message); return; }
-    plan = data.plan; issues = data.issues || [];
+    plan = data.plan; issues = data.issues || []; issueCounts = null;
     applyVocabulary(plan.vocabulary);
     renderAll();
   }
@@ -346,10 +382,11 @@
       const r = await fetch('/api/plan/upload', { method: 'POST', body: fd });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) { notify('error', body.detail || r.statusText); return; }
-      plan = body.plan; issues = body.issues || [];
+      plan = body.plan; issues = body.issues || []; issueCounts = null;
       applyVocabulary(plan.vocabulary);
       renderAll();
       notify('good', body.note || 'Workbook imported.');
+      if (window.loadBoard) window.loadBoard();
       // A workbook can be the first thing that gives the plan requirements: the #wizard card
       // (chat.js's counterpart, hidden once a plan exists) must re-check itself here too.
       if (window.loadWizard) window.loadWizard().catch(() => {});
@@ -357,6 +394,13 @@
     finally { planUpload.disabled = false; planUpload.value = ''; }
   }
   planUpload.addEventListener('change', () => uploadPlan(planUpload.files));
+
+  el('plan-export').addEventListener('click', (e) => {
+    if (e.currentTarget.getAttribute('aria-disabled') === 'true') {
+      e.preventDefault();
+      notify('error', 'The plan is empty: upload a workbook first, or download the template to fill in.');
+    }
+  });
 
   el('plan-generate').addEventListener('click', async () => {
     const btn = el('plan-generate'); btn.disabled = true;
@@ -368,14 +412,14 @@
         return;
       }
       if (!r.ok) { notify('error', body.detail || r.statusText); return; }
-      issues = body.issues || [];
+      issues = body.issues || []; issueCounts = null;
       const s = body.summary || {};
       const warnText = (s.warnings || []).length ? ' · ' + capped(s.warnings).join('; ') : '';
       notify('good', `Generated: ${s.teachers || 0} teachers, ${s.groups || 0} groups, ${s.bands || 0} bands, ${s.events || 0} events.${warnText}`);
       showTab('draft');
       if (window.loadDraft) await window.loadDraft();
     } catch (e) { notify('error', e.message); }
-    finally { renderIssues(); }
+    finally { renderIssues(); if (window.loadBoard) window.loadBoard(); }
   });
 
   let initialTab = 'assistant';

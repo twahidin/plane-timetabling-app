@@ -31,6 +31,9 @@
     if (window.reloadIntake) await window.reloadIntake().catch(() => {});
     if (window.loadPeriods) await window.loadPeriods().catch(() => {});
     if (window.loadRelief) await window.loadRelief().catch(() => {});
+    // the plan is per timetable too: the Plan tab's tables and board follow the switch
+    if (window.loadPlan) await window.loadPlan().catch(() => {});
+    if (window.loadBoard) await window.loadBoard().catch(() => {});
   }
 
   async function load() {

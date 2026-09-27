@@ -80,6 +80,7 @@
       latestCandidates = [];
       if (window.reloadModel) window.reloadModel().catch(() => {});
       if (window.loadPlan) window.loadPlan().catch(() => {});
+      if (window.loadBoard) window.loadBoard().catch(() => {});
       await loadWizard();
     } catch (e) { notify('error', e.message); }
     finally { btn.disabled = false; }

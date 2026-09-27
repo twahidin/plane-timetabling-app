@@ -49,7 +49,7 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "wizard", "periods", "period_base", "relief")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "plan_history", "wizard", "periods", "period_base", "relief")  # get_value/set_value keys that are scoped
 # The one chat thread of a timetable. Messages, uploads and pending proposals are keyed by this
 # rather than by the browser's login session, so a user who logs in on another device (or after
 # the cookie expired) continues the same conversation. The login session id still authenticates
@@ -57,6 +57,8 @@ PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_se
 THREAD = "timetable"
 CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHANGE_SNAP_PREFIX}{n}" — also scoped, by prefix
 PRINT_CUSTOM_PREFIX = "print_custom:"  # one kv row per saved custom timetable: f"{PRINT_CUSTOM_PREFIX}{token}" — also scoped, by prefix
+PLAN_HIST_PREFIX = "plan_hist:"        # one kv row per board undo snapshot of the plan: f"{PLAN_HIST_PREFIX}{n}" — also scoped, by prefix
+PLAN_HISTORY_KEEP = 20                 # board undo keeps this many plans; "plan_history" is their index {seq, snaps}
 
 
 def mask_settings(settings: dict) -> dict:
@@ -183,10 +185,11 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            con.execute("delete from kv where k in (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}"))
+            keys = (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"plan_history:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}")
+            con.execute(f"delete from kv where k in ({','.join('?' * len(keys))})", keys)
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
+            con.execute("delete from kv where k like ?", (f"{PLAN_HIST_PREFIX}%:{tid}",))     # one row per board undo snapshot
             con.execute("delete from timetables where id=?", (tid,))
             if self.current_timetable() == tid:
                 other = next(i for i in ids if i != tid)
@@ -300,13 +303,63 @@ class Db:
         return merged
 
     def _is_scoped(self, key: str) -> bool:
-        return key in PER_TIMETABLE_VALUES or key.startswith(CHANGE_SNAP_PREFIX) or key.startswith(PRINT_CUSTOM_PREFIX)
+        return (key in PER_TIMETABLE_VALUES or key.startswith(CHANGE_SNAP_PREFIX) or key.startswith(PRINT_CUSTOM_PREFIX)
+                or key.startswith(PLAN_HIST_PREFIX))
 
     def get_value(self, key: str, tid: str | None = None):
         return self._get(f"{key}:{self._scope(tid)}" if self._is_scoped(key) else key)
 
     def set_value(self, key: str, value, tid: str | None = None) -> None:
+        """Write a value. Writing the plan this way (an upload, a patch, chat, the start wizard: any
+        writer but the deployment board, which uses `set_board_plan`) also clears the board's undo
+        history, so Undo can never reach back past a change the board did not make."""
         self._set(f"{key}:{self._scope(tid)}" if self._is_scoped(key) else key, value)
+        if key == "plan":
+            self.plan_history_clear(tid)
+
+    # ---- the deployment board's undo history ----------------------------
+    # One kv row per snapshot (PLAN_HIST_PREFIX + n, scoped like any per-timetable value) and a
+    # small index under "plan_history": {"seq": last n used, "snaps": [n, ...] oldest first}. A board
+    # edit writes one snapshot row and the index, never the whole history.
+    def _plan_history_index(self, tid: str | None) -> dict:
+        index = self.get_value("plan_history", tid)
+        return index if isinstance(index, dict) else {}
+
+    def plan_history(self, tid: str | None = None) -> list[int]:
+        """The sequence numbers of the stored snapshots, oldest first."""
+        return list(self._plan_history_index(tid).get("snaps") or [])
+
+    def plan_history_push(self, plan: dict, tid: str | None = None, keep: int = PLAN_HISTORY_KEEP) -> None:
+        index = self._plan_history_index(tid)
+        n = int(index.get("seq") or 0) + 1
+        self.set_value(f"{PLAN_HIST_PREFIX}{n}", plan, tid)
+        snaps = [*(index.get("snaps") or []), n]
+        for old in snaps[:-keep]:
+            self.set_value(f"{PLAN_HIST_PREFIX}{old}", None, tid)
+        self.set_value("plan_history", {"seq": n, "snaps": snaps[-keep:]}, tid)
+
+    def plan_history_pop(self, tid: str | None = None) -> dict | None:
+        """The newest snapshot, removed from the history; None when there is none."""
+        index = self._plan_history_index(tid)
+        snaps = list(index.get("snaps") or [])
+        while snaps:
+            n = snaps.pop()
+            plan = self.get_value(f"{PLAN_HIST_PREFIX}{n}", tid)
+            self.set_value(f"{PLAN_HIST_PREFIX}{n}", None, tid)
+            self.set_value("plan_history", {"seq": index.get("seq") or n, "snaps": snaps}, tid)
+            if plan is not None:
+                return plan
+        return None
+
+    def plan_history_clear(self, tid: str | None = None) -> None:
+        scoped = self._scope(tid)
+        with self._con() as con:
+            con.execute("delete from kv where k like ?", (f"{PLAN_HIST_PREFIX}%:{scoped}",))
+            con.execute("delete from kv where k=?", (f"plan_history:{scoped}",))
+
+    def set_board_plan(self, plan: dict, tid: str | None = None) -> None:
+        """Write the plan from a board edit or undo: the undo history stays."""
+        self._set(f"plan:{self._scope(tid)}", plan)
 
     def get_org(self, kind: str, tid: str | None = None) -> dict | None:
         assert kind in ("live", "draft")

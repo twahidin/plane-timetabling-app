@@ -63,12 +63,29 @@ def _row_hash(row) -> str:
     return h.hexdigest()
 
 
-def _family(code: str) -> str:
+def family(code: str) -> str:
     """The letters following the leading digit(s) of a group code, minus any trailing digits
     and its trailing variant character: "1ELP" -> "EL", "1EMP" -> "EM", "1HCR2" -> "HC"."""
     rest = re.sub(r"^\d+", "", code)
     rest = re.sub(r"\d+$", "", rest)
     return rest[:-1] if len(rest) > 1 else rest
+
+
+_family = family        # the name it had before the board and the export shared it
+
+
+def import_id(dept: str, level: str | None, grouping: str | None, classes: list[str], subject: str,
+              owners: dict[str, str]) -> str:
+    """The id a workbook row's requirement gets. `owners` maps each id this import has already given
+    out to its subject (the caller's, filled in here). A row whose id another subject already has
+    (E Math and A Math for 1A2 on one sheet) takes the subject-qualified id the board's Add subject
+    gives a second subject (model.requirement_id_for), so both come back with the ids they went out
+    with; a second row of the same subject keeps the plain id (a duplicate, which plan issues block)."""
+    req_id = M.requirement_id(dept, level, grouping, classes)
+    if owners.get(req_id, subject) != subject:
+        req_id = M.requirement_id_for(dept, level, grouping, classes, subject, owners)
+    owners.setdefault(req_id, subject)
+    return req_id
 
 
 def _resolve_staff(name: str, org: dict | None, staff: list[dict]) -> str | None:
@@ -142,7 +159,54 @@ def is_generic_workbook(data: bytes) -> bool:
 # staff (Control / Load sheet)
 # ---------------------------------------------------------------------------
 
-def _read_staff_sheet(ws, org: dict | None) -> list[dict]:
+_YES = {"yes", "y", "true", "1", "1.0", "x"}
+_REDUCTION = re.compile(r"^(.*?)\s*(?<![\d.])(\d+(?:\.0+)?)$")    # "HOD 8", "HOD8", 8.0; not "HOD 8.5"
+_REASON_TAIL = " \t-:"                                                     # "HOD-8", "HOD: 8"
+
+
+def _yes(value) -> bool:
+    """A yes/no cell: "yes", "TRUE", 1 (or a ticked Excel boolean) are yes; anything else is no."""
+    return value is True or str(value if value is not None else "").strip().lower() in _YES
+
+
+def _read_allowance(raw, who: str, issues: list[Issue]) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        number = None
+    if number is None or not number.is_integer() or number < 0:
+        issues.append(Issue("warn", who, f"{who}: allowance {raw!r} is not a whole number of periods, left out"))
+        return None
+    return int(number)
+
+
+def _read_reductions(raw, who: str, issues: list[Issue]) -> list[dict]:
+    """"HOD 8; CCA 2" (or commas between entries): a reason then its periods, the number last."""
+    out: list[dict] = []
+    cell = str(raw or "").strip()
+    for entry in re.split(r"[;,]", cell):
+        entry = entry.strip()
+        if not entry:
+            continue
+        m = _REDUCTION.match(entry)
+        if m is None:
+            issues.append(Issue("warn", who, f"{who}: reduction {entry!r} needs a whole number of periods last "
+                                              f"(\"HOD 8\"), left out"))
+            continue
+        reason = m.group(1).rstrip(_REASON_TAIL).strip()
+        if re.search(r"\b\d+\b", reason):
+            # "HOD 8 CCA 2": two entries without a separator; keeping "HOD 8 CCA" 2 would lose the 8
+            issues.append(Issue("warn", who, f"{who}: {entry!r} has a number inside the reason; write one entry "
+                                              f"per role, separated by ';', each ending in its periods"))
+            continue
+        out.append({"reason": reason, "periods": int(float(m.group(2)))})
+    return out
+
+
+def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None) -> list[dict]:
+    issues = issues if issues is not None else []
     staff: list[dict] = []
     rows = list(ws.iter_rows(values_only=True))
     header = None
@@ -159,6 +223,9 @@ def _read_staff_sheet(ws, org: dict | None) -> list[dict]:
     dept_col = header.get("dept")
     load_col = header.get("teaching load factor", header.get("teaching load"))
     short_col = header.get("short")
+    allowance_col = header.get("allowance")
+    reductions_col = header.get("reductions")
+    provisional_col = header.get("provisional")
 
     for row in rows[header_idx + 1:]:
         name = _text(row, name_col)
@@ -180,6 +247,9 @@ def _read_staff_sheet(ws, org: dict | None) -> list[dict]:
             "load_factor": float(load_raw) if load_raw not in (None, "") else 1.0,
             "avail": None,
             "max_periods_day": None,
+            "allowance": _read_allowance(_cell(row, allowance_col), name, issues),
+            "reductions": _read_reductions(_cell(row, reductions_col), name, issues),
+            "provisional": _yes(_cell(row, provisional_col)),
             "source_hash": _row_hash(row),
         })
     return staff
@@ -189,28 +259,76 @@ def _read_staff_sheet(ws, org: dict | None) -> list[dict]:
 # department sheets (requirements)
 # ---------------------------------------------------------------------------
 
-_SPLIT = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+_SPLIT = re.compile(r"^\s*\d+(?:\s*/\s*\d+)+\s*$")
 
 
-def _apply_split(req: dict, split_raw: str, teachers: list[str], periods, issues: list[Issue]) -> list[dict]:
-    """A `Split` cell ("4/2"): the row's two teachers no longer co-teach every lesson, each takes
-    their own share of the periods instead — one requirement a teacher, carried as a single lesson
-    of that many slots (plan.model.LESSON_LENGTH_MAX allows it). The two numbers must sum to the
-    row's periods; when they do not, the row is left as the single co-taught requirement it already
-    is and a block issue is reported instead of guessing how to split it."""
-    m = _SPLIT.match(split_raw)
-    a, b = (int(m.group(1)), int(m.group(2))) if m else (None, None)
-    if a is None or periods is None or a + b != periods:
+UNASSIGNED = "(unassigned)"
+
+
+def is_unassigned(cell: str) -> bool:
+    """A Teacher n cell reading "(unassigned)", whatever its case or spacing ("( Unassigned )")."""
+    return re.sub(r"\s+", "", str(cell or "")).lower() == UNASSIGNED
+
+
+def _share_teachers(cell: str, org, staff: list[dict]) -> list[str]:
+    """One Teacher n cell of a split row: "(unassigned)" is a share nobody teaches yet, and
+    "Kelly Wong + Eugene Lee" a share those two co-teach."""
+    if is_unassigned(cell):
+        return []
+    out: list[str] = []
+    for name in cell.split("+"):
+        tid = _resolve_staff(name, org, staff)
+        if tid and tid not in out:
+            out.append(tid)
+    return out
+
+
+def _apply_split(req: dict, split_raw: str, teachers: list[list[str]], periods, issues: list[Issue]) -> list[dict]:
+    """A `Split` cell ("3/2", "2/2/1"): the row's teachers no longer co-teach every lesson, each
+    Teacher n column takes its own share of the periods instead — one requirement a share, ids `-a`,
+    `-b`, ..., in column order. `teachers` holds each column's teachers: one, several for a
+    co-taught share ("A + B"), or none for an unassigned one. Each share is made of the row's own lessons
+    (plan.model.split_lessons: "3/2" of Single 1, Double 2 is Double + Single and Double). There must
+    be one share a teacher, the shares must sum to the row's periods and the lessons must share out
+    exactly; otherwise the row is left as the single co-taught requirement it already is and a block
+    issue is reported instead of guessing how to split it."""
+    if not _SPLIT.match(split_raw):
+        issues.append(Issue("block", req["id"], f"{req['id']}: split {split_raw!r} is not shares like \"3/2\""))
+        return [req]
+    shares = [int(x) for x in split_raw.split("/")]
+    if len(shares) != len(teachers):
+        issues.append(Issue("block", req["id"],
+                             f"{req['id']}: split {split_raw!r} has {len(shares)} shares for {len(teachers)} "
+                             f"teacher columns"))
+        return [req]
+    if periods is None or sum(shares) != periods:
         issues.append(Issue("block", req["id"],
                              f"{req['id']}: split {split_raw!r} does not sum to periods {periods}"))
         return [req]
+    try:
+        parts = M.split_lessons(req["lessons"], shares)
+    except M.PlanError as e:
+        issues.append(Issue("block", req["id"], f"{req['id']}: {e}"))
+        return [req]
     return [
-        {**req, "id": f"{req['id']}-a", "teachers": [teachers[0]], "lessons": {str(a): 1}, "periods": a},
-        {**req, "id": f"{req['id']}-b", "teachers": [teachers[1]], "lessons": {str(b): 1}, "periods": b},
+        {**req, "id": M.split_part_id(req["id"], i), "teachers": list(share_teachers), "lessons": lessons,
+         "periods": share}
+        for i, (share_teachers, share, lessons) in enumerate(zip(teachers, shares, parts))
     ]
 
 
-def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
+def _numbered_cols(header: dict[str, int], word: str) -> list[tuple[int, int]]:
+    """(n, column) of every "<word> n" header ("Teacher 1", "Teacher 2", ...), in number order."""
+    return sorted(
+        (int(k.split(" ", 1)[1]), v) for k, v in header.items()
+        if k.startswith(word + " ") and k.split(" ", 1)[1].strip().isdigit()
+    )
+
+
+def _read_department_sheet(ws, org, staff, issues: list[Issue], owners: dict[str, str] | None = None) -> list[dict]:
+    """One department's rows. `owners` (id -> subject, shared across the workbook's sheets) names a
+    second subject of the same classes apart from the first (import_id)."""
+    owners = {} if owners is None else owners
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return []
@@ -225,12 +343,11 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
     total_col = header.get("total")
     grouping_col = header.get("grouping")
     size_col = header.get("total students")
-    class_cols = [header.get(f"class {n}") for n in range(1, 7)]
-    teacher_cols = sorted(
-        (int(k.split(" ", 1)[1]), v) for k, v in header.items()
-        if k.startswith("teacher ") and k.split(" ", 1)[1].strip().isdigit()
-    )
+    class_cols = [col for _, col in _numbered_cols(header, "class")]     # Class 1, Class 2, ... as many as there are
+    teacher_cols = _numbered_cols(header, "teacher")
     split_col = header.get("split")
+    locked_col = header.get("locked")
+    venue_col = header.get("venue kind")
 
     requirements: list[dict] = []
     for row in rows[1:]:
@@ -258,30 +375,38 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
         for name_key, lkey in _LESSON_COLS:
             v = _cell(row, header.get(name_key))
             lessons[lkey] = int(float(v)) if v not in (None, "") else 0
+        try:
+            M.normalise_lessons(lessons)
+        except M.PlanError as e:        # a negative count, or more lessons than a requirement holds
+            issues.append(Issue("block", f"{dept} {subject}", f"{dept} {subject}: {e}"))
+            lessons = {}
 
         classes = [_text(row, c) for c in class_cols if c is not None and _text(row, c)]
         level = _text(row, level_col)
         grouping_raw = _text(row, grouping_col)
         is_entire_class = grouping_raw.strip().lower() == "entire class"
 
+        split_raw = _text(row, split_col)
+        cells = [_text(row, col) for _, col in teacher_cols if _text(row, col)]
+        if split_raw:       # each Teacher n column is one share: "(unassigned)", a name, or "A + B"
+            share_teachers = [_share_teachers(c, org, staff) for c in cells]
+        else:               # the teachers co-teach the whole row; "+" is only part of a name here
+            share_teachers = [[tid] for c in cells if (tid := _resolve_staff(c, org, staff))]
         teachers: list[str] = []
-        for _, col in teacher_cols:
-            tname = _text(row, col)
-            if not tname:
-                continue
-            tid = _resolve_staff(tname, org, staff)
-            if tid and tid not in teachers:
+        for tid in (t for share in share_teachers for t in share):
+            if tid not in teachers:
                 teachers.append(tid)
 
         size_val = _cell(row, size_col)
         size = int(size_val) if size_val not in (None, "") else None
-        split_raw = _text(row, split_col)
+        locked = _yes(_cell(row, locked_col))
+        venue_kind = _text(row, venue_col) or None
 
         row_hash = _row_hash(row)
 
         def make_req(req_classes: list[str], grouping: str) -> dict:
             return {
-                "id": M.requirement_id(dept, level, grouping, req_classes),
+                "id": import_id(dept, level, grouping, req_classes, subject, owners),
                 "dept": dept,
                 "level": level,
                 "subject": subject,
@@ -291,8 +416,9 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
                 "classes": req_classes,
                 "teachers": list(teachers),
                 "size": size,
-                "venue": {"kind": None, "room": None},
+                "venue": {"kind": venue_kind, "room": None},
                 "sync_with": None,
+                "locked": locked,
                 "source_hash": row_hash,
             }
 
@@ -304,8 +430,8 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue]) -> list[dict]:
         else:
             row_reqs = [make_req(classes, grouping_raw)]
 
-        if split_raw and len(row_reqs) == 1 and len(teachers) >= 2:
-            row_reqs = _apply_split(row_reqs[0], split_raw, teachers[:2], periods, issues)
+        if split_raw and len(row_reqs) == 1 and len(share_teachers) >= 2:
+            row_reqs = _apply_split(row_reqs[0], split_raw, share_teachers, periods, issues)
         requirements.extend(row_reqs)
 
         if periods is not None:
@@ -386,7 +512,7 @@ def _read_groups_sheet(ws, requirements: list[dict]) -> tuple[list[dict], list[d
 
         families: dict[str, list[str]] = {}
         for code in codes:
-            families.setdefault(_family(code), []).append(code)
+            families.setdefault(family(code), []).append(code)
 
         for fam, fam_codes in families.items():
             options: list[str] = []
@@ -467,6 +593,16 @@ def apply_sizes(plan: dict, sizes: dict[str, int]) -> dict:
 # read_workbook
 # ---------------------------------------------------------------------------
 
+def _merge_keeping_locks(existing: dict, new_plan: dict, issues: list[Issue], uncarried: dict) -> dict:
+    """plan.model.merge_import, reporting every locked requirement the workbook would have changed.
+    `uncarried`: the fields this shape of workbook never carries (model.DEPLOYMENT_UNCARRIED, ...)."""
+    kept: list[tuple[str, str]] = []
+    merged = M.merge_import(existing, new_plan, kept, uncarried)
+    for where, text in kept:
+        issues.append(Issue("warn", where, text))
+    return merged
+
+
 def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename: str = "") -> tuple[dict, list[Issue]]:
     issues: list[Issue] = []
     try:
@@ -480,14 +616,15 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         control_ws = next((ws for ws in wb.worksheets if ws.title.strip().lower() == "control"), None)
         if control_ws is None:
             control_ws = next((ws for ws in wb.worksheets if ws.title.strip().lower() == "load"), None)
-        staff = _read_staff_sheet(control_ws, org) if control_ws is not None else []
+        staff = _read_staff_sheet(control_ws, org, issues) if control_ws is not None else []
 
         requirements: list[dict] = []
+        owners: dict[str, str] = {}
         for ws in wb.worksheets:
             title_l = ws.title.strip().lower()
             if title_l in _SKIP_SHEETS or title_l.startswith("sheet") or title_l in _SPECIAL_SHEETS:
                 continue
-            requirements.extend(_read_department_sheet(ws, org, staff, issues))
+            requirements.extend(_read_department_sheet(ws, org, staff, issues, owners))
 
         groups_ws = next((ws for ws in wb.worksheets if ws.title.strip().lower() == "groups"), None)
         if groups_ws is not None:
@@ -514,7 +651,7 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         wb.close()
 
     if existing is not None:
-        return M.merge_import(existing, new_plan), issues
+        return _merge_keeping_locks(existing, new_plan, issues, M.DEPLOYMENT_UNCARRIED), issues
     return new_plan, issues
 
 
@@ -801,6 +938,7 @@ def _read_generic_duties(ws, org, staff: list[dict], role_index: dict[str, list[
     by_key: dict[tuple[str, str], dict] = {}
     pending_sync: list[tuple[dict, str, str]] = []
     seen_ids: dict[str, int] = {}
+    owners: dict[str, str] = {}
 
     for row in rows[1:]:
         name = _text(row, name_col)
@@ -811,11 +949,14 @@ def _read_generic_duties(ws, org, staff: list[dict], role_index: dict[str, list[
         who_raw = _text(row, who_col)
         together = _text(row, together_col)
 
-        req_id = _dedup_id(M.requirement_id(name, None, "class", [unit] if unit else []), seen_ids)
+        req_id = _dedup_id(import_id(name, None, "class", [unit] if unit else [], name, owners), seen_ids)
 
         per_cycle = _parse_duty_count(_cell(row, per_cycle_col), "Per cycle", name, req_id, issues)
         if per_cycle is not None and per_cycle <= 0:
             issues.append(Issue("block", req_id, f"{name}: Per cycle must be greater than zero"))
+        elif per_cycle is not None and per_cycle > M.SPLIT_LESSONS_MAX:
+            issues.append(Issue("block", req_id, f"{name}: Per cycle must be at most {M.SPLIT_LESSONS_MAX}"))
+            per_cycle = None
         length = _parse_duty_count(_cell(row, length_col), "Length", name, req_id, issues)
 
         pool = _who_can_do_it(who_raw, org, staff, role_index)
@@ -899,5 +1040,5 @@ def read_generic_workbook(data: bytes, org: dict | None, existing: dict | None,
         wb.close()
 
     if existing is not None:
-        return M.merge_import(existing, new_plan), issues
+        return _merge_keeping_locks(existing, new_plan, issues, M.DUTIES_UNCARRIED), issues
     return new_plan, issues

@@ -224,27 +224,21 @@ def _subject_codes(subjects: list[dict]) -> dict[str, str]:
     return out
 
 
-def _split_parts(periods) -> tuple[int, int]:
-    periods = int(periods)
-    return periods - periods // 2, periods // 2
-
-
-def _split_of(subject: dict) -> str:
-    """The Split column's example: the subject's periods shared between two teachers, "3/2"."""
-    return "%d/%d" % _split_parts(subject["periods"])
-
-
-def _longest_run(rules: dict) -> int:
-    """The longest lesson a day of this cycle can actually hold: the widest stretch between its
-    mandatory breaks, and no longer than the run and load a plane is allowed. A `Split` puts each
-    teacher's share into one lesson of that many slots (`plan.importer._apply_split`), so a sample
-    Split longer than this would hand the user a workbook that cannot be placed."""
-    breaks = sorted({t for t in rules["mandatory_rest"] if 0 <= t < rules["slots_per_day"]})
-    longest, start = 0, 0
-    for t in (*breaks, rules["slots_per_day"]):
-        longest = max(longest, t - start)
-        start = t + 1
-    return max(1, min(longest, rules["max_run"], rules["max_load"]))
+def _sample_split(lessons: dict, periods) -> str:
+    """The Split column's example for a row: its periods shared between two teachers, "3/2", made
+    of the row's own lessons (`plan.model.split_lessons`, which the importer uses). Candidate pairs
+    run from the most even to the least; "" when no pair shares the lessons out exactly (a single
+    lesson, or lessons that only go one way), and the row is left unsplit."""
+    periods = int(periods or 0)
+    counts = {str(k): int(v or 0) for k, v in lessons.items()}
+    for first in range(periods - periods // 2, periods):
+        shares = [first, periods - first]
+        try:
+            M.split_lessons(counts, shares)
+        except M.PlanError:
+            continue
+        return "%d/%d" % tuple(shares)
+    return ""
 
 
 def _options_per_band(knobs: dict) -> int:
@@ -427,8 +421,8 @@ def _deployment_columns(v: dict) -> list[dict]:
         _column("Total Students", "How many students the row teaches", CLASS_SIZE),
         _column("Teacher 1", f"The {v['person']} who takes it", "Teacher A"),
         _column("Teacher 2", f"A second {v['person']} when two of them take it together", "Teacher C"),
-        _column("Split", f"\"3/2\" splits the periods between the two {v['person']}s; leave it empty "
-                         f"when they teach every lesson together", "3/2"),
+        _column("Split", f"\"3/2\" splits the periods between the two {v['person']}s, each share made of "
+                         f"whole lessons of this row; leave it empty when they teach every lesson together", "3/2"),
     ]
     return columns
 
@@ -530,7 +524,6 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
     pairs = [(lvl, code) for lvl, codes in levels for code in codes]   # every (level, class) of the sample
     teachers = _people(v["person"], max(3, sample["teachers"]))
     options = _options_per_band(knobs)
-    longest = _longest_run(rules_for(template, knobs))
     subject_codes = _subject_codes(sample["subjects"])
 
     families: dict[str, list[dict]] = {}
@@ -576,10 +569,8 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
             # the same requirement written twice
             second, third = next_pair(), next_pair()
             rows.append(row(second[0], other, "Entire Class", [second[1]], hand_out.team(1)))
-            # a Split only makes sense where there is more than one lesson to share out, and only
-            # where each teacher's share still fits a day
-            split = (_split_of(other) if sum(other["lengths"].values()) > 1
-                     and max(_split_parts(other["periods"])) <= longest else "")
+            # a Split only where the row's lessons share out exactly between the two teachers
+            split = _sample_split({str(n): other["lengths"].get(str(n)) for n in (1, 2, 3, 4)}, other["periods"])
             rows.append(row(third[0], other, "Entire Class", [third[1]], hand_out.team(2), split))
         sheets.append({"name": family[:31], "purpose": f"One row per {v['requirement']} taught to a "
                                                        f"{v['group']} or an option group.",
@@ -594,9 +585,10 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
             for i, cells in enumerate(sheet["rows"]):
                 if (sheet["name"], i) in banded_rows or cells[-2] is not None:
                     continue
-                if sum(n or 0 for n in cells[2:6]) > 1 and max(_split_parts(cells[6])) <= longest:
+                split = _sample_split({str(n): cells[1 + n] for n in (1, 2, 3, 4)}, cells[6])
+                if split:
                     cells[-2] = hand_out.team(1)[0]
-                    cells[-1] = "%d/%d" % _split_parts(cells[6])
+                    cells[-1] = split
                     break
             else:
                 continue

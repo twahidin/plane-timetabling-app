@@ -124,7 +124,44 @@ issues (a requirement with no teacher, periods that do not match the lesson coun
 **Generate draft** disabled, warnings (a class with no size, a teacher over capacity) do not. Fix,
 re-read the issues, then Generate: the plan becomes the draft organisation, and Quick timetable and Best
 timetable work on it exactly as they do on any other draft. A re-import of an updated workbook merges by id
-and keeps what you set in the app — venue, availability, rules and class sizes.
+and keeps what you set in the app that the workbook does not hold — rooms, lessons to run together,
+availability, a day's maximum, rules and class sizes — and, while a row is unchanged, its venue kind too.
+
+**Download template** beside Upload workbook gives a blank workbook in the importer's own shape: a
+README sheet explaining every column, an example `MATH` sheet (rows marked "example: replace or
+delete"), `Groups` and `Control` with example staff. **Export to Excel** writes the current plan
+the same way — one sheet per department with a row per cell (a split cell is one row with its
+teachers and `Split` "3/2", locked rows say `Locked: yes`), the divisions and band codes on
+`Groups`, and staff with their allowance, reductions ("HOD 8; CCA 2") and provisional flag on
+`Control` — so it can be edited offline and uploaded again. In a split row each Teacher column is
+one share: a name, `(unassigned)`, or `Kelly Wong + Eugene Lee` for a share taught together.
+Importing an export into an empty timetable gives the same plan back, and uploading it into the
+timetable it came from keeps rooms and availability; anything a workbook cannot hold exactly (a
+lesson longer than four periods, two staff with one name) is listed on its README sheet.
+
+### Deployment board
+
+The Plan tab opens on the **Board** (switch to **Tables** for the same plan field by field; the
+choice, department and level are remembered in the browser). Pick a department and a level tab
+(Sec 1, Sec 2, …): subjects run down the side, classes across, and each cell says how many of its
+periods are assigned ("3/5p"), what is still unassigned, and who teaches it — one chip per
+teacher or split share, dashed while it can change and solid once locked, "PROV" for a
+provisional teacher. Option groups of a band sit on their own lines under one subject, spanning
+the classes they draw from.
+
+The teacher tray below lists the department's staff (filters: Available, Fully assigned,
+Provisional, All departments) with each teacher's load against their allowance after reductions,
+a bar of period blocks and a colour for what is left: green 8 or more, amber under 8, orange under
+4, red none. Drag a teacher onto a cell to assign them; onto a cell that already has a teacher,
+choose **Replace**, **Co-teach** or **Split…**. Without a mouse, click a teacher to pick them up
+and then click cells (Esc puts them down). Click a cell to split its periods (the splits its
+lessons allow are offered, "3/2", "4/1"), remove a teacher or lock it; **Lock row**, **Lock Sec
+1** and **Lock entire MATH** lock more at once, and a locked cell refuses a drop until it is
+unlocked. **Add subject** adds a row for the classes you tick, **Create band** adds option groups
+that run together (a blank group code is made up, e.g. 1MEP), **+ Provisional teacher** adds "New
+MATH teacher 1" to name later with its **Edit** button (allowance, reductions such as "HOD 8"),
+and **Undo** takes back the last board change. The Issues panel and Generate draft stay above the
+board and follow every change.
 
 ## Environment variables
 

@@ -137,7 +137,7 @@
       else if (ev.kind === 'bookings_updated') loadBookings();
       else if (ev.kind === 'relief') { if (window.loadRelief) window.loadRelief().catch(() => {}); }
       else if (ev.kind === 'periods') { if (window.loadPeriods) window.loadPeriods().catch(() => {}); if (window.loadTimetables) window.loadTimetables(); }
-      else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
+      else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadBoard) window.loadBoard().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
       else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
       else if (ev.kind === 'settings_updated') {
         if (window.reloadModel) window.reloadModel().catch(() => {});
