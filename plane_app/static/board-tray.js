@@ -1,12 +1,14 @@
 // The deployment board's teacher tray (spec docs/superpowers/specs/2026-09-26-deployment-board-design.md
 // §5): a card per teacher with their load against their allowance, drag a card onto a cell of the
 // board, or click it to pick the teacher up and click cells; the Edit button opens the teacher's
-// editor (allowance, reductions, provisional, name). board.js owns the board and its requests and
+// editor (allowance, shares, reductions, provisional, name; on the department page only what a head
+// of department may change: name, short name, reductions, naming a provisional). board.js owns the board and its requests and
 // hands this file what it needs through BoardTray.init. DOM built with createElement/textContent.
 (function () {
   'use strict';
 
   const el = (id) => document.getElementById(id);
+  const DEPT = document.body.dataset.mode === 'department';
   const node = (tag, cls, text) => {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -19,14 +21,30 @@
     set(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private mode, etc. */ } },
   };
 
-  let ctx = null;          // { mutate, selected, toggleSelect }, from board.js
+  let ctx = null;          // { mutate, selected, toggleSelect, readOnly }, from board.js
   let board = null;
-  let filter = 'home';
+  // a head of department's tray holds only the teachers available to them: all of them by default
+  let filter = DEPT ? 'everyone' : 'home';
   let search = '';
   let collapsed = store.get('plane.boardTray') === 'collapsed';
 
-  // periods left before the teacher's effective allowance is used up
-  const left = (t) => Math.round((Number(t.effective) - Number(t.assigned)) * 10) / 10;
+  // periods left before the teacher's effective allowance is used up; for a head of department,
+  // before what the teacher may be given in their department (capacity_here: the share, or the
+  // allowance less the shares given elsewhere)
+  const left = (t) => Math.round((DEPT ? Number(t.capacity_here) - Number(t.assigned_here)
+    : Number(t.effective) - Number(t.assigned)) * 10) / 10;
+  // "MATH 10; SCI 6" <-> { MATH: 10, SCI: 6 }; a comma separates as well as a semicolon
+  const sharesText = (shares) => Object.entries(shares || {}).map(([d, n]) => `${d} ${n}`).join('; ');
+  function parseShares(text) {
+    const out = {};
+    for (const part of String(text || '').split(/[;,]/).map((x) => x.trim()).filter(Boolean)) {
+      const m = /^(\S+)\s+(\d+)$/.exec(part);
+      if (!m) throw new Error(`Write each share as a department and periods, for example MATH 10; SCI 6 (not "${part}").`);
+      if (m[1] in out) throw new Error(`${m[1]} is named twice in the shares.`);
+      out[m[1]] = Number(m[2]);
+    }
+    return out;
+  }
   function tone(t) {
     const l = left(t);
     if (l <= 0) return 'none';
@@ -36,7 +54,9 @@
   }
 
   function shown(t) {
-    if (filter !== 'everyone' && !t.home) return false;
+    // the admin's filters other than All departments show the home department only; a head of
+    // department's show everyone on their tray (their own and those shared with them) but Home
+    if ((DEPT ? filter === 'home' : filter !== 'everyone') && !t.home) return false;
     if (filter === 'available' && left(t) <= 0) return false;
     if (filter === 'full' && left(t) > 0) return false;
     if (filter === 'provisional' && !t.provisional) return false;
@@ -47,12 +67,19 @@
     return true;
   }
 
+  // A teacher shared in from another department comes to a head of department with only what
+  // placing them here needs: their share here (capacity_here) and what they have here (assigned_here);
+  // nothing of their own department's (allowance, reductions, load elsewhere)
+  const ownFigures = (t) => t.effective != null;
+
   // A bar of period blocks: filled for each period assigned, dashed for each still free, red for
-  // each over the allowance. Past 48 blocks, one block stands for several periods.
+  // each over the allowance (for a teacher shared in, over the share here). Past 48 blocks, one
+  // block stands for several periods.
   function blocks(t) {
     const bar = node('div', 'board-blocks');
-    const effective = Math.max(0, Math.round(Number(t.effective) || 0));
-    const assigned = Math.max(0, Math.round(Number(t.assigned) || 0));
+    const own = ownFigures(t);
+    const effective = Math.max(0, Math.round(Number(own ? t.effective : t.capacity_here) || 0));
+    const assigned = Math.max(0, Math.round(Number(own ? t.assigned : t.assigned_here) || 0));
     const total = Math.max(effective, assigned);
     const per = Math.max(1, Math.ceil(total / 48));
     for (let i = 0; i < Math.ceil(total / per); i++) {
@@ -60,19 +87,24 @@
       const cls = at < Math.min(assigned, effective) ? 'on' : at < effective ? 'free' : 'over';
       bar.appendChild(node('i', cls));
     }
-    bar.title = `${assigned} of ${effective} periods assigned` + (per > 1 ? ` (a block is ${per} periods)` : '');
+    bar.title = `${assigned} of ${effective} periods assigned${own ? '' : ` in ${(board && board.dept) || 'this department'}`}`
+      + (per > 1 ? ` (a block is ${per} periods)` : '');
     return bar;
   }
 
   function card(t) {
     const picked = ctx.selected() === t.id;
+    // a submitted department (head of department): nothing to drag or pick up until it is reopened
+    const shut = ctx.readOnly();
     const c = node('div', `board-card tone-${tone(t)}` + (picked ? ' picked' : '') + (t.provisional ? ' prov' : ''));
-    c.draggable = true;
+    c.draggable = !shut;
     c.tabIndex = 0;
     c.setAttribute('role', 'button');
     c.setAttribute('aria-pressed', String(picked));
+    if (shut) c.setAttribute('aria-disabled', 'true');
     c.dataset.teacher = t.id;
-    c.title = picked ? 'Picked up: click cells to assign, click again or press Esc to put down' : 'Drag onto a cell, or click to pick up';
+    c.title = shut ? 'Submitted: the timetabler reopens the department before anyone is assigned'
+      : picked ? 'Picked up: click cells to assign, click again or press Esc to put down' : 'Drag onto a cell, or click to pick up';
 
     const head = node('div', 'board-card-head');
     head.appendChild(node('b', 'board-card-name', t.name || t.id));
@@ -83,35 +115,43 @@
     edit.type = 'button';
     edit.setAttribute('aria-label', `Edit ${t.name || t.id}`);
     edit.addEventListener('click', (ev) => { ev.stopPropagation(); openStaff(t); });
-    head.appendChild(edit);
+    // a head of department edits only their own department's teachers, and not once submitted
+    if (!DEPT || (t.home && !shut)) head.appendChild(edit);
     c.appendChild(head);
 
+    const own = ownFigures(t);
     const meta = node('div', 'board-card-meta');
     meta.appendChild(node('span', null, `Home: ${t.dept || 'none'}`));
-    meta.appendChild(node('span', 'board-card-load', `${t.assigned}/${t.effective}p`));
+    meta.appendChild(node('span', 'board-card-load', own ? `${t.assigned}/${t.effective}p` : `${t.assigned_here}/${t.capacity_here}p here`));
     const l = left(t);
     meta.appendChild(node('span', 'board-card-left', l >= 0 ? `${l}p left` : `${-l}p over`));
     c.appendChild(meta);
-    if (board && t.assigned_here !== t.assigned) {
-      c.appendChild(node('div', 'board-card-here', `${board.dept}: ${t.assigned_here}p · elsewhere: ${t.assigned - t.assigned_here}p`));
+    const shared = Object.keys(t.shares || {}).length > 0;
+    // what the teacher may be given here, when a share limits it (or they are shared in)
+    const limited = t.available && (shared || !t.home);
+    if (board && own && (t.assigned_here !== t.assigned || limited)) {
+      const here = limited ? `${t.assigned_here} of ${t.capacity_here}p` : `${t.assigned_here}p`;
+      c.appendChild(node('div', 'board-card-here', `${board.dept}: ${here} · elsewhere: ${t.assigned - t.assigned_here}p`));
     }
     c.appendChild(blocks(t));
-    if ((t.reductions || []).length) {
+    if ((t.reductions || []).length || shared) {
       const tags = node('div', 'board-card-tags');
-      t.reductions.forEach((r) => tags.appendChild(node('span', 'board-tag red', `${r.reason} −${r.periods}p`)));
+      (t.reductions || []).forEach((r) => tags.appendChild(node('span', 'board-tag red', `${r.reason} −${r.periods}p`)));
+      Object.entries(t.shares || {}).forEach(([d, n]) => tags.appendChild(node('span', 'board-tag share', `${d} share ${n}p`)));
       c.appendChild(tags);
     }
 
     c.addEventListener('dragstart', (ev) => {
+      if (ctx.readOnly()) { ev.preventDefault(); return; }
       ev.dataTransfer.setData('text/plain', t.id);
       ev.dataTransfer.effectAllowed = 'copy';
       document.body.classList.add('board-dragging');
     });
     c.addEventListener('dragend', () => document.body.classList.remove('board-dragging'));
-    c.addEventListener('click', () => ctx.toggleSelect(t.id));
+    c.addEventListener('click', () => { if (!ctx.readOnly()) ctx.toggleSelect(t.id); });
     c.addEventListener('keydown', (ev) => {
       if (ev.target !== c) return;
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ctx.toggleSelect(t.id); }
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); if (!ctx.readOnly()) ctx.toggleSelect(t.id); }
     });
     return c;
   }
@@ -130,6 +170,7 @@
     el('board-tray').classList.toggle('collapsed', collapsed);
     el('board-tray-toggle').textContent = collapsed ? 'Expand' : 'Collapse';
     el('board-tray-toggle').setAttribute('aria-expanded', String(!collapsed));
+    el('board-add-provisional').disabled = ctx.readOnly();
     const box = el('board-cards');
     box.innerHTML = '';
     const list = tray.filter(shown);
@@ -143,6 +184,8 @@
   // ---------- the teacher editor ----------
   let editing = null;      // the staff id being edited, or null for a new teacher
   let allowanceStart = '';  // the allowance field as the editor opened it
+  let sharesStart = '';     // the shares field as the editor opened it
+  let start = {};           // the other fields as the editor opened them: an edit sends only what changed
   function reductionRow(r) {
     const row = node('div', 'board-reduction');
     const reason = node('input');
@@ -164,17 +207,24 @@
     el('board-staff-title').textContent = t ? `Edit ${t.name || t.id}` : `New ${word('person')}`;
     el('board-staff-name').value = t ? t.name : '';
     el('board-staff-short').value = t ? t.short : '';
-    el('board-staff-dept').value = t ? t.dept : ((board && board.dept) || '');
-    // `allowance` is the base figure, given or worked out; `allowance_given` is the stored one.
-    // A worked-out allowance leaves the field blank (the figure is the placeholder), so saving
-    // other fields never turns it into a fixed number.
-    allowanceStart = t ? (t.allowance_given == null ? '' : String(t.allowance_given)) : '';
-    el('board-staff-allowance').value = allowanceStart;
-    el('board-staff-allowance').placeholder = t && t.allowance_given == null ? `${t.allowance} worked out` : '';
+    if (!DEPT) {
+      el('board-staff-dept').value = t ? t.dept : ((board && board.dept) || '');
+      // `allowance` is the base figure, given or worked out; `allowance_given` is the stored one.
+      // A worked-out allowance leaves the field blank (the figure is the placeholder), so saving
+      // other fields never turns it into a fixed number.
+      allowanceStart = t ? (t.allowance_given == null ? '' : String(t.allowance_given)) : '';
+      el('board-staff-allowance').value = allowanceStart;
+      el('board-staff-allowance').placeholder = t && t.allowance_given == null ? `${t.allowance} worked out` : '';
+      sharesStart = t ? sharesText(t.shares) : '';
+      el('board-staff-shares').value = sharesStart;
+    }
     const list = el('board-staff-reductions');
     list.innerHTML = '';
     ((t && t.reductions) || []).forEach((r) => list.appendChild(reductionRow(r)));
     el('board-staff-provisional').checked = t ? !!t.provisional : true;
+    // a head of department names a provisional teacher (ticked to unticked), never the other way
+    el('board-staff-provisional').disabled = DEPT && !!t && !t.provisional;
+    start = t ? staffFields() : {};
     el('board-staff-error').hidden = true;
     const dlg = el('board-staff-dialog');
     if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
@@ -182,25 +232,46 @@
   }
   const closeStaff = () => { const d = el('board-staff-dialog'); if (d.open) d.close(); else d.removeAttribute('open'); };
 
-  function staffBody() {
+  // the editor's name, short name, reductions, provisional and (the admin's) department fields
+  function staffFields() {
     const reductions = [];
     el('board-staff-reductions').querySelectorAll('.board-reduction').forEach((row) => {
       const [reason, periods] = row.querySelectorAll('input');
       if (!reason.value.trim() && periods.value === '') return;
       reductions.push({ reason: reason.value.trim(), periods: periods.value === '' ? 0 : Number(periods.value) });
     });
-    const allowance = el('board-staff-allowance').value.trim();
-    const body = {
+    const fields = {
       name: el('board-staff-name').value.trim() || null,
       short: el('board-staff-short').value.trim(),
-      dept: el('board-staff-dept').value.trim(),
       reductions,
       provisional: el('board-staff-provisional').checked,
     };
-    // sent only when changed: blank means worked out from the load factor
-    if (allowance !== allowanceStart) body.allowance = allowance === '' ? null : Number(allowance);
-    if (editing) body.id = editing;
-    return body;
+    if (!DEPT) fields.dept = el('board-staff-dept').value.trim();
+    return fields;
+  }
+
+  // What the form saves. A new teacher: every field. An edit: only the fields changed since the
+  // editor opened, so it never writes back a figure someone else changed meanwhile (the server
+  // refuses an edit of a teacher changed since the board was loaded, too).
+  function staffBody() {
+    const fields = staffFields();
+    const body = {};
+    if (!editing) {
+      Object.assign(body, fields);
+      if (DEPT) body.dept = (board && board.dept) || '';
+    } else {
+      Object.keys(fields).forEach((k) => {
+        if (JSON.stringify(fields[k]) !== JSON.stringify(start[k])) body[k] = fields[k];
+      });
+    }
+    if (!DEPT) {
+      const allowance = el('board-staff-allowance').value.trim();
+      // sent only when changed: blank means worked out from the load factor
+      if (allowance !== allowanceStart) body.allowance = allowance === '' ? null : Number(allowance);
+      const shares = el('board-staff-shares').value.trim();
+      if (shares !== sharesStart) body.shares = parseShares(shares);      // throws: shown on the form
+    }
+    return { body, fields };
   }
 
   function init(context) {
@@ -225,17 +296,20 @@
       try {
         const res = await ctx.mutate('staff', { dept: board.dept, provisional: true });
         if (res.ok) { filter = filter === 'full' ? 'home' : filter; render(); }
-      } finally { btn.disabled = false; }
+      } finally { btn.disabled = ctx.readOnly(); }
     });
     el('board-reduction-add').addEventListener('click', () => el('board-staff-reductions').appendChild(reductionRow({})));
     el('board-staff-cancel').addEventListener('click', closeStaff);
     el('board-staff-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const err = el('board-staff-error');
-      const body = staffBody();
-      if (!body.dept) { err.textContent = 'Give the department.'; err.hidden = false; return; }
-      if (!body.name && !body.provisional) { err.textContent = 'Give a name, or tick Provisional.'; err.hidden = false; return; }
-      if (!body.name) delete body.name;
+      let body, fields;
+      try { ({ body, fields } = staffBody()); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
+      if ((!editing && !body.dept) || (!DEPT && !fields.dept)) { err.textContent = 'Give the department.'; err.hidden = false; return; }
+      if (!fields.name && !fields.provisional) { err.textContent = 'Give a name, or tick Provisional.'; err.hidden = false; return; }
+      if ('name' in body && !body.name) delete body.name;
+      if (editing && !Object.keys(body).length) { closeStaff(); return; }      // nothing changed
+      if (editing) body.id = editing;
       el('board-staff-ok').disabled = true;
       try {
         const res = await ctx.mutate('staff', body, { quiet: true });

@@ -4,11 +4,14 @@ Everything that belongs to one timetable (its organisations, last check, time an
 messages and uploads) is keyed by the timetable id. Provider and engine settings are global."""
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import secrets
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import calendar as cal_mod
@@ -49,7 +52,7 @@ create table if not exists timetables (id text primary key, name text not null, 
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "plan_history", "wizard", "periods", "period_base", "relief")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "plan_history", "wizard", "periods", "period_base", "relief", "plan_activity")  # get_value/set_value keys that are scoped
 # The one chat thread of a timetable. Messages, uploads and pending proposals are keyed by this
 # rather than by the browser's login session, so a user who logs in on another device (or after
 # the cookie expired) continues the same conversation. The login session id still authenticates
@@ -59,6 +62,24 @@ CHANGE_SNAP_PREFIX = "change_snap:"    # one kv row per change snapshot: f"{CHAN
 PRINT_CUSTOM_PREFIX = "print_custom:"  # one kv row per saved custom timetable: f"{PRINT_CUSTOM_PREFIX}{token}" — also scoped, by prefix
 PLAN_HIST_PREFIX = "plan_hist:"        # one kv row per board undo snapshot of the plan: f"{PLAN_HIST_PREFIX}{n}" — also scoped, by prefix
 PLAN_HISTORY_KEEP = 20                 # board undo keeps this many plans; "plan_history" is their index {seq, snaps}
+DEPLOYMENT_KEY = "deployment_timetable"  # global kv: the timetable department accounts work on (design §3)
+
+# The timetable this request works on when it is not the global selection. A department account's
+# requests are pinned to the deployment timetable (auth.require_user); the admin's never are, so
+# they read and write the selection as always. A ContextVar, not an attribute of Db: concurrent
+# requests (threads, tasks) each see only their own pin.
+_PINNED: contextvars.ContextVar[str | None] = contextvars.ContextVar("plane_pinned_timetable", default=None)
+
+
+@contextmanager
+def pinned(tid: str):
+    """Within the block, every accessor called without `tid` works on `tid` instead of the selected
+    timetable; `current_timetable()` still names the selection, which is never changed."""
+    token = _PINNED.set(tid)
+    try:
+        yield tid
+    finally:
+        _PINNED.reset(token)
 
 
 def mask_settings(settings: dict) -> dict:
@@ -75,6 +96,8 @@ class Db:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._plan_locks: dict[str, threading.Lock] = {}
+        self._plan_locks_guard = threading.Lock()
         with self._con() as con:
             con.executescript(SCHEMA)
             self._migrate(con)
@@ -153,7 +176,49 @@ class Db:
         return out
 
     def current_timetable(self) -> str:
+        """The admin's selection (global). What a request reads and writes is `working_timetable()`."""
         return self._get("current_timetable") or DEFAULT_TIMETABLE
+
+    def working_timetable(self) -> str:
+        """The timetable this request works on: the pinned one (a department account's request),
+        else the selection."""
+        return _PINNED.get() or self.current_timetable()
+
+    def _exists(self, tid: str) -> bool:
+        with self._con() as con:
+            return con.execute("select 1 from timetables where id=?", (tid,)).fetchone() is not None
+
+    def deployment_timetable(self) -> str:
+        """The timetable department accounts work on: the stored choice while that timetable exists,
+        else the selection."""
+        tid = self._get(DEPLOYMENT_KEY)
+        return tid if isinstance(tid, str) and tid and self._exists(tid) else self.current_timetable()
+
+    def set_deployment_timetable(self, tid: str) -> None:
+        """Unknown id -> KeyError."""
+        if not self._exists(tid):
+            raise KeyError(tid)
+        self._set(DEPLOYMENT_KEY, tid)
+
+    def deployment_stored(self) -> bool:
+        """Whether the deployment timetable is fixed: a stored choice that still exists (else it
+        follows the selection)."""
+        tid = self._get(DEPLOYMENT_KEY)
+        return isinstance(tid, str) and bool(tid) and self._exists(tid)
+
+    def ensure_deployment_timetable(self) -> None:
+        """Fix the deployment timetable to the selection (a period's base when a period timetable is
+        selected) unless a timetable that still exists is stored: department accounts exist or are
+        being made, and they must never drift with the admin's selection."""
+        if not self.deployment_stored():
+            cur = self.current_timetable()
+            self._set(DEPLOYMENT_KEY, self.get_value("period_base", tid=cur) or cur)
+
+    def forget_deployment_timetable(self, tid: str) -> None:
+        """Clear the stored deployment timetable when it is `tid` (being deleted): the next account
+        read fixes a new one (ensure_deployment_timetable)."""
+        if self._get(DEPLOYMENT_KEY) == tid:
+            self._set(DEPLOYMENT_KEY, None)
 
     def select_timetable(self, tid: str) -> None:
         with self._con() as con:
@@ -185,7 +250,7 @@ class Db:
             paths = [r["path"] for r in con.execute("select path from uploads where timetable_id=?", (tid,))]
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
-            keys = (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"plan_history:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}")
+            keys = (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"plan_history:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}", f"plan_activity:{tid}")
             con.execute(f"delete from kv where k in ({','.join('?' * len(keys))})", keys)
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
@@ -198,10 +263,10 @@ class Db:
         return paths
 
     def _tid(self) -> str:
-        return self.current_timetable()
+        return self.working_timetable()
 
     def _scope(self, tid: str | None) -> str:
-        """Resolve the timetable id an accessor should read or write: the current one when `tid`
+        """Resolve the timetable id an accessor should read or write: the working one when `tid`
         is omitted, otherwise `tid` itself once checked to exist (unknown id -> KeyError)."""
         if tid is None:
             return self._tid()
@@ -248,8 +313,8 @@ class Db:
         scoped = self._scope(tid)
         per = {k: settings.get(k, DEFAULT_SETTINGS[k]) for k in PER_TIMETABLE_SETTINGS}
         self._set(f"tt:{scoped}", per)
-        if scoped == self._tid():
-            # The global copy tracks the *current* timetable's settings (it seeds new timetables and
+        if scoped == self.current_timetable():
+            # The global copy tracks the *selected* timetable's settings (it seeds new timetables and
             # holds the truly global provider/engine groups); writing for another tid must not disturb it.
             self._set("settings", settings)
 
@@ -312,10 +377,27 @@ class Db:
     def set_value(self, key: str, value, tid: str | None = None) -> None:
         """Write a value. Writing the plan this way (an upload, a patch, chat, the start wizard: any
         writer but the deployment board, which uses `set_board_plan`) also clears the board's undo
-        history, so Undo can never reach back past a change the board did not make."""
+        history, so Undo can never reach back past a change the board did not make. Every write of
+        the plan moves its rev (`_bump`)."""
+        if key == "plan":
+            value = self._bump(value, tid)
         self._set(f"{key}:{self._scope(tid)}" if self._is_scoped(key) else key, value)
         if key == "plan":
             self.plan_history_clear(tid)
+
+    def _bump(self, plan, tid: str | None):
+        """plan.model.bump_rev against the stored plan: the plan's rev moves on and each changed
+        requirement's rev_at with it (department accounts design §4). Changes `plan` in place."""
+        from .plan.model import bump_rev          # plan.model is pure; imported here, not at load
+        return bump_rev(self.get_value("plan", tid), plan)
+
+    def plan_lock(self, tid: str | None = None) -> threading.Lock:
+        """The lock every plan read-modify-write holds (board, undo, PATCH, upload, chat, wizard), one
+        per timetable: the working one by default, so a department account's write and the admin's
+        to the same plan share it."""
+        key = self._scope(tid)
+        with self._plan_locks_guard:
+            return self._plan_locks.setdefault(key, threading.Lock())
 
     # ---- the deployment board's undo history ----------------------------
     # One kv row per snapshot (PLAN_HIST_PREFIX + n, scoped like any per-timetable value) and a
@@ -338,18 +420,34 @@ class Db:
             self.set_value(f"{PLAN_HIST_PREFIX}{old}", None, tid)
         self.set_value("plan_history", {"seq": n, "snaps": snaps[-keep:]}, tid)
 
-    def plan_history_pop(self, tid: str | None = None) -> dict | None:
-        """The newest snapshot, removed from the history; None when there is none."""
+    def plan_history_last(self, tid: str | None = None, match=None) -> tuple[int, dict] | None:
+        """(n, row): the newest row (for which `match(row)` holds, when given), left in the history;
+        None when there is none. A snapshot whose row is gone is dropped from the index on the way."""
         index = self._plan_history_index(tid)
-        snaps = list(index.get("snaps") or [])
-        while snaps:
-            n = snaps.pop()
-            plan = self.get_value(f"{PLAN_HIST_PREFIX}{n}", tid)
-            self.set_value(f"{PLAN_HIST_PREFIX}{n}", None, tid)
-            self.set_value("plan_history", {"seq": index.get("seq") or n, "snaps": snaps}, tid)
-            if plan is not None:
-                return plan
+        for n in reversed(list(index.get("snaps") or [])):
+            row = self.get_value(f"{PLAN_HIST_PREFIX}{n}", tid)
+            if row is None:
+                self.plan_history_remove(n, tid)
+                continue
+            if match is None or match(row):
+                return n, row
         return None
+
+    def plan_history_remove(self, n: int, tid: str | None = None) -> None:
+        """Remove snapshot `n` (plan_history_last's) from the history."""
+        index = self._plan_history_index(tid)
+        snaps = [x for x in index.get("snaps") or [] if x != n]
+        self.set_value(f"{PLAN_HIST_PREFIX}{n}", None, tid)
+        self.set_value("plan_history", {"seq": index.get("seq") or n, "snaps": snaps}, tid)
+
+    def plan_history_pop(self, tid: str | None = None, match=None) -> dict | None:
+        """The newest row (for which `match(row)` holds, when given), removed from the history; None
+        when there is none. Rows `match` passes over stay where they are."""
+        found = self.plan_history_last(tid, match)
+        if found is None:
+            return None
+        self.plan_history_remove(found[0], tid)
+        return found[1]
 
     def plan_history_clear(self, tid: str | None = None) -> None:
         scoped = self._scope(tid)
@@ -358,8 +456,8 @@ class Db:
             con.execute("delete from kv where k=?", (f"plan_history:{scoped}",))
 
     def set_board_plan(self, plan: dict, tid: str | None = None) -> None:
-        """Write the plan from a board edit or undo: the undo history stays."""
-        self._set(f"plan:{self._scope(tid)}", plan)
+        """Write the plan from a board edit or undo: the undo history stays. The rev moves (`_bump`)."""
+        self._set(f"plan:{self._scope(tid)}", self._bump(plan, tid))
 
     def get_org(self, kind: str, tid: str | None = None) -> dict | None:
         assert kind in ("live", "draft")

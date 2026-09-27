@@ -1,0 +1,60 @@
+      {#- The deployment board, on the admin page's Plan tab and on the department page (`department`
+          set): a head of department has one department, so no department select, no Lock
+          department (Submit department locks it) and no status beside the select. -#}
+      <div id="board" class="board">
+        <div class="board-bar">
+          {% if not department %}
+          <label class="board-dept-label" for="board-dept">Department <select id="board-dept"></select></label>
+          <span class="board-dept-status" id="board-dept-status"></span>
+          <button class="btn" id="board-reopen" type="button" title="Unlock the department so its head can change it again" hidden>Reopen</button>
+          {% endif %}
+          <div class="seg board-levels" id="board-levels" role="tablist" aria-label="Level"></div>
+          <div class="board-actions">
+            <button class="btn" id="board-add-row" type="button" title="A subject taught to every class of a level">Add subject</button>
+            <button class="btn" id="board-add-band" type="button" title="Option groups that run at the same time across some classes">Create band</button>
+            <button class="btn" id="board-lock-level" type="button">Lock level</button>
+            {% if not department %}
+            <button class="btn" id="board-lock-dept" type="button">Lock department</button>
+            {% endif %}
+            <button class="btn" id="board-undo" type="button" title="Take back the last change you made on the board">Undo</button>
+          </div>
+        </div>
+        <p class="board-hint" id="board-hint">Drag a <span data-word="person">teacher</span> from the tray onto a cell, or click a <span data-word="person">teacher</span> to pick them up and then click cells. Click a cell to split it, remove a <span data-word="person">teacher</span> or lock it.</p>
+        <div class="board-scroll"><table id="board-grid" class="board-grid"></table></div>
+        <div id="board-tray" class="board-tray" role="region" aria-label="Teacher tray">
+          <div class="board-tray-head">
+            <h3 id="board-tray-title">Teachers</h3>
+            <span class="eyebrow" id="board-tray-count"></span>
+            <input id="board-tray-search" type="search" placeholder="Find by name" aria-label="Find a teacher" autocomplete="off">
+            <div class="seg board-tray-filters" id="board-tray-filters" role="group" aria-label="Show">
+              {% if department %}
+              <button type="button" data-filter="everyone" class="on" title="Your department's teachers and those shared with it">All</button>
+              <button type="button" data-filter="home">Home department</button>
+              {% else %}
+              <button type="button" data-filter="home" class="on">All</button>
+              {% endif %}
+              <button type="button" data-filter="available">Available</button>
+              <button type="button" data-filter="full">Fully assigned</button>
+              <button type="button" data-filter="provisional">Provisional</button>
+              {% if not department %}
+              <button type="button" data-filter="everyone">All departments</button>
+              {% endif %}
+            </div>
+            <button class="btn" id="board-add-provisional" type="button" title="A placeholder to name later">+ Provisional <span data-word="person">teacher</span></button>
+            <button class="btn" id="board-tray-toggle" type="button" aria-expanded="true">Collapse</button>
+          </div>
+          <div class="board-legend" id="board-legend">
+            <span><i class="sw ok"></i>8p or more left</span>
+            <span><i class="sw amber"></i>under 8p</span>
+            <span><i class="sw orange"></i>under 4p</span>
+            <span><i class="sw none"></i>none left</span>
+            <span><i class="sw locked"></i>solid: locked</span>
+            <span><i class="sw open"></i>dashed: not locked</span>
+          </div>
+          <div class="board-cards" id="board-cards"></div>
+        </div>
+        <details id="board-activity" class="board-activity">
+          <summary>Activity <span class="eyebrow">who changed what on this department's board</span></summary>
+          <ul id="board-activity-list" class="board-activity-list"></ul>
+        </details>
+      </div>

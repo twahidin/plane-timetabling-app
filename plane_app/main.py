@@ -9,11 +9,13 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import auth
+from . import users
 from . import bookings
 from . import calendar as cal_mod
 from . import changes
@@ -30,6 +32,7 @@ from .llm import ProviderError, make_provider
 from . import periods
 from . import proposals
 from .plan import importer as plan_importer
+from .plan import model as plan_model
 from .plan.model import vocabulary_of
 from .periods_api import make_router as periods_router
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
@@ -40,7 +43,98 @@ from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
 LOGIN_MAX_FAILURES, LOGIN_WINDOW = 10, 15 * 60      # failed logins per client ip before a 429, seconds
+USER_MAX_FAILURES = 5          # failed logins per department username (from any ip), and failed current-password
+                               # checks per account on the password change, within LOGIN_WINDOW before a 429
+HASH_CONCURRENCY = 3           # at most this many login scrypt checks at once (each ~16 MB, tens of ms)
+HASH_MAX_WAITING = 20          # logins queued for a hash slot beyond this are answered 429 at once
+COUNTER_MAX_KEYS = 5000        # each failure-counter dict keeps at most this many keys (see _make_room)
+TOO_MANY = "Too many attempts, try again later."
 CHAT_LOCK_TIMEOUT = 60    # seconds a /api/chat request waits for another device's turn on this timetable
+
+
+class HashGate:
+    """Per app: runs password hash checks in the threadpool, a few at a time, so a burst of logins
+    can neither block the event loop nor take all the memory; and counts who is waiting. The
+    semaphore is made at first use on the running loop (never at import), and remade if the loop
+    changes, so it is never used from a loop it is not bound to. A slot is given back when the hash
+    really ends, not when the request does: a cancelled request's scrypt keeps its slot."""
+
+    def __init__(self):
+        self.waiting = 0
+        self._loop = self._slots = None
+        self._running: set[asyncio.Task] = set()     # keeps a cancelled request's hash task alive
+
+    def full(self) -> bool:
+        return self.waiting >= HASH_MAX_WAITING
+
+    async def run(self, fn, *args):
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop, self._slots = loop, asyncio.Semaphore(HASH_CONCURRENCY)
+        slots = self._slots
+        self.waiting += 1
+        try:
+            await slots.acquire()
+        finally:
+            self.waiting -= 1
+        # No await between the acquire and the task: once the slot is taken, the hash task exists and
+        # its done-callback is the only thing that gives the slot back.
+        task = asyncio.ensure_future(run_in_threadpool(fn, *args))
+        self._running.add(task)
+
+        def done(t: asyncio.Task) -> None:
+            self._running.discard(t)
+            slots.release()
+            if not t.cancelled():
+                t.exception()                          # retrieved: no "never retrieved" warning after a cancel
+        task.add_done_callback(done)
+        return await asyncio.shield(task)
+
+
+def _recent(times: deque | None, now: float) -> int:
+    """How many of `times` fall within the window ending now (older ones are dropped)."""
+    if times is None:
+        return 0
+    while times and now - times[0] > LOGIN_WINDOW:
+        times.popleft()
+    return len(times)
+
+
+def _make_room(counters: dict, key: str, now: float, limit: int) -> bool:
+    """Whether `key` can be counted: it is already there, or there is room, or room can be made.
+    Room is made from keys whose window has passed, then from the stalest keys below `limit`; a key
+    at or over its limit is never dropped (a flood of new names or addresses must not unlock it).
+    False when every key is locked: the caller refuses the attempt instead."""
+    if key in counters or len(counters) < COUNTER_MAX_KEYS:
+        return True
+    for k in [k for k, times in counters.items() if _recent(times, now) == 0]:
+        del counters[k]
+    for k in list(counters):                           # stalest first (_reserve moves a key to the end)
+        if len(counters) < COUNTER_MAX_KEYS:
+            break
+        if len(counters[k]) < limit:
+            del counters[k]
+    return len(counters) < COUNTER_MAX_KEYS
+
+
+def _reserve(counters: dict, key: str, now: float) -> None:
+    """Count an attempt before it is checked, so concurrent attempts cannot all pass the limit.
+    The key moves to the end (the freshest). Call `_make_room` first."""
+    times = counters.pop(key, None) or deque()
+    times.append(now)
+    counters[key] = times
+
+
+def _release(counters: dict, key: str, now: float) -> None:
+    """Take back a reservation (the attempt did not fail)."""
+    times = counters.get(key)
+    if times is not None:
+        try:
+            times.remove(now)
+        except ValueError:
+            pass
+        if not times:
+            counters.pop(key, None)
 
 
 def _unlink_quietly(path: str) -> None:
@@ -57,7 +151,7 @@ def _default_engine_factory(config: Config):
 
 
 def create_app(config: Config, db: Db, engine_factory=None, provider_factory=None) -> FastAPI:
-    app = FastAPI(title="plane-app", docs_url=None, redoc_url=None)
+    app = FastAPI(title="plane-app", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config, app.state.db = config, db
     app.state.engine_factory = engine_factory or _default_engine_factory(config)
     app.state.provider_factory = provider_factory or make_provider
@@ -66,7 +160,15 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     # at once must not interleave — a tool_use with its tool_result split across two concurrent
     # run_chat calls would otherwise land with a user message wedged between them (see history_for_provider).
     app.state.chat_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
-    app.state.login_failures: dict[str, deque] = defaultdict(deque)     # client ip -> failed-attempt times
+    # Failure counters: key -> attempt times within LOGIN_WINDOW. An attempt is reserved (counted)
+    # before its password is checked and taken back if it succeeds.
+    # (client ip, "admin" | "named"): department logins (typos included) never lock the admin's
+    # login out from behind the same address (a school's NAT), nor the other way round
+    app.state.login_failures: dict[tuple[str, str], deque] = {}
+    app.state.user_login_failures: dict[str, deque] = {}     # well-formed department username
+    app.state.password_failures: dict[str, deque] = {}       # account id -> wrong current passwords
+    app.state.hash_gate = HashGate()
+    password_failures_guard = threading.Lock()                          # held only briefly, never across an await
     app.state.solve_locks: dict[str, threading.Lock] = {}                # timetable id -> lock around start and promotion
     solve_locks_guard = threading.Lock()
 
@@ -109,30 +211,70 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         return templates.TemplateResponse(request, "login.html", {"error": None})
 
     def _client_ip(request: Request) -> str:
-        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        """The rightmost X-Forwarded-For entry: the hop our proxy appended, which the client cannot
+        choose (anything left of it is whatever the client sent). Without the header, the peer."""
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
         return forwarded or (request.client.host if request.client else "unknown")
 
-    @app.post("/login")
-    async def login(request: Request, password: str = Form("")):
-        ip, now = _client_ip(request), time.monotonic()
-        failures = app.state.login_failures[ip]
-        while failures and now - failures[0] > LOGIN_WINDOW:
-            failures.popleft()
-        if len(failures) >= LOGIN_MAX_FAILURES:
-            return templates.TemplateResponse(request, "login.html", {"error": "Too many attempts, try again later."}, status_code=429)
-        if not auth.constant_time_equals(password, config.admin_password):
-            failures.append(now)
-            if len(app.state.login_failures) > 1000:       # forget clients whose window has passed
-                for k in [k for k, dq in app.state.login_failures.items() if not dq or now - dq[-1] > LOGIN_WINDOW]:
-                    del app.state.login_failures[k]
-            await asyncio.sleep(1)
-            return templates.TemplateResponse(request, "login.html", {"error": "Wrong password."}, status_code=200)
-        app.state.login_failures.pop(ip, None)
-        resp = RedirectResponse("/", status_code=303)
+    def _set_session(request: Request, resp, sid: str, user: str = auth.ADMIN, v: int = 0) -> None:
         forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
         secure = request.url.scheme == "https" or forwarded_proto == "https"
-        resp.set_cookie(auth.COOKIE, auth.make_session_cookie(config.secret_key, auth.new_session_id()),
+        resp.set_cookie(auth.COOKIE, auth.make_session_cookie(config.secret_key, sid, user, v),
                         max_age=auth.MAX_AGE, httponly=True, samesite="lax", secure=secure)
+
+    def _check_account(uname: str | None, password: str) -> tuple[dict | None, bool]:
+        """(the account, whether the password is its own and it is active). Blocking (the users
+        store, scrypt): the login runs it through the HashGate. An unknown or malformed name costs
+        what a known one does."""
+        account = users.find_by_username(db, uname) if uname else None
+        if account is None:
+            users.burn_time(password)
+            return None, False
+        return account, users.verify_password(password, account["password_hash"]) and bool(account.get("active"))
+
+    @app.post("/login")
+    async def login(request: Request, username: str = Form(""), password: str = Form("")):
+        now = time.monotonic()
+        uname = username.strip().lower()
+        named = uname not in ("", auth.ADMIN)          # a department account (the admin has only the ip limit)
+        well_formed = named and bool(users.USERNAME_RE.match(uname))     # only these get a username counter
+        ip = (_client_ip(request), "named" if named else "admin")        # the ip counter, per kind of login
+
+        def refuse():
+            return templates.TemplateResponse(request, "login.html", {"error": TOO_MANY, "username": username}, status_code=429)
+        if _recent(app.state.login_failures.get(ip), now) >= LOGIN_MAX_FAILURES:
+            return refuse()
+        if well_formed and _recent(app.state.user_login_failures.get(uname), now) >= USER_MAX_FAILURES:
+            return refuse()
+        gate: HashGate = app.state.hash_gate
+        if named and gate.full():
+            return refuse()
+        if not _make_room(app.state.login_failures, ip, now, LOGIN_MAX_FAILURES):
+            return refuse()                            # every address counted is locked: add none
+        if well_formed and not _make_room(app.state.user_login_failures, uname, now, USER_MAX_FAILURES):
+            return refuse()
+        # reserve the attempt before any await: concurrent attempts see it and cannot all pass the limits
+        _reserve(app.state.login_failures, ip, now)
+        if well_formed:
+            _reserve(app.state.user_login_failures, uname, now)
+        account = None
+        if not named:                                  # the admin: today's single password
+            ok = auth.constant_time_equals(password, config.admin_password)
+        else:                                          # the account read and the hash, off the event loop
+            account, ok = await gate.run(_check_account, uname if well_formed else None, password)
+        if not ok:                                     # the reservations stand as the failure
+            await asyncio.sleep(1)
+            error = "Wrong password." if not uname else "Wrong username or password."
+            return templates.TemplateResponse(request, "login.html", {"error": error, "username": username}, status_code=200)
+        resp = RedirectResponse("/", status_code=303)
+        if account is None:
+            app.state.login_failures.pop(ip, None)     # only the admin's own login clears the admin ip count
+            _set_session(request, resp, auth.new_session_id())
+        else:
+            _release(app.state.login_failures, ip, now)
+            app.state.user_login_failures.pop(uname, None)
+            await run_in_threadpool(users.touch_login, db, account["id"])
+            _set_session(request, resp, auth.new_session_id(), account["id"], int(account.get("session_version", 0)))
         return resp
 
     @app.post("/logout")
@@ -141,9 +283,96 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         resp.delete_cookie(auth.COOKIE)
         return resp
 
+    # ---- who is logged in; department accounts -------------------------------
+    def _timetable_ref() -> dict:
+        cur = db.working_timetable()                    # an HOD's: the deployment timetable
+        return {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)}
+
+    @app.get("/api/me")
+    def me(who: auth.Principal = Depends(auth.require_user)):
+        return {"role": who.role, "name": who.name, "dept": who.dept, "must_change": who.must_change,
+                "timetable": _timetable_ref()}
+
+    @app.post("/api/me/password")
+    async def change_my_password(request: Request, body: dict, who: auth.Principal = Depends(auth.require_user)):
+        """Async: the scrypt work (the current password checked, the new one hashed) goes through
+        the login's HashGate, a few at a time and off the event loop."""
+        if who.is_admin:
+            raise HTTPException(400, "the admin password is set in ADMIN_PASSWORD, not here")
+        old, new = body.get("old"), body.get("new")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise HTTPException(400, "send the current password as old and the new one as new")
+        now = time.monotonic()
+        gate: HashGate = app.state.hash_gate
+        if gate.full():
+            raise HTTPException(429, TOO_MANY)
+        with password_failures_guard:          # reserve the attempt before checking: a burst cannot all pass
+            if _recent(app.state.password_failures.get(who.user_id), now) >= USER_MAX_FAILURES:
+                raise HTTPException(429, TOO_MANY)
+            if not _make_room(app.state.password_failures, who.user_id, now, USER_MAX_FAILURES):
+                raise HTTPException(429, TOO_MANY)
+            _reserve(app.state.password_failures, who.user_id, now)
+        try:
+            user = await gate.run(users.set_password, db, who.user_id, old, new)
+        except users.WrongPassword as e:       # the reservation stands as the failure
+            raise HTTPException(e.status, e.message)
+        except users.UserError as e:
+            with password_failures_guard:
+                _release(app.state.password_failures, who.user_id, now)
+            raise HTTPException(e.status, e.message)
+        with password_failures_guard:
+            app.state.password_failures.pop(who.user_id, None)
+        resp = JSONResponse({"ok": True, "must_change": False})
+        _set_session(request, resp, who.sid, user["id"], user["session_version"])     # this device stays logged in
+        return resp
+
+    def _user_error(e: users.UserError) -> HTTPException:
+        return HTTPException(e.status, e.message)
+
+    @app.get("/api/users")
+    def list_users(sid: str = Depends(auth.require_session)):
+        return {"users": users.list_users(db)}
+
+    @app.post("/api/users")
+    def create_user(body: dict, sid: str = Depends(auth.require_session)):
+        try:
+            user, temp = users.create_user(db, body.get("username"), body.get("name"), body.get("dept"))
+        except users.UserError as e:
+            raise _user_error(e)
+        return {"user": user, "temp_password": temp}      # shown once: only its hash is kept
+
+    @app.patch("/api/users/{uid}")
+    def update_user(uid: str, body: dict, sid: str = Depends(auth.require_session)):
+        unknown = sorted(set(body) - set(users.EDITABLE))
+        if unknown:
+            raise HTTPException(400, f"cannot change {', '.join(unknown)}")
+        try:
+            return {"user": users.update_user(db, uid, **body)}
+        except users.UserError as e:
+            raise _user_error(e)
+
+    @app.post("/api/users/{uid}/reset")
+    def reset_user_password(uid: str, sid: str = Depends(auth.require_session)):
+        try:
+            return {"temp_password": users.reset_password(db, uid)}
+        except users.UserError as e:
+            raise _user_error(e)
+
+    @app.delete("/api/users/{uid}")
+    def delete_user(uid: str, sid: str = Depends(auth.require_session)):
+        try:
+            users.delete_user(db, uid)
+        except users.UserError as e:
+            raise _user_error(e)
+        return {"ok": True}
+
     # ---- pages ---------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, sid: str = Depends(auth.require_session)):
+    def index(request: Request, who: auth.Principal = Depends(auth.require_user)):
+        if not who.is_admin:            # a head of department: their department's page
+            return templates.TemplateResponse(request, "department.html", {
+                "department": True, "name": who.name, "dept": who.dept or "",
+                "timetable": _timetable_ref()["name"], "must_change": bool(who.must_change)})
         return templates.TemplateResponse(request, "index.html", {})
 
     @app.get("/settings", response_class=HTMLResponse)
@@ -159,11 +388,48 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     def put_settings(body: dict, sid: str = Depends(auth.require_session)):
         return mask_settings(db.store_settings(body))
 
+    # ---- the deployment timetable (the one department accounts work on) --------
+    def _deployment_payload() -> dict:
+        """The deployment timetable as it is in effect (`stored`: fixed, else it follows the
+        selection), and each department's sign-off in its plan, whichever timetable the admin has
+        open: {dept: {status, by, at, accounts: active accounts of the department}}."""
+        tid = users.deployment_timetable(db)
+        plan = db.get_value("plan", tid=tid) or {}
+        accounts: dict[str, int] = {}
+        for u in users.list_users(db):
+            if u.get("active") and u.get("dept"):
+                accounts[u["dept"]] = accounts.get(u["dept"], 0) + 1
+        depts = ({str(r.get("dept")) for r in plan.get("requirements") or [] if isinstance(r, dict) and r.get("dept")}
+                 | {str(s.get("dept")) for s in plan.get("staff") or [] if isinstance(s, dict) and s.get("dept")}
+                 | set(accounts))
+        departments = {d: {**plan_model.department_status(plan, d), "accounts": accounts.get(d, 0)} for d in sorted(depts)}
+        return {"timetable": tid, "name": next((t["name"] for t in db.timetables() if t["id"] == tid), tid),
+                "stored": db.deployment_stored(), "rev": int(plan.get("rev") or 0), "departments": departments}
+
+    @app.get("/api/deployment")
+    def get_deployment(sid: str = Depends(auth.require_session)):
+        return _deployment_payload()
+
+    @app.put("/api/deployment")
+    def put_deployment(body: dict, sid: str = Depends(auth.require_session)):
+        tid = body.get("timetable")
+        if not isinstance(tid, str) or not tid:
+            raise HTTPException(400, "send the timetable id as timetable")
+        if tid not in {t["id"] for t in db.timetables()}:
+            raise HTTPException(404, f"no timetable {tid}")
+        if db.get_value("period_base", tid=tid):
+            raise HTTPException(400, "a period timetable cannot be the deployment timetable: choose its normal timetable")
+        try:
+            db.set_deployment_timetable(tid)
+        except KeyError:                               # deleted in between
+            raise HTTPException(404, f"no timetable {tid}")
+        return _deployment_payload()
+
     # ---- timetable data ------------------------------------------------------
     @app.get("/api/solid")
-    def get_solid(sid: str = Depends(auth.require_session)):
-        live, draft = db.get_org("live"), db.get_org("draft")
-        cur = db.current_timetable()
+    def get_solid(who: auth.Principal = Depends(auth.require_user)):
+        live, draft = db.get_org("live"), (db.get_org("draft") if who.is_admin else None)     # an HOD sees no draft
+        cur = db.working_timetable()
         return {"organisation": live, "draft": summarise(draft) if draft else None, "check": db.get_value("last_check"),
                 "labels": db.get_settings()["time"]["labels"],
                 "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)},
@@ -192,7 +458,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             if name.lower().endswith(".xlsx") and (plan_importer.is_deployment_workbook(data)
                                                     or plan_importer.is_generic_workbook(data)):
                 # a staff-deployment or generic duties workbook: import into the curriculum plan, not the draft
-                _, _, note = import_plan_workbook(db, name, data)
+                # in a worker thread: it waits on the plan lock, which must not stall the event loop
+                _, _, note = await run_in_threadpool(import_plan_workbook, db, name, data)
                 plan_notes.append({"section": "plan", "source": name, "note": note})
                 plan_events.append({"kind": "plan_updated"})
                 continue
@@ -312,12 +579,16 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     def _delete_instance(tid: str) -> None:
         """Delete a timetable, unlink its uploads and drop its locks. KeyError when unknown,
-        ValueError when it is the last one. A period's record goes from its base first, so no period
-        ever points at a gone timetable."""
+        ValueError when it is the last one or the deployment timetable while an active department
+        account works on it. A period's record goes from its base first, so no period ever points at
+        a gone timetable."""
+        if tid == users.deployment_timetable(db) and users.any_active(db):
+            raise ValueError("department accounts work on this timetable: choose another deployment timetable first")
         if len(db.timetables()) > 1:                  # the last one is refused below: touch nothing then
             periods.forget_instance(db, tid)
             periods.release_instances(db, tid)        # a deleted base's periods become ordinary timetables
         paths = db.delete_timetable(tid)
+        db.forget_deployment_timetable(tid)          # the next account read fixes another (never the drifting selection)
         for path in paths:
             _unlink_quietly(path)
         with solve_locks_guard:                       # the deleted timetable's locks are never needed again

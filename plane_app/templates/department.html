@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ dept }} &middot; Plane Timetabling</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+{#- A head of department's page (spec docs/superpowers/specs/2026-09-27-department-accounts-design.md §5):
+    their department's board and the live timetable, read-only. Its scripts call only the routes a
+    department account may reach; nothing of the admin page is loaded. Until the temporary password
+    is changed, only the password form. -#}
+<body data-mode="department" data-user="{{ name }}" data-must-change="{{ 'true' if must_change else 'false' }}">
+
+<header class="top" id="dept-header">
+  <div>
+    <div class="eyebrow">Department</div>
+    <h1 id="dept-name">{{ name }} &middot; {{ dept }}</h1>
+    <p class="lede" id="dept-timetable">Timetable: {{ timetable }}</p>
+  </div>
+  <div class="links">
+    {% if not must_change %}
+    <button class="btn" id="dept-password" type="button">Change password</button>
+    {% endif %}
+    <form method="post" action="/logout"><button class="btn" id="dept-logout" type="submit">Log out</button></form>
+  </div>
+</header>
+
+{% macro password_form(first) %}
+  <form method="dialog" id="password-form" class="password-form" autocomplete="on">
+    <h2>{{ 'Choose your password' if first else 'Change password' }}</h2>
+    <p class="dialog-text">{{ 'Before anything else, replace the temporary password you were given with one of your own: at least 10 characters.' if first else 'At least 10 characters. Your other browsers are logged out; this one stays logged in.' }}</p>
+    <label for="password-old">{{ 'Temporary password' if first else 'Current password' }} <input id="password-old" type="password" autocomplete="current-password" required></label>
+    <label for="password-new">New password <input id="password-new" type="password" autocomplete="new-password" minlength="10" required></label>
+    <label for="password-again">New password again <input id="password-again" type="password" autocomplete="new-password" minlength="10" required></label>
+    <p id="password-error" class="error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      {% if not first %}<button type="button" class="btn" id="password-cancel">Cancel</button>{% endif %}
+      <button type="submit" class="btn primary" id="password-ok">Save password</button>
+    </div>
+  </form>
+{% endmacro %}
+
+{% if must_change %}
+<main class="password-first dialog" id="password-first">
+  {{ password_form(true) }}
+</main>
+<script src="/static/department.js"></script>
+{% else %}
+
+<div id="notes" class="notes dept-notes"></div>
+
+<section class="dept-sign-off" aria-label="Sign-off">
+  <p id="dept-status" class="dept-status" role="status"></p>
+  <button class="btn primary" id="dept-submit" type="button" title="Lock every row of the department and tell the timetabler it is done">Submit department</button>
+  <span id="dept-submit-confirm" class="dept-submit-confirm" hidden></span>
+</section>
+
+<div id="dept-issues" class="plan-issues"></div>
+
+<section class="dept-board">
+  {% include "partials/board.html" %}
+</section>
+
+<section class="dept-timetable" aria-label="Live timetable">
+  <div class="section-title">Timetable <span class="eyebrow">the live timetable, read only</span></div>
+  <div id="grid-view">
+    <div class="grid-pick">
+      <select id="grid-kind" aria-label="What to show"></select>
+      <input id="grid-filter" type="text" placeholder="type to find" aria-label="Find" autocomplete="off">
+      <select id="grid-target" aria-label="Which one"></select>
+      <label class="grid-week">Week of <input id="grid-date" type="date" aria-label="Week of"></label>
+      <span class="seg grid-zoom" role="group" aria-label="Cell size">
+        <button id="grid-zoom-out" type="button" title="Narrower columns">&minus;</button>
+        <button id="grid-zoom-fit" type="button" title="Fit the page width">Fit</button>
+        <button id="grid-zoom-in" type="button" title="Wider columns">+</button>
+      </span>
+      <button class="btn" id="grid-print" type="button" title="Open this timetable as a page to print">Print this</button>
+    </div>
+    <div class="tt-wrap"><div id="grid"><p class="empty">No timetable yet.</p></div></div>
+  </div>
+</section>
+
+{% include "partials/board_dialogs.html" %}
+
+<dialog id="password-dialog" class="dialog">
+  {{ password_form(false) }}
+</dialog>
+
+<script src="/static/words.js"></script>
+<script src="/static/board-tray.js"></script>
+<script src="/static/board-forms.js"></script>
+<script src="/static/board-status.js"></script>
+<script src="/static/board.js"></script>
+<script src="/static/grid.js"></script>
+<script src="/static/department.js"></script>
+{% endif %}
+</body>
+</html>

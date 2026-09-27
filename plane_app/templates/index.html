@@ -204,46 +204,7 @@
         <button id="plan-view-board" class="on" type="button" role="tab" aria-selected="true">Board</button>
         <button id="plan-view-tables" type="button" role="tab" aria-selected="false">Tables</button>
       </div>
-      <div id="board" class="board">
-        <div class="board-bar">
-          <label class="board-dept-label" for="board-dept">Department <select id="board-dept"></select></label>
-          <div class="seg board-levels" id="board-levels" role="tablist" aria-label="Level"></div>
-          <div class="board-actions">
-            <button class="btn" id="board-add-row" type="button" title="A subject taught to every class of a level">Add subject</button>
-            <button class="btn" id="board-add-band" type="button" title="Option groups that run at the same time across some classes">Create band</button>
-            <button class="btn" id="board-lock-level" type="button">Lock level</button>
-            <button class="btn" id="board-lock-dept" type="button">Lock department</button>
-            <button class="btn" id="board-undo" type="button" title="Take back the last change made on the board">Undo</button>
-          </div>
-        </div>
-        <p class="board-hint" id="board-hint">Drag a <span data-word="person">teacher</span> from the tray onto a cell, or click a <span data-word="person">teacher</span> to pick them up and then click cells. Click a cell to split it, remove a <span data-word="person">teacher</span> or lock it.</p>
-        <div class="board-scroll"><table id="board-grid" class="board-grid"></table></div>
-        <div id="board-tray" class="board-tray" role="region" aria-label="Teacher tray">
-          <div class="board-tray-head">
-            <h3 id="board-tray-title">Teachers</h3>
-            <span class="eyebrow" id="board-tray-count"></span>
-            <input id="board-tray-search" type="search" placeholder="Find by name" aria-label="Find a teacher" autocomplete="off">
-            <div class="seg board-tray-filters" id="board-tray-filters" role="group" aria-label="Show">
-              <button type="button" data-filter="home" class="on">All</button>
-              <button type="button" data-filter="available">Available</button>
-              <button type="button" data-filter="full">Fully assigned</button>
-              <button type="button" data-filter="provisional">Provisional</button>
-              <button type="button" data-filter="everyone">All departments</button>
-            </div>
-            <button class="btn" id="board-add-provisional" type="button" title="A placeholder to name later">+ Provisional <span data-word="person">teacher</span></button>
-            <button class="btn" id="board-tray-toggle" type="button" aria-expanded="true">Collapse</button>
-          </div>
-          <div class="board-legend" id="board-legend">
-            <span><i class="sw ok"></i>8p or more left</span>
-            <span><i class="sw amber"></i>under 8p</span>
-            <span><i class="sw orange"></i>under 4p</span>
-            <span><i class="sw none"></i>none left</span>
-            <span><i class="sw locked"></i>solid: locked</span>
-            <span><i class="sw open"></i>dashed: not locked</span>
-          </div>
-          <div class="board-cards" id="board-cards"></div>
-        </div>
-      </div>
+      {% include "partials/board.html" %}
       <div id="plan-tables" hidden>
       <div class="plan-section">
         <h3>Requirements</h3>
@@ -364,108 +325,7 @@
   </form>
 </dialog>
 
-<dialog id="board-cell-dialog" class="dialog board-dialog">
-  <form method="dialog" id="board-cell-form">
-    <h2 id="board-cell-title">Cell</h2>
-    <p class="dialog-text" id="board-cell-meta"></p>
-    <ul class="board-parts" id="board-cell-parts"></ul>
-    <fieldset class="board-split">
-      <legend>Split the periods</legend>
-      <div class="board-split-options" id="board-split-options"></div>
-      <div class="board-shares" id="board-shares"></div>
-      <button type="button" class="btn" id="board-share-add">Add a share</button>
-    </fieldset>
-    <p id="board-cell-error" class="error" hidden></p>
-    <div class="dialog-actions">
-      <button type="button" class="btn" id="board-cell-lock">Lock cell</button>
-      <button type="button" class="btn" id="board-cell-close">Close</button>
-      <button type="button" class="btn primary" id="board-split-save">Save split</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="board-staff-dialog" class="dialog board-dialog">
-  <form method="dialog" id="board-staff-form">
-    <h2 id="board-staff-title">Teacher</h2>
-    <label for="board-staff-name">Name <input id="board-staff-name" type="text" autocomplete="off" maxlength="80"></label>
-    <div class="board-two">
-      <label for="board-staff-short">Short <input id="board-staff-short" type="text" autocomplete="off" maxlength="12"></label>
-      <label for="board-staff-dept">Department <input id="board-staff-dept" type="text" autocomplete="off" maxlength="40"></label>
-    </div>
-    <label for="board-staff-allowance">Periods a cycle before reductions <span class="relief-hint">leave blank to work it out from the load factor</span>
-      <input id="board-staff-allowance" type="number" min="0" step="1"></label>
-    <fieldset class="board-reductions">
-      <legend>Reductions <span class="relief-hint">for example HOD 8, Senior Teacher 4</span></legend>
-      <div id="board-staff-reductions"></div>
-      <button type="button" class="btn" id="board-reduction-add">Add a reduction</button>
-    </fieldset>
-    <label class="board-check"><input id="board-staff-provisional" type="checkbox"> Provisional: a placeholder to name later</label>
-    <p id="board-staff-error" class="error" hidden></p>
-    <div class="dialog-actions">
-      <button type="button" class="btn" id="board-staff-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="board-staff-ok">Save</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="board-row-dialog" class="dialog board-dialog">
-  <form method="dialog" id="board-row-form">
-    <h2>Add subject</h2>
-    <p class="dialog-text">One row on the board: the subject for each class you tick, not yet assigned.</p>
-    <div class="board-two">
-      <label for="board-row-dept">Department <input id="board-row-dept" type="text" autocomplete="off" maxlength="40"></label>
-      <label for="board-row-level">Level <input id="board-row-level" type="text" autocomplete="off" maxlength="20"></label>
-    </div>
-    <label for="board-row-subject">Subject <input id="board-row-subject" type="text" autocomplete="off" maxlength="80" placeholder="for example Mathematics"></label>
-    <fieldset class="board-lessons" id="board-row-lessons">
-      <legend>Lessons a cycle</legend>
-      <label>Single <input type="number" min="0" step="1" data-len="1" value="0"></label>
-      <label>Double <input type="number" min="0" step="1" data-len="2" value="0"></label>
-      <label>Triple <input type="number" min="0" step="1" data-len="3" value="0"></label>
-    </fieldset>
-    <fieldset class="board-classes">
-      <legend>Classes</legend>
-      <div id="board-row-classes"></div>
-      <label for="board-row-more">Other classes <input id="board-row-more" type="text" autocomplete="off" placeholder="for example 1E, 1F"></label>
-    </fieldset>
-    <p id="board-row-error" class="error" hidden></p>
-    <div class="dialog-actions">
-      <button type="button" class="btn" id="board-row-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="board-row-ok">Add</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="board-band-dialog" class="dialog board-dialog">
-  <form method="dialog" id="board-band-form">
-    <h2>Create band</h2>
-    <p class="dialog-text">Option groups drawn from some classes that run at the same time, such as two English sets across 1A and 1B. Leave a group's code blank to have one made up.</p>
-    <div class="board-two">
-      <label for="board-band-subject">Subject <input id="board-band-subject" type="text" autocomplete="off" maxlength="80"></label>
-      <label for="board-band-level">Level <input id="board-band-level" type="text" autocomplete="off" maxlength="20"></label>
-    </div>
-    <fieldset class="board-lessons" id="board-band-lessons">
-      <legend>Lessons a cycle, for each group</legend>
-      <label>Single <input type="number" min="0" step="1" data-len="1" value="0"></label>
-      <label>Double <input type="number" min="0" step="1" data-len="2" value="0"></label>
-      <label>Triple <input type="number" min="0" step="1" data-len="3" value="0"></label>
-    </fieldset>
-    <fieldset class="board-classes">
-      <legend>Classes the groups draw from</legend>
-      <div id="board-band-classes"></div>
-    </fieldset>
-    <fieldset class="board-groups">
-      <legend>Groups</legend>
-      <div id="board-band-groups"></div>
-      <button type="button" class="btn" id="board-band-group-add">Add a group</button>
-    </fieldset>
-    <p id="board-band-error" class="error" hidden></p>
-    <div class="dialog-actions">
-      <button type="button" class="btn" id="board-band-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="board-band-ok">Create</button>
-    </div>
-  </form>
-</dialog>
+{% include "partials/board_dialogs.html" %}
 
 <dialog id="print-dialog" class="dialog">
   <form method="dialog" id="print-form">
@@ -496,6 +356,7 @@
 <script src="/static/plan.js"></script>
 <script src="/static/board-tray.js"></script>
 <script src="/static/board-forms.js"></script>
+<script src="/static/board-status.js"></script>
 <script src="/static/board.js"></script>
 <script src="/static/wizard.js"></script>
 <script src="/static/timetables.js"></script>

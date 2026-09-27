@@ -148,7 +148,7 @@ def view_in_force(db, kind: str, id: str, view: str, date: str | None) -> tuple[
     selected live timetable, or for `view == "week"` the week of `date` (default today) in the
     timetable in force on that date."""
     if view != "week":
-        return db.current_timetable(), resolve_grid(live_org(db), kind, id)
+        return db.working_timetable(), resolve_grid(live_org(db), kind, id)
     date = date or _date.today().isoformat()
     base, tid, org = _in_force(db, date)
     [week] = _weeks(db, base, org, [resolve_grid(org, kind, id)], date, lambda o: _built(KINDS[kind], o, id))
@@ -166,7 +166,7 @@ def all_for_view(db, kind: str, view: str, date: str | None) -> tuple[str, list[
     if kind not in ALL:
         raise HTTPException(404, f"unknown kind {kind}")
     if view != "week":
-        return db.current_timetable(), G.all_grids(live_org(db), kind)
+        return db.working_timetable(), G.all_grids(live_org(db), kind)
     date = date or _date.today().isoformat()
     base, tid, org = _in_force(db, date)
     return tid, _weeks(db, base, org, G.all_grids(org, kind), date, lambda o: G.all_grids(o, kind))
@@ -189,7 +189,7 @@ def make_router(db, templates) -> APIRouter:
             if spec is None:
                 raise HTTPException(404, "no such custom timetable")
             grids = [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
-            return db.current_timetable(), apply_week(db, org, grids, view, date)
+            return db.working_timetable(), apply_week(db, org, grids, view, date)
         return grids_for_view(db, kind, id, view, date)
 
     def respond(tid_grids: tuple[str, list[G.Grid]], as_pdf: bool, filename: str):
@@ -221,23 +221,23 @@ def make_router(db, templates) -> APIRouter:
             rows=rows, since=since_words, generated=generated, timetable=name))
 
     @r.get("/print/all/{kind}.pdf")
-    def all_pdf(kind: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
+    def all_pdf(kind: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         return respond(all_for_view(db, kind, view, date), True, f"all-{kind}")
 
     @r.get("/print/all/{kind}")
-    def all_html(kind: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
+    def all_html(kind: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         return respond(all_for_view(db, kind, view, date), False, f"all-{kind}")
 
     @r.get("/print/{kind}/{id}.pdf")
-    def one_pdf(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
+    def one_pdf(kind: str, id: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         return respond(grids_for(kind, id, view, date), True, f"{kind}-{id}")
 
     @r.get("/print/{kind}/{id}")
-    def one_html(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
+    def one_html(kind: str, id: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         return respond(grids_for(kind, id, view, date), False, f"{kind}-{id}")
 
     @r.get("/api/print/targets")
-    def targets(sid: str = Depends(auth.require_session)):
+    def targets(who: auth.Principal = Depends(auth.require_user)):
         org = live()
         groups = org.get("groups", [])
         return {"teachers": [{"id": p["id"], "name": p["name"]} for p in sorted(org["persons"], key=lambda p: p["name"]) if str(p.get("role", "")).startswith("Teacher")],

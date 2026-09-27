@@ -47,7 +47,7 @@ def make_router(db) -> APIRouter:
     r = APIRouter()
 
     @r.get("/api/grid/{kind}/{id}")
-    def one(kind: str, id: str, view: str = "cycle", date: str | None = None, sid: str = Depends(auth.require_session)):
+    def one(kind: str, id: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         tid, grid = view_in_force(db, kind, id, view, date)     # a week in a period: that timetable's marks
         checks: dict[str, dict[str, list[str]]] = {}
 

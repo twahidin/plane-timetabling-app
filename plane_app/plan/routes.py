@@ -6,11 +6,13 @@ a draft organisation on generate. No LLM is involved here; the workbook importer
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
-from .. import auth
+from .. import auth, users
 from ..config import MAX_UPLOAD
 from . import board as B
 from . import export as X
@@ -43,8 +45,28 @@ def _current_plan(db) -> dict:
     return db.get_value("plan") or M.empty_plan()
 
 
-def _issues_for(db, plan: dict) -> list[Issue]:
-    return plan_issues(plan, db.get_org("live"), db.get_settings())
+def _issues_for(db, plan: dict, who: auth.Principal | None = None) -> list[Issue]:
+    """The plan's issues as `who` sees them (None: the admin). The admin also hears which
+    departments with an account have not submitted; a head of department hears only about their
+    own department's requirements and teachers, and of a teacher shared in from another department
+    only their share issues in this one (spec 2026-09-27 §4): nothing else of theirs is the head's."""
+    issues = plan_issues(plan, db.get_org("live"), db.get_settings())
+    if who is None or who.is_admin:
+        return issues + _unsubmitted(db, plan)
+    dept = who.dept
+    mine = ({r.get("id") for r in plan.get("requirements") or [] if r.get("dept") == dept}
+            | {s.get("id") for s in plan.get("staff") or [] if (s.get("dept") or "") == dept})
+    shared = {s.get("id") for s in plan.get("staff") or []
+              if (s.get("dept") or "") != dept and M.available_in(s, dept)}
+    return [i for i in issues
+            if (i.where in mine and i.dept in (None, dept)) or (i.where in shared and i.dept == dept)]
+
+
+def _unsubmitted(db, plan: dict) -> list[Issue]:
+    with_accounts = {u["dept"] for u in users.list_users(db) if u.get("active") and u.get("dept")}
+    in_plan = {r.get("dept") for r in plan.get("requirements") or []}
+    return [Issue("warn", d, f"{d} not yet submitted") for d in sorted(with_accounts & in_plan)
+            if M.department_status(plan, d)["status"] != "submitted"]
 
 
 def _decode_csv(data: bytes) -> str:
@@ -56,7 +78,46 @@ def _decode_csv(data: bytes) -> str:
 
 # POST /api/plan/board/<action>: the board's edits, each a pure plan -> plan function
 BOARD_ACTIONS = {"assign": B.assign, "unassign": B.unassign, "split": B.split, "lock": B.lock,
-                 "row": B.add_row, "band": B.add_band, "staff": B.save_staff}
+                 "row": B.add_row, "band": B.add_band, "staff": B.save_staff,
+                 "submit": B.submit, "reopen": B.reopen}
+
+# Board undo rows are the changes of one edit, not whole plans, and undo is per user: the history
+# keeps more of them than db's default so one busy account does not push another's off the end.
+BOARD_HISTORY_KEEP = 100
+ACTIVITY_KEEP = 300          # kv "plan_activity" (per timetable): the last this many board changes
+
+
+def _undo_row(row: dict, who: auth.Principal) -> bool:
+    """A history row `who`'s undo takes: their own change, or a row from before per-user undo (a
+    whole plan, no `changes`), which is only ever dropped, never applied."""
+    return "changes" not in row or row.get("user") == who.user_id
+
+
+def _who_changed(db, rev_at) -> str:
+    """Who made the plan's rev `rev_at`, from the activity log; a change made off the board (an
+    upload, a patch, chat) is the timetabler's."""
+    log = db.get_value("plan_activity") or []
+    for entry in reversed(log):
+        if entry.get("rev") == rev_at:
+            return entry.get("who") or "Someone else"
+    oldest = next((e.get("rev") for e in log if isinstance(e.get("rev"), int)), None)
+    return "The timetabler" if oldest is None or oldest < rev_at else "Someone else"   # else: off the log
+
+
+def _record(db, who: auth.Principal, dept, text: str, rev: int, undo: bool = False) -> None:
+    log = list(db.get_value("plan_activity") or [])
+    entry = {"when": datetime.now(timezone.utc).isoformat(timespec="seconds"), "who": who.name, "user": who.user_id,
+             "dept": dept or "", "text": text, "rev": rev}
+    if undo:
+        entry["undo"] = True
+    log.append(entry)
+    db.set_value("plan_activity", log[-ACTIVITY_KEEP:])
+
+
+def _own_undos(db, who: auth.Principal) -> frozenset:
+    """The plan revs `who`'s own undos made (board.undo's `own`)."""
+    return frozenset(e.get("rev") for e in db.get_value("plan_activity") or []
+                     if e.get("undo") and e.get("user") == who.user_id)
 
 
 async def _json_object(request: Request, *, optional: bool = False) -> dict:
@@ -73,29 +134,31 @@ async def _json_object(request: Request, *, optional: bool = False) -> dict:
 
 
 def import_workbook(db, filename: str, data: bytes, sizes_texts: tuple[str, ...] = ()) -> tuple[dict, list[Issue], str]:
-    """Import a deployment or generic duties workbook into the stored plan (merging with what is
+    """Blocking (it takes the plan lock): an async route runs it with run_in_threadpool.
+    Import a deployment or generic duties workbook into the stored plan (merging with what is
     there), apply any sizes CSVs on top, store the result and return (plan, issues, note). Shared
     between the dedicated upload route and the general `/api/upload` handler's workbook routing.
     A generic workbook is detected by its sheet names (`is_generic_workbook`); everything else
     that reaches here is read as a staff-deployment workbook, same as before the start wizard."""
     org = db.get_org("live")
-    # the stored plan is merged into, so one that does not read (a requirement stored before a
-    # limit, or written directly) is a 422 naming it, never a 500; the plan stays as it was
-    try:
-        if IMP.is_generic_workbook(data):
-            plan, parse_issues = IMP.read_generic_workbook(data, org, _current_plan(db), filename,
-                                                           db.get_settings())
-        else:
-            plan, parse_issues = IMP.read_workbook(data, org, _current_plan(db), filename)
-        sizes: dict[str, int] = {}
-        for text in sizes_texts:
-            sizes.update(IMP.read_sizes_csv(text))
-        if sizes:
-            plan = IMP.apply_sizes(plan, sizes)
-    except M.PlanError as e:
-        raise HTTPException(422, f"the plan does not read, so the workbook was not merged into it: {e}. "
-                                 f"Fix it in the Tables view first")
-    db.set_value("plan", plan)
+    with db.plan_lock():
+        # the stored plan is merged into, so one that does not read (a requirement stored before a
+        # limit, or written directly) is a 422 naming it, never a 500; the plan stays as it was
+        try:
+            if IMP.is_generic_workbook(data):
+                plan, parse_issues = IMP.read_generic_workbook(data, org, _current_plan(db), filename,
+                                                               db.get_settings())
+            else:
+                plan, parse_issues = IMP.read_workbook(data, org, _current_plan(db), filename)
+            sizes: dict[str, int] = {}
+            for text in sizes_texts:
+                sizes.update(IMP.read_sizes_csv(text))
+            if sizes:
+                plan = IMP.apply_sizes(plan, sizes)
+        except M.PlanError as e:
+            raise HTTPException(422, f"the plan does not read, so the workbook was not merged into it: {e}. "
+                                     f"Fix it in the Tables view first")
+        db.set_value("plan", plan)
 
     seen: set[tuple[str, str, str]] = set()
     issues: list[Issue] = []
@@ -120,12 +183,13 @@ def make_router(db) -> APIRouter:
 
     @r.patch("/api/plan")
     def patch_plan(body: dict, sid: str = Depends(auth.require_session)):
-        plan = _current_plan(db)
-        try:
-            new = M.apply_patch(plan, (body or {}).get("patch") or {})
-        except M.PlanError as e:
-            raise HTTPException(422, str(e))
-        db.set_value("plan", new)
+        with db.plan_lock():
+            plan = _current_plan(db)
+            try:
+                new = M.apply_patch(plan, (body or {}).get("patch") or {})
+            except M.PlanError as e:
+                raise HTTPException(422, str(e))
+            db.set_value("plan", new)
         return {"plan": new, "issues": [_issue_dict(i) for i in _issues_for(db, new)]}
 
     @r.post("/api/plan/upload")
@@ -142,7 +206,9 @@ def make_router(db) -> APIRouter:
             if len(sdata) > MAX_UPLOAD:
                 raise HTTPException(400, f"{s.filename or 'file'} is over 20 MB")
             sizes_texts.append(_decode_csv(sdata))
-        plan, issues, note = import_workbook(db, file.filename or "upload", data, tuple(sizes_texts))
+        # in a worker thread: the plan lock may be held, and waiting for it must not stall the event loop
+        plan, issues, note = await run_in_threadpool(import_workbook, db, file.filename or "upload", data,
+                                                     tuple(sizes_texts))
         return {"plan": plan, "issues": [_issue_dict(i) for i in issues], "note": note}
 
     @r.post("/api/plan/generate")
@@ -177,54 +243,121 @@ def make_router(db) -> APIRouter:
             raise HTTPException(422, str(e))
         return _xlsx(data, f"plan-{M.plan_slug(name)}.xlsx")
 
-    def _board(plan: dict, dept, level) -> dict:
+    def _board(plan: dict, dept, level, who: auth.Principal | None = None) -> dict:
         """The board for (dept, level), or the first department and level when an edit or undo
         took that one away; with the plan's issues."""
         settings = db.get_settings()
         try:
-            out = B.view(plan, settings, dept, level)
+            out = B.view(plan, settings, dept, level, principal=who)
         except B.BoardError:
             try:
-                out = B.view(plan, settings, dept)
+                out = B.view(plan, settings, dept, principal=who)
             except B.BoardError:
-                out = B.view(plan, settings)
-        out.update(_board_issues(_issues_for(db, plan)))
+                out = B.view(plan, settings, principal=who)
+        out.update(_board_issues(_issues_for(db, plan, who)))
         return out
 
+    def _stale(plan: dict, body: dict, who: auth.Principal, e: B.StaleError, tail: str) -> JSONResponse:
+        """409 naming who changed the requirement, with the current board for the page to show."""
+        detail = f"{_who_changed(db, e.rev_at)} changed {e.what} {tail}"
+        return JSONResponse({"detail": detail, "board": _board(plan, *B.where(plan, body), who)}, status_code=409)
+
     @r.get("/api/plan/board")
-    def get_board(dept: str | None = None, level: str | None = None, sid: str = Depends(auth.require_session)):
+    def get_board(dept: str | None = None, level: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         plan = _current_plan(db)
         try:
-            out = B.view(plan, db.get_settings(), dept or None, level or None)
+            out = B.view(plan, db.get_settings(), dept or None, level or None, principal=who)
         except B.BoardError as e:
             raise HTTPException(e.status, e.message)
-        out.update(_board_issues(_issues_for(db, plan)))
+        out.update(_board_issues(_issues_for(db, plan, who)))
         return out
+
+    def _dept_of(plan: dict, body: dict, who: auth.Principal):
+        return who.dept if not who.is_admin else B.department_of(plan, body)
+
+    def _edit(edit, action: str, body: dict, who: auth.Principal):
+        """Run in a worker thread. Only the read-modify-write holds the plan lock; the board sent
+        back (issues and all) is built after it is released."""
+        with db.plan_lock():                  # the working timetable's: an HOD's and the admin's plan alike
+            plan = _current_plan(db)
+            try:
+                new = edit(plan, db.get_settings(), body, principal=who)
+            except B.StaleError as e:
+                stale = e
+            except B.BoardError as e:
+                raise HTTPException(e.status, e.message)
+            else:
+                stale = None
+                before = M.normalise(plan)    # the edit read it, so it reads
+                dept = _dept_of(before, body, who) or ""
+                text = B.summary(action, before, body, dept)
+                db.set_board_plan(new)        # keeps the history (any other plan write clears it); moves the rev
+                db.plan_history_push({"user": who.user_id, "rev": new["rev"], "dept": dept, "text": text,
+                                      "changes": M.plan_changes(before, new)}, keep=BOARD_HISTORY_KEEP)
+                _record(db, who, dept, text, new["rev"])
+        if stale is not None:
+            return _stale(plan, body, who, stale, "a moment ago")
+        return _board(new, *B.where(plan, body), who)
+
+    def _undo(body: dict, who: auth.Principal):
+        """Undo `who`'s newest board change. The row leaves the history only when the undo is made,
+        or when it is stale (StaleError, UndoGone: someone else's change is in the way, so it can
+        never be undone); any other refusal (a lock, a share, the department) leaves it there to try
+        again."""
+        with db.plan_lock():
+            plan = _current_plan(db)
+            if not who.is_admin and M.department_status(plan, who.dept)["status"] == "submitted":
+                raise HTTPException(403, f"{who.dept} is submitted: ask the timetabler to reopen it")
+            while True:
+                found = db.plan_history_last(match=lambda row: _undo_row(row, who))
+                if found is None:
+                    raise HTTPException(404, "nothing to undo")
+                n, row = found
+                if "changes" in row:
+                    break
+                db.plan_history_remove(n)     # a whole plan from before per-user undo: dropped, never applied
+            stale = None
+            try:
+                new = B.undo(plan, row, principal=who, own=_own_undos(db, who), settings=db.get_settings())
+            except B.StaleError as e:         # the row is dropped: someone else's change is in the way
+                stale = e
+            except B.UndoGone as e:           # the same, for an item without a rev_at to name who
+                db.plan_history_remove(n)
+                raise HTTPException(e.status, e.message)
+            except B.BoardError as e:         # a lock, a share, the department today: the row stays
+                raise HTTPException(e.status, e.message)
+            db.plan_history_remove(n)
+            if stale is None:
+                dept, text = row.get("dept") or "", row.get("text") or "a change"
+                db.set_board_plan(new)
+                _record(db, who, dept, f"undid: {text}", new["rev"], undo=True)
+        if stale is not None:
+            return _stale(plan, body, who, stale, "after your change: it cannot be undone")
+        return _board(new, *B.where(new, body), who)
 
     # before /api/plan/board/{action}, which would otherwise take "undo" as an action
     @r.post("/api/plan/board/undo")
-    async def board_undo(request: Request, sid: str = Depends(auth.require_session)):
+    async def board_undo(request: Request, who: auth.Principal = Depends(auth.require_user)):
         body = await _json_object(request, optional=True)
-        plan = db.plan_history_pop()
-        if plan is None:
-            raise HTTPException(404, "nothing to undo")
-        db.set_board_plan(plan)
-        return _board(plan, *B.where(plan, body))
+        # in a worker thread (with the request's pin): the plan lock may be held by another writer
+        return await run_in_threadpool(_undo, body, who)
 
     @r.post("/api/plan/board/{action}")
-    async def board_edit(action: str, request: Request, sid: str = Depends(auth.require_session)):
+    async def board_edit(action: str, request: Request, who: auth.Principal = Depends(auth.require_user)):
         edit = BOARD_ACTIONS.get(action)
         if edit is None:
             raise HTTPException(404, f"no board action {action!r}")
         body = await _json_object(request)
-        plan = _current_plan(db)
-        try:
-            new = edit(plan, db.get_settings(), body)
-        except B.BoardError as e:
-            raise HTTPException(e.status, e.message)
-        db.plan_history_push(plan)          # one snapshot row; the oldest past 20 is deleted
-        db.set_board_plan(new)              # keeps the history (any other plan write clears it)
-        return _board(new, *B.where(plan, body))
+        return await run_in_threadpool(_edit, edit, action, body, who)
+
+    @r.get("/api/plan/activity")
+    def plan_activity(dept: str | None = None, who: auth.Principal = Depends(auth.require_user)):
+        """The board's changes, newest first: any department's (or all) for the admin, a head of
+        department's own department's for them."""
+        if not who.is_admin:
+            dept = who.dept
+        log = db.get_value("plan_activity") or []
+        return {"activity": [a for a in reversed(log) if not dept or a.get("dept") == dept]}
 
     @r.get("/api/plan/issues")
     def get_issues(sid: str = Depends(auth.require_session)):

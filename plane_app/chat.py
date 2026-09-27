@@ -610,9 +610,10 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                 return json.dumps({"items": items[:40], "more": len(items) - 40})
             return json.dumps({"items": items})
         if call.name == "plan_update":
-            p = plan or empty_plan()
-            new = apply_plan_patch(p, call.args.get("patch") or {})
-            db.set_value("plan", new)
+            with db.plan_lock():              # the board's lock: no writer loses another's change
+                p = db.get_value("plan") or empty_plan()
+                new = apply_plan_patch(p, call.args.get("patch") or {})
+                db.set_value("plan", new)
             issues = _plan_issues_for(db, new)
             events.append({"kind": "plan_updated"})
             return json.dumps({"ok": True, "summary": _plan_summary_dict(db, new, issues),

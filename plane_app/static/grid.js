@@ -160,8 +160,10 @@
   };
 
   // Stage tabs: the grid is the default; the 3D model is the expert view. The canvas is sized from
-  // its box, so showing it again needs a resize.
+  // its box, so showing it again needs a resize. The department page has the grid alone.
+  const staged = !!el('stage-tabs');
   window.showStage = (which) => {
+    if (!staged) return;
     const grid = which !== 'model';
     el('grid-view').hidden = !grid; el('model-view').hidden = grid;
     el('stage-grid').classList.toggle('on', grid); el('stage-model').classList.toggle('on', !grid);
@@ -169,8 +171,10 @@
     store.set('plane.stageTab', grid ? 'grid' : 'model');
     if (!grid && window.resizeModel) window.resizeModel();
   };
-  el('stage-grid').addEventListener('click', () => window.showStage('grid'));
-  el('stage-model').addEventListener('click', () => window.showStage('model'));
+  if (staged) {
+    el('stage-grid').addEventListener('click', () => window.showStage('grid'));
+    el('stage-model').addEventListener('click', () => window.showStage('model'));
+  }
   el('grid-kind').addEventListener('change', () => { current.kind = el('grid-kind').value; current.id = null; el('grid-filter').value = ''; fillTargets(); remember(); render(); });
   el('grid-filter').addEventListener('input', () => { fillTargets(); remember(); render(); });
   el('grid-target').addEventListener('change', () => { current.id = el('grid-target').value; remember(); render(); });

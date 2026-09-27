@@ -14,7 +14,8 @@
   </div>
   <form method="post" action="/login" class="card">
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <label>Password <input type="password" name="password" id="password" autofocus autocomplete="current-password"></label>
+    <label>Username <input type="text" name="username" id="username" value="{{ username or '' }}" autofocus autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Leave blank for the timetabler"></label>
+    <label>Password <input type="password" name="password" id="password" autocomplete="current-password"></label>
     <div><button class="btn primary" type="submit">Log in</button></div>
   </form>
 </main>

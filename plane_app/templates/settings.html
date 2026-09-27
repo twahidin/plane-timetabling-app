@@ -20,6 +20,49 @@
   </div>
 </header>
 
+<section id="accounts" class="form accounts" aria-labelledby="accounts-title">
+  <fieldset>
+    <legend id="accounts-title">Departments &amp; accounts</legend>
+    <p class="accounts-lede">Heads of department log in with their own username and password and work on their department's board in one timetable, the one chosen here. They cannot reach anything else.</p>
+    <label class="accounts-deployment" for="deployment-timetable">Timetable heads of department work on
+      <select id="deployment-timetable"></select></label>
+    <span class="msg-line" id="deployment-msg"></span>
+
+    <h3 class="accounts-h">Accounts</h3>
+    <div class="tablewrap"><table class="grid accounts-table" id="accounts-table"></table></div>
+    <div class="accounts-actions">
+      <button class="btn" id="accounts-add" type="button">Add account</button>
+      <span class="msg-line" id="accounts-msg"></span>
+    </div>
+    <div id="accounts-new" class="accounts-new" hidden>
+      <label for="account-username">Username <span class="help">3 to 32 lowercase letters, digits, dots or hyphens</span><input id="account-username" type="text" autocomplete="off" maxlength="32" placeholder="for example lim.maths"></label>
+      <label for="account-name">Name <input id="account-name" type="text" autocomplete="off" maxlength="80"></label>
+      <label for="account-dept">Department <span class="help">as the plan names it, for example MATH</span><input id="account-dept" type="text" autocomplete="off" maxlength="40"></label>
+      <div class="accounts-actions">
+        <button class="btn primary" id="account-create" type="button">Create account</button>
+        <button class="btn" id="account-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+
+    <h3 class="accounts-h">Departments</h3>
+    <div id="departments-status" class="departments-status"></div>
+  </fieldset>
+</section>
+
+<dialog id="temp-password-dialog" class="dialog">
+  <form method="dialog">
+    <h2>Temporary password</h2>
+    <p class="dialog-text" id="temp-password-for"></p>
+    <p class="temp-password"><code id="temp-password"></code></p>
+    <p class="dialog-text">Copy it now: it will not be shown again. They choose their own password the first time they log in.</p>
+    <p class="msg-line" id="temp-password-msg"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="temp-password-copy">Copy</button>
+      <button type="submit" class="btn primary">Done</button>
+    </div>
+  </form>
+</dialog>
+
 <form id="settings-form" class="form" autocomplete="off">
   <fieldset>
     <legend>Time grid</legend>
@@ -76,5 +119,6 @@
 </form>
 
 <script src="/static/settings.js"></script>
+<script src="/static/accounts.js"></script>
 </body>
 </html>

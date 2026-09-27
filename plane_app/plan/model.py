@@ -176,6 +176,18 @@ def _normalise_reductions(raw, person_id: str) -> list[dict]:
     return out
 
 
+def _normalise_shares(raw, person_id: str) -> dict[str, int]:
+    """{dept: periods}: the periods a cycle a person gives each department other than (or as well
+    as) their own (spec 2026-09-27-department-accounts-design.md §4)."""
+    out: dict[str, int] = {}
+    for dept, periods in as_dict(raw, f"staff {person_id} shares").items():
+        name = str(dept).strip() if isinstance(dept, (str, int)) and not isinstance(dept, bool) else ""
+        if not name:
+            raise PlanError(f"staff {person_id} shares: {dept!r} must name a department")
+        out[name] = _whole_number(periods, f"staff {person_id} shares[{name}]")
+    return dict(sorted(out.items()))
+
+
 def _normalise_staff(item: dict) -> dict:
     item = as_dict(item, "staff item")
     person_id = _check_id(item.get("id"), "staff")
@@ -195,7 +207,11 @@ def _normalise_staff(item: dict) -> dict:
         "reductions": _normalise_reductions(item.get("reductions"), person_id),
         # a placeholder to be named later ("New MATH teacher 1")
         "provisional": _flag(item.get("provisional"), f"staff {person_id} provisional"),
+        # periods a cycle given to other departments; a department named here may assign them
+        "shares": _normalise_shares(item.get("shares"), person_id),
         "source_hash": item.get("source_hash"),
+        # the plan rev that last changed the entry (bump_rev): a staff edit made from an older view is stale
+        "rev_at": _rev(item.get("rev_at"), f"staff {person_id} rev_at"),
     }
 
 
@@ -263,6 +279,8 @@ def _normalise_requirement(item: dict) -> dict:
         # until it is unlocked (apply_patch); generation ignores it
         "locked": _flag(item.get("locked"), f"requirement {req_id} locked"),
         "source_hash": item.get("source_hash"),
+        # the plan rev that last changed it (bump_rev): a board edit made from an older view is stale
+        "rev_at": _rev(item.get("rev_at"), f"requirement {req_id} rev_at"),
     }
 
 
@@ -291,6 +309,31 @@ def _normalise_rules(raw) -> dict:
     }
 
 
+def _rev(value, name: str) -> int:
+    return 0 if value is None else _whole_number(value, name)
+
+
+DEPARTMENT_STATUSES = ("open", "submitted")
+
+
+def _normalise_departments(raw) -> dict:
+    """{dept: {status, by, at}}: a head of department's sign-off (spec 2026-09-27 §4)."""
+    out = {}
+    for dept, entry in as_dict(raw, "departments").items():
+        entry = as_dict(entry, f"departments[{dept}]")
+        status = entry.get("status") or "open"
+        if status not in DEPARTMENT_STATUSES:
+            raise PlanError(f"departments[{dept}]: status {status!r} must be open or submitted")
+        out[str(dept)] = {"status": status, "by": entry.get("by"), "at": entry.get("at")}
+    return dict(sorted(out.items()))
+
+
+def department_status(plan: dict, dept) -> dict:
+    """The sign-off of one department; open when the plan says nothing of it."""
+    entry = ((plan.get("departments") or {}).get(str(dept or "")) or {}) if dept is not None else {}
+    return {"status": entry.get("status") or "open", "by": entry.get("by"), "at": entry.get("at")}
+
+
 def normalise(plan: dict) -> dict:
     plan = as_dict(plan, "plan")
     out = {
@@ -303,6 +346,9 @@ def normalise(plan: dict) -> dict:
         "rules": _normalise_rules(plan.get("rules")),
         "vocabulary": _normalise_vocabulary(plan.get("vocabulary")),
         "source": plan.get("source"),
+        "departments": _normalise_departments(plan.get("departments")),
+        # bumped by every write of the stored plan (bump_rev)
+        "rev": _rev(plan.get("rev"), "rev"),
     }
     out["staff"].sort(key=lambda x: x["id"])
     out["classes"].sort(key=lambda x: x["code"])
@@ -553,6 +599,9 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
                           else imported_vocabulary)
     out["version"] = imported.get("version", existing_n["version"])
     out["source"] = imported.get("source", existing_n["source"])
+    # no workbook carries the sign-off or the rev
+    out["departments"] = existing_n["departments"]
+    out["rev"] = existing_n["rev"]
 
     out = normalise(out)
 
@@ -590,6 +639,7 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
             s["allowance"] = old["allowance"]
             s["reductions"] = old["reductions"]
             s["provisional"] = old["provisional"]
+            s["shares"] = old["shares"]
         _keep_uncarried(old, s, uncarried.get("staff", ()))
 
     _keep_locked(existing_n, out, kept)
@@ -681,4 +731,92 @@ def split_lessons(lessons: dict, shares: list[int]) -> list[dict]:
     for length, s in zip(lengths, placed):
         key = str(length)
         out[s][key] = out[s].get(key, 0) + 1
+    return out
+
+
+# ---------------------------------------------------------------------------
+# department shares (spec docs/superpowers/specs/2026-09-27-department-accounts-design.md §4)
+# ---------------------------------------------------------------------------
+
+def available_in(staff: dict, dept) -> bool:
+    """A teacher is available to a department that is their home, or that they give a share to."""
+    dept = str(dept or "")
+    return bool(dept) and ((staff.get("dept") or "") == dept or dept in (staff.get("shares") or {}))
+
+
+def capacity_in(staff: dict, dept, settings: dict) -> float:
+    """Periods a cycle a teacher may be given in one department: the share when one is set; at home,
+    the effective allowance less the shares given to other departments (never below 0); elsewhere 0."""
+    dept = str(dept or "")
+    shares = staff.get("shares") or {}
+    if dept in shares:
+        return shares[dept]
+    if (staff.get("dept") or "") == dept:
+        given = sum(int(n) for d, n in shares.items() if d != dept)
+        return max(0, effective_allowance(staff, settings) - given)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# revs and changes (spec 2026-09-27 §4 "Concurrent edits")
+# ---------------------------------------------------------------------------
+
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def content(item):
+    """An item as compared for a change: without its rev_at."""
+    if not isinstance(item, dict):
+        return item
+    return {k: v for k, v in item.items() if k != "rev_at"}
+
+
+def bump_rev(old, new):
+    """The one place a plan's rev moves: `new` (about to be stored over `old`) gets a rev past both
+    of theirs, and each of its requirements and staff entries a `rev_at`: its rev_at in `old` when
+    its content (all but rev_at) is unchanged, else the new rev. Changes `new` in place and returns
+    it; every writer of the stored plan goes through it (db.set_value / db.set_board_plan)."""
+    if not isinstance(new, dict):
+        return new
+    old = old if isinstance(old, dict) else {}
+    rev = max(_int(old.get("rev")), _int(new.get("rev"))) + 1
+    new["rev"] = rev
+    for section in REV_SECTIONS:
+        before = {x.get("id"): x for x in old.get(section) or [] if isinstance(x, dict)}
+        for x in new.get(section) or []:
+            if not isinstance(x, dict):
+                continue
+            prev = before.get(x.get("id"))
+            x["rev_at"] = _int(prev.get("rev_at")) if prev is not None and content(prev) == content(x) else rev
+    return new
+
+
+# the sections whose items carry a rev_at (bump_rev): a board edit to one changed since its view is stale
+REV_SECTIONS = ("requirements", "staff")
+
+
+KEYED_SECTIONS = (("staff", "id"), ("classes", "code"), ("divisions", "id"), ("requirements", "id"),
+                  ("bands", "id"))
+
+
+def plan_changes(before: dict, after: dict) -> dict:
+    """{section: {key: [before item or None, after item or None]}} for every item that differs
+    (rev_at aside) between two plans, the departments' sign-off included; sections without a change
+    are left out."""
+    out: dict = {}
+    for section, key in KEYED_SECTIONS:
+        b = {x.get(key): x for x in before.get(section) or [] if isinstance(x, dict)}
+        a = {x.get(key): x for x in after.get(section) or [] if isinstance(x, dict)}
+        changed = {k: [b.get(k), a.get(k)] for k in sorted(set(b) | set(a), key=str)
+                   if content(b.get(k)) != content(a.get(k))}
+        if changed:
+            out[section] = changed
+    bd, ad = before.get("departments") or {}, after.get("departments") or {}
+    changed = {k: [bd.get(k), ad.get(k)] for k in sorted(set(bd) | set(ad)) if bd.get(k) != ad.get(k)}
+    if changed:
+        out["departments"] = changed
     return out

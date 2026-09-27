@@ -115,7 +115,7 @@ def _parse(s) -> _date:
 
 def base_tid(db, tid=None) -> str:
     """The base of a period timetable, else the timetable itself."""
-    tid = tid or db.current_timetable()
+    tid = tid or db.working_timetable()
     return db.get_value("period_base", tid=tid) or tid
 
 

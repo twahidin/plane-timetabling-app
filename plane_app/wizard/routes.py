@@ -38,8 +38,9 @@ def instantiate(db, template: dict, knobs: dict) -> dict:
     settings = I.settings_for(template, knobs, db.get_settings())
     db.store_settings({"time": settings["time"], "rules": settings["rules"]})
     db.set_value("wizard", {"template": template["id"], "knobs": knobs, "chosen_at": _time.time()})
-    plan = db.get_value("plan") or M.empty_plan()
-    db.set_value("plan", M.normalise({**plan, "vocabulary": dict(template["vocabulary"])}))
+    with db.plan_lock():
+        plan = db.get_value("plan") or M.empty_plan()
+        db.set_value("plan", M.normalise({**plan, "vocabulary": dict(template["vocabulary"])}))
     return {"facts": I.facts(template, knobs), "downloads": dict(DOWNLOADS)}
 
 

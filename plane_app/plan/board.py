@@ -5,12 +5,19 @@ with their loads, and the edits the board makes.
 `view` reads a normalised plan in one pass over its requirements and one over its staff, so a
 school's plan (thousands of requirements) renders without per-cell scans. Every mutation is pure:
 plan in, a new normalised plan out, or `BoardError(status, message)`. Each re-runs the plan's lock
-check against the plan it was given, so no board edit can change a locked requirement."""
+check against the plan it was given, so no board edit can change a locked requirement.
+
+Department accounts (spec docs/superpowers/specs/2026-09-27-department-accounts-design.md §4): `view`
+and every mutation take the `principal` (auth.Principal, or None for the admin). A head of
+department sees and changes only their own department, within their teachers' department shares,
+and not while it is submitted; a mutation that carries the plan `rev` its view was built from is
+refused (StaleError) when a requirement it touches changed after that rev."""
 from __future__ import annotations
 
 import copy
 import re
 from collections import Counter
+from datetime import datetime, timezone
 
 from . import importer as IMP
 from . import model as M
@@ -21,6 +28,32 @@ class BoardError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+class StaleError(BoardError):
+    """409: `req` (a requirement, or a staff entry named by `what`) changed at plan rev `rev_at`,
+    after the rev the edit's view was built from (or, for an undo, after the change being undone).
+    The route names who changed it and sends the current board with the error."""
+    def __init__(self, req: dict, rev_at: int, what: str | None = None):
+        self.what = what or named(req)
+        super().__init__(409, f"{self.what} was changed a moment ago")
+        self.req = req
+        self.rev_at = rev_at
+
+
+class UndoGone(BoardError):
+    """409: something an undo row changed (not a requirement or a teacher, whose rev_at makes it a
+    StaleError naming who) has been changed again since. Like a StaleError, the row can never be
+    undone, so the route drops it."""
+
+
+def is_hod(principal) -> bool:
+    """A department account (the admin, or no principal at all, is not)."""
+    return principal is not None and not principal.is_admin
+
+
+def _who(principal) -> str:
+    return principal.name if principal is not None else "Timetabler"
 
 
 # ---------------------------------------------------------------------------
@@ -131,10 +164,12 @@ def _part_time(staff: dict, n_slots: int) -> bool:
     return covered < n_slots
 
 
-def view(plan: dict, settings: dict, dept: str | None = None, level: str | None = None) -> dict:
+def view(plan: dict, settings: dict, dept: str | None = None, level: str | None = None,
+         principal=None) -> dict:
     """The board JSON of spec §4 for one department and level tab (default: the first of each).
     `level` may be a tab ("1") or a full level ("1G3", read as its tab). BoardError 404 for a
-    department or level the plan does not have."""
+    department or level the plan does not have. For a head of department (`principal`) the
+    department is always theirs, and the tray lists only the teachers available to it."""
     index: dict[str, dict[str, dict[str, dict[str, list]]]] = {}
     tab_classes: dict[str, set] = {}
     load: Counter = Counter()
@@ -155,7 +190,11 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
 
     staff = plan.get("staff") or []
     departments = sorted(set(index) | {str(s.get("dept")) for s in staff if s.get("dept")})
-    if dept is None:
+    hod = is_hod(principal)
+    if hod:
+        dept = str(principal.dept or "")
+        departments = [dept]
+    elif dept is None:
         dept = departments[0] if departments else None
     elif dept not in departments:
         raise BoardError(404, f"no department {dept!r}")
@@ -205,6 +244,19 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
     n_slots = len(((settings or {}).get("time") or {}).get("labels") or [])
     tray = []
     for s in staff:
+        available = dept is not None and M.available_in(s, dept)
+        if hod and not available:
+            continue
+        home = (s.get("dept") or "") == dept
+        if hod and not home:
+            # another department's teacher shared in: only what the card needs to place them here,
+            # nothing of their own department's (reductions, allowance, load elsewhere)
+            tray.append({"id": s["id"], "name": s.get("name") or "", "short": s.get("short") or "",
+                         "dept": s.get("dept") or "", "home": False, "available": available,
+                         "shares": {k: n for k, n in (s.get("shares") or {}).items() if k == dept},
+                         "capacity_here": _plain(M.capacity_in(s, dept, settings)),
+                         "assigned_here": load_dept[(s["id"], dept)]})
+            continue
         tray.append({"id": s["id"], "name": s.get("name") or "", "short": s.get("short") or "",
                      "dept": s.get("dept") or "",
                      "allowance": _plain(M.base_allowance(s, settings)),
@@ -214,13 +266,22 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
                      "effective": _plain(M.effective_allowance(s, settings)),
                      "assigned": load[s["id"]], "assigned_here": load_dept[(s["id"], dept)],
                      "provisional": bool(s.get("provisional")), "part_time": _part_time(s, n_slots),
-                     "home": (s.get("dept") or "") == dept})
+                     "home": home,
+                     # a head of department sees only the share given to their own department
+                     "shares": ({k: n for k, n in (s.get("shares") or {}).items() if k == dept} if hod
+                                else dict(s.get("shares") or {})),
+                     "available": available,
+                     # periods a cycle this teacher may be given in the department on screen
+                     "capacity_here": _plain(M.capacity_in(s, dept, settings)) if dept is not None else 0})
     tray.sort(key=lambda t: (not t["home"], t["dept"] if not t["home"] else "", t["name"].lower(), t["id"]))
 
     # every requirement of the department locked, whichever level is on screen: "Unlock department"
     return {"departments": departments, "levels": levels, "dept": dept, "level": level,
             "dept_locked": bool(tabs) and dept not in unlocked_depts,
-            "classes": classes, "rows": rows, "tray": tray}
+            "classes": classes, "rows": rows, "tray": tray,
+            "rev": int(plan.get("rev") or 0),
+            "department_status": M.department_status(plan, dept),
+            "department_statuses": {d: M.department_status(plan, d)["status"] for d in departments}}
 
 
 def where(plan: dict, body: dict) -> tuple[str | None, str | None]:
@@ -251,16 +312,206 @@ def where(plan: dict, body: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
+def department_of(plan: dict, body: dict) -> str | None:
+    """The department a board request changes, by what it names (never by its `view`, which only
+    picks the board it returns): a teacher's own department for a staff edit, else `where`'s."""
+    body = body if isinstance(body, dict) else {}
+    staff_id = body.get("id")
+    if isinstance(staff_id, str):
+        person = next((s for s in plan.get("staff") or [] if s.get("id") == staff_id), None)
+        if person is not None:
+            return str(person.get("dept") or "")
+    return where(plan, {k: v for k, v in body.items() if k != "view"})[0]
+
+
+# ---------------------------------------------------------------------------
+# department scope, shares and revs (spec 2026-09-27 §4)
+# ---------------------------------------------------------------------------
+
+# what a head of department may change about a teacher of their own department ("provisional" only
+# from yes to no: naming a placeholder)
+HOD_STAFF_FIELDS = ("name", "short", "reductions", "provisional")
+
+
+def _not_submitted(plan: dict, dept) -> None:
+    if M.department_status(plan, dept)["status"] == "submitted":
+        raise BoardError(403, f"{dept} is submitted: ask the timetabler to reopen it")
+
+
+def _key_name(key: str, row: bool = False) -> str:
+    parts = key.split("|")
+    fields = dict(zip(("dept", "level", "subject", "grouping"), parts))
+    if not row and len(parts) > 4:
+        fields["classes"] = parts[4].split(",")
+    return named(fields)
+
+
+def _body_label(plan: dict, body: dict) -> str | None:
+    """What a request names, for a person to read, or None."""
+    scope = body.get("scope") if isinstance(body.get("scope"), dict) else {}
+    for key, row in ((body.get("cell"), False), (scope.get("cell"), False), (scope.get("row"), True)):
+        if isinstance(key, str) and key:
+            return _key_name(key, row)
+    for field in ("req", "id"):
+        value = body.get(field)
+        if isinstance(value, str):
+            section = "requirements" if field == "req" else "staff"
+            item = next((x for x in plan.get(section) or [] if x.get("id") == value), None)
+            if item is not None:
+                return named(item) if field == "req" else _staff_name(plan, value)
+    return None
+
+
+def _scope_of_body(plan: dict, body: dict, dept: str) -> None:
+    other = department_of(plan, body)
+    if other is not None and other != dept:
+        label = _body_label(plan, body)
+        raise BoardError(403, f"{label} belongs to {other or 'no department'}" if label
+                         else f"This belongs to {other or 'no department'}: you can change only {dept}")
+
+
+def _belongs(what: str, other) -> BoardError:
+    return BoardError(403, f"{what} belongs to {other or 'no department'}")
+
+
+def _scope_of_changes(before: dict, after: dict, changes: dict, dept: str) -> None:
+    """Everything a head of department's edit changed is their department's (spec §4)."""
+    for b, a in changes.get("requirements", {}).values():
+        for r in (b, a):
+            if r is not None and r["dept"] != dept:
+                raise _belongs(named(r), r["dept"])
+    for staff_id, (b, a) in changes.get("staff", {}).items():
+        person = a or b
+        name = str(person.get("name") or "").strip() or staff_id
+        if b is None:
+            if a["dept"] != dept:
+                raise _belongs(name, a["dept"])
+            if not a["provisional"]:
+                raise BoardError(403, "only the timetabler adds a named teacher: add a provisional one")
+            if a["allowance"] is not None or a["shares"]:
+                raise BoardError(403, "only the timetabler sets a teacher's allowance and shares")
+            continue
+        if b["dept"] != dept:
+            raise _belongs(name, b["dept"])
+        if a is None:
+            raise BoardError(403, "only the timetabler removes a teacher")
+        for field in sorted((set(a) | set(b)) - {"rev_at"}):
+            if field not in HOD_STAFF_FIELDS and a.get(field) != b.get(field):
+                raise BoardError(403, f"only the timetabler changes a teacher's {field.replace('_', ' ')}")
+        if a["provisional"] and not b["provisional"]:
+            raise BoardError(403, f"only the timetabler makes {name} provisional")
+    for code, (b, _a) in changes.get("classes", {}).items():
+        if b is None:
+            raise BoardError(403, f"ask the timetabler to add class {code}")
+        raise BoardError(403, f"only the timetabler changes class {code}")
+    for div_id, (b, a) in changes.get("divisions", {}).items():
+        if b is None:
+            raise BoardError(403, f"ask the timetabler to add a division of {', '.join(map(str, a['classes']))}")
+        raise BoardError(403, f"only the timetabler changes division {div_id}")
+    depts = {r["id"]: r["dept"] for r in (*before["requirements"], *after["requirements"])}
+    for band_id, (b, a) in changes.get("bands", {}).items():
+        options = [o for band in (b, a) if band is not None for o in band["options"]]
+        other = next((depts.get(o) for o in options if depts.get(o) != dept), None)
+        if other is not None or any(o not in depts for o in options):
+            raise _belongs(f"band {band_id}", other)
+    for other in changes.get("departments", {}):
+        if other != dept:
+            raise _belongs(other, other)
+
+
+def _dept_loads(plan: dict) -> Counter:
+    load: Counter = Counter()
+    for r in plan["requirements"]:
+        for t in r["teachers"]:
+            load[(t, r["dept"])] += _periods(r)
+    return load
+
+
+def _check_shares(before: dict, after: dict, settings: dict) -> None:
+    """A head of department gives their teachers periods only within what each may be given in the
+    department (model.capacity_in); a teacher not available to it at all is not theirs to give."""
+    staff = {s["id"]: s for s in after["staff"]}
+    was = _dept_loads(before)
+    for (t, d), n in sorted(_dept_loads(after).items()):
+        prev = was.get((t, d), 0)
+        person = staff.get(t)
+        if n <= prev or person is None:
+            continue
+        name = _staff_name(after, t)
+        if not M.available_in(person, d):
+            raise BoardError(403, f"{name} is not available to {d}: ask the timetabler for a share")
+        cap = M.capacity_in(person, d, settings)
+        if n > cap:
+            if prev >= cap:
+                raise BoardError(409, f"{name}'s {d} share is full: {_plain(prev)} of {_plain(cap)}")
+            raise BoardError(409, f"{name}'s {d} share would be over: {_plain(n)} of {_plain(cap)}")
+
+
+def _client_rev(body: dict, required: bool, current: int = 0) -> int | None:
+    """The plan rev the client's board was built from. A rev ahead of the plan's own could only
+    come from a made-up body and would skip the stale check, so it is refused."""
+    rev = body.get("rev")
+    if rev is None:
+        if required:
+            raise BoardError(400, "rev is required: reload the board")
+        return None
+    if isinstance(rev, bool) or not isinstance(rev, int) or rev < 0:
+        raise BoardError(400, "rev must be a whole number")
+    if rev > current:
+        raise BoardError(400, "rev is ahead of the plan: reload the board")
+    return rev
+
+
+def _fresh(reqs, rev: int) -> None:
+    """StaleError for the most recently changed of `reqs` whose rev_at is past `rev`."""
+    stale = [r for r in reqs if r is not None and int(r.get("rev_at") or 0) > rev]
+    if stale:
+        newest = max(stale, key=lambda r: (int(r.get("rev_at") or 0), r["id"]))
+        raise StaleError(newest, int(newest["rev_at"]))
+
+
+def _fresh_staff(people, rev: int) -> None:
+    """StaleError for the most recently changed of the staff entries `people` whose rev_at is past
+    `rev` (a teacher edited since the view the edit was made from)."""
+    stale = [s for s in people if s is not None and int(s.get("rev_at") or 0) > rev]
+    if stale:
+        newest = max(stale, key=lambda s: (int(s.get("rev_at") or 0), s["id"]))
+        raise StaleError(newest, int(newest["rev_at"]), str(newest.get("name") or "").strip() or newest["id"])
+
+
+def _staff_named_by_body(plan: dict, body: dict) -> list[dict]:
+    """The staff entry a request names outright (a teacher edit's `id`)."""
+    staff_id = body.get("id")
+    return [s for s in plan["staff"] if isinstance(staff_id, str) and s["id"] == staff_id]
+
+
+def _named_by_body(plan: dict, body: dict) -> list[dict]:
+    """The requirements a request names outright: its cell's or its req."""
+    scope = body.get("scope") if isinstance(body.get("scope"), dict) else {}
+    keys = {k for k in (body.get("cell"), scope.get("cell")) if isinstance(k, str)}
+    req = body.get("req")
+    return [r for r in plan["requirements"] if cell_key(r) in keys or (isinstance(req, str) and r["id"] == req)]
+
+
 # ---------------------------------------------------------------------------
 # mutations
 # ---------------------------------------------------------------------------
 
-def _mutation(fn):
-    """`run(plan, settings, body)`: `fn(work, settings, **body)` on a deep copy of the normalised
-    plan, then the result normalised (PlanError: 400) and the lock check re-run against the plan as
-    it was (PlanError: 409). The body is one dict (a JSON object); `fn` takes `work` and `settings`
-    positional-only, so no body key can land on them."""
-    def run(plan: dict, settings: dict, body: dict | None = None) -> dict:
+def _mutation(fn=None, *, takes_principal: bool = False):
+    """`run(plan, settings, body, principal=None)`: `fn(work, settings, **body)` on a deep copy of
+    the normalised plan (`fn(work, settings, principal, **body)` with `takes_principal`), then the
+    result normalised (PlanError: 400) and the lock check re-run against the plan as it was
+    (PlanError: 409). The body is one dict (a JSON object); `fn` takes `work` and `settings`
+    positional-only, so no body key can land on them.
+
+    Around it (spec 2026-09-27 §4): for a head of department, 403 while their department is
+    submitted and for anything outside it, and 403/409 past a teacher's department share; for
+    anyone whose body carries `rev` (a head of department's must), StaleError when a requirement or
+    teacher the edit names or changes has changed since that rev."""
+    if fn is None:
+        return lambda f: _mutation(f, takes_principal=takes_principal)
+
+    def run(plan: dict, settings: dict, body: dict | None = None, principal=None) -> dict:
         if body is None:
             body = {}
         if not isinstance(body, dict) or not all(isinstance(k, str) for k in body):
@@ -269,8 +520,20 @@ def _mutation(fn):
             before = M.normalise(plan)
         except M.PlanError as e:
             raise BoardError(400, f"the plan does not read: {e}")
+        hod = is_hod(principal)
+        rev = _client_rev(body, required=hod, current=int(before.get("rev") or 0))
+        body = {k: v for k, v in body.items() if k != "rev"}
+        if hod:
+            _not_submitted(before, principal.dept)
+            _scope_of_body(before, body, principal.dept)
+        if rev is not None:
+            _fresh(_named_by_body(before, body), rev)
+            _fresh_staff(_staff_named_by_body(before, body), rev)
         work = copy.deepcopy(before)
-        fn(work, settings, **body)
+        if takes_principal:
+            fn(work, settings, principal, **body)
+        else:
+            fn(work, settings, **body)
         try:
             after = M.normalise(work)
         except M.PlanError as e:
@@ -281,6 +544,14 @@ def _mutation(fn):
             raise BoardError(409, f"{named(e.req)} is locked: unlock it first")
         except M.PlanError as e:
             raise BoardError(409, str(e))
+        changes = M.plan_changes(before, after)
+        if hod:
+            _scope_of_changes(before, after, changes, principal.dept)
+        if rev is not None:
+            _fresh((b for b, _ in changes.get("requirements", {}).values()), rev)
+            _fresh_staff((b for b, _ in changes.get("staff", {}).values()), rev)
+        if hod:
+            _check_shares(before, after, settings)
         return after
     run.__name__ = fn.__name__
     run.__doc__ = fn.__doc__
@@ -730,7 +1001,7 @@ def add_band(work: dict, settings: dict, /, *, dept=None, level=None, classes=No
     _add_classes(work, classes)
 
 
-_STAFF_FIELDS = ("name", "short", "dept", "allowance", "reductions", "provisional")
+_STAFF_FIELDS = ("name", "short", "dept", "allowance", "reductions", "provisional", "shares")
 
 # staff ids become organisation person ids unchanged (issues block past intake's 31 characters)
 _STAFF_ID_MAX = 31
@@ -781,5 +1052,166 @@ def save_staff(work: dict, settings: dict, /, **body) -> None:
     person = {"id": M.unique_id(M.plan_slug(name), taken, _STAFF_ID_MAX), "name": name,
               "short": _staff_text(body, "short", False) or _initials(name), "dept": dept,
               "allowance": body.get("allowance"), "reductions": body.get("reductions"),
-              "provisional": body.get("provisional")}
+              "provisional": body.get("provisional"), "shares": body.get("shares")}
     work["staff"].append(person)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _department_reqs(work: dict, dept) -> tuple[str, list[dict]]:
+    dept = _key_text(dept, "dept")
+    match = [r for r in work["requirements"] if r["dept"] == dept]
+    if not match:
+        raise BoardError(404, f"no requirements in department {dept!r}")
+    return dept, match
+
+
+@_mutation(takes_principal=True)
+def submit(work: dict, settings: dict, principal, /, *, dept=None, **_) -> None:
+    """A head of department's sign-off: every requirement of the department locked and the
+    department `submitted` (read-only to its head until the timetabler reopens it). The admin
+    names the department; a head of department submits their own."""
+    if is_hod(principal):
+        dept = principal.dept
+    dept, match = _department_reqs(work, dept)
+    for r in match:
+        r["locked"] = True
+    work["departments"][dept] = {"status": "submitted", "by": _who(principal), "at": _now()}
+
+
+@_mutation(takes_principal=True)
+def reopen(work: dict, settings: dict, principal, /, *, dept=None, **_) -> None:
+    """The timetabler's answer to a submission: every requirement of the department unlocked and
+    the department open again."""
+    if is_hod(principal):
+        raise BoardError(403, "only the timetabler reopens a department")
+    dept, match = _department_reqs(work, dept)
+    for r in match:
+        r["locked"] = False
+    work["departments"][dept] = {"status": "open", "by": _who(principal), "at": _now()}
+
+
+# ---------------------------------------------------------------------------
+# per-user undo and the activity text (spec 2026-09-27 §4)
+# ---------------------------------------------------------------------------
+
+def undo(plan: dict, row: dict, principal=None, own=frozenset(), settings: dict | None = None) -> dict:
+    """The plan with one history row's changes reverted (`row`: {user, rev, changes}, the changes
+    as model.plan_changes gave them when the edit was made at plan rev `rev`), leaving every other
+    change since alone. StaleError when a requirement or teacher the row changed has changed again
+    since (rev_at past `rev`); UndoGone (409) for any other item changed since (both: the row can
+    never be undone); 403 for a head of department whose
+    department is submitted. `own`: the plan revs this user's own undos made. Undoing a newer change
+    of theirs moves a requirement's rev_at past `rev` while leaving it as this row left it, which is
+    not someone else's change. A head of department's undo is held to what their edits are held to
+    now (their department today, the shares today, with `settings`): 403/409 as an edit would be."""
+    try:
+        before = M.normalise(plan)
+    except M.PlanError as e:
+        raise BoardError(400, f"the plan does not read: {e}")
+    if is_hod(principal):
+        _not_submitted(before, principal.dept)
+    rev = int(row.get("rev") or 0)
+    changes = row.get("changes") or {}
+    work = copy.deepcopy(before)
+    for section, key in M.KEYED_SECTIONS:
+        current = {x[key]: x for x in work[section]}
+        for k, (b, a) in (changes.get(section) or {}).items():
+            cur = current.get(k)
+            if section == "requirements":
+                changed = (cur or a or b)
+                cur_rev = int((cur or {}).get("rev_at") or 0)
+                if M.content(cur) != M.content(a) or (cur is not None and cur_rev > rev and cur_rev not in own):
+                    raise StaleError(changed, int((cur or {}).get("rev_at") or rev + 1))
+            elif M.content(cur) != M.content(a):
+                what = named(cur or a or b) if section != "staff" else str((cur or a or b).get("name") or k)
+                if section == "staff" and cur is not None and int(cur.get("rev_at") or 0) > rev:
+                    raise StaleError(cur, int(cur["rev_at"]), str(cur.get("name") or "").strip() or k)
+                raise UndoGone(409, f"{what} was changed after your change: it cannot be undone")
+    for dept, (b, a) in (changes.get("departments") or {}).items():
+        if work["departments"].get(dept) != a:
+            raise UndoGone(409, f"{dept} was submitted or reopened after your change: it cannot be undone")
+
+    for section, key in M.KEYED_SECTIONS:
+        for k, (b, _a) in (changes.get(section) or {}).items():
+            work[section] = [x for x in work[section] if x[key] != k]
+            if b is not None:
+                work[section].append(copy.deepcopy(b))
+    for dept, (b, _a) in (changes.get("departments") or {}).items():
+        if b is None:
+            work["departments"].pop(dept, None)
+        else:
+            work["departments"][dept] = copy.deepcopy(b)
+    # a class or division the change added stays while something added since still names it
+    used = {c for r in work["requirements"] for c in r["classes"]}
+    used_divisions = {b["division"] for b in work["bands"]}
+    for code, (b, a) in (changes.get("classes") or {}).items():
+        if b is None and a is not None and code in used:
+            work["classes"].append(copy.deepcopy(a))
+    for div_id, (b, a) in (changes.get("divisions") or {}).items():
+        if b is None and a is not None and div_id in used_divisions:
+            work["divisions"].append(copy.deepcopy(a))
+    staff_ids = {s["id"] for s in work["staff"]}
+    for r in work["requirements"]:
+        for t in r["teachers"]:
+            if t not in staff_ids:
+                raise BoardError(409, f"{t} teaches {named(r)} now: unassign them before undoing")
+    try:
+        after = M.normalise(work)
+        M.check_locks(before, after)
+    except M.LockError as e:
+        raise BoardError(409, f"{named(e.req)} is locked: unlock it first")
+    except M.PlanError as e:
+        raise BoardError(409, str(e))
+    if is_hod(principal):
+        _scope_of_changes(before, after, M.plan_changes(before, after), principal.dept)
+        _check_shares(before, after, settings)
+    return after
+
+
+def _lessons_text(shares) -> str:
+    try:
+        return "/".join(str(int(float(x.get("periods")))) for x in shares)
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def summary(action: str, plan: dict, body: dict, dept: str | None = None) -> str:
+    """One line for the activity panel: what a board edit (already made, so its body is valid) did,
+    read against the plan before it. `dept`: the department it changed (a submission names none)."""
+    body = body if isinstance(body, dict) else {}
+    scope = body.get("scope") if isinstance(body.get("scope"), dict) else {}
+    teacher = body.get("teacher")
+    who = _staff_name(plan, teacher) if isinstance(teacher, str) else ""
+    if action == "assign":
+        cell = _body_label(plan, body) or ""
+        mode = body.get("mode")
+        if mode == "coteach":
+            return f"added {who} to {cell} (co-teaching)"
+        return f"gave {cell} to {who}" if mode == "replace" else f"assigned {who} to {cell}"
+    if action == "unassign":
+        what = _body_label(plan, body) or str(body.get("req"))
+        return f"removed {who} from {what}" if who else f"cleared {what}"
+    if action == "split":
+        return f"split {_body_label(plan, body) or ''} {_lessons_text(body.get('shares') or [])}".strip()
+    if action == "lock":
+        verb = "locked" if body.get("locked") else "unlocked"
+        what = _body_label(plan, body)
+        if what is None:
+            level = scope.get("level")
+            what = f"{scope.get('dept')} level {level}" if level not in (None, "") else str(scope.get("dept"))
+        return f"{verb} {what}"
+    if action == "row":
+        return f"added {body.get('subject')} for {', '.join(str(c) for c in body.get('classes') or [])}"
+    if action == "band":
+        return f"added {body.get('subject')} option groups for {', '.join(str(c) for c in body.get('classes') or [])}"
+    if action == "staff":
+        if isinstance(body.get("id"), str):
+            return f"edited {_staff_name(plan, body['id'])}"
+        return f"added {body.get('name') or 'a provisional teacher'}"
+    if action in ("submit", "reopen"):
+        verb = "submitted" if action == "submit" else "reopened"
+        return f"{verb} {dept or body.get('dept') or ''}".strip()
+    return action

@@ -205,7 +205,33 @@ def _read_reductions(raw, who: str, issues: list[Issue]) -> list[dict]:
     return out
 
 
-def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None) -> list[dict]:
+_SHARE = re.compile(r"^(.*?)[\s:\-]*(?<![\d.])(\d+(?:\.0+)?)$")      # "MATH 10", "MATH:10", "SCI-6"
+
+
+def _read_shares(raw, who: str, issues: list[Issue]) -> dict[str, int]:
+    """"MATH 10; SCI 6" (or commas between entries): a department then the periods it is given."""
+    out: dict[str, int] = {}
+    for entry in re.split(r"[;,]", str(raw if raw is not None else "").strip()):
+        entry = entry.strip()
+        if not entry:
+            continue
+        m = _SHARE.match(entry)
+        dept = m.group(1).strip() if m else ""
+        if m is None or not dept:
+            issues.append(Issue("warn", who, f"{who}: share {entry!r} needs a department then a whole number of "
+                                              f"periods (\"SCI 6\"), left out"))
+            continue
+        if dept in out:
+            issues.append(Issue("warn", who, f"{who}: {dept} is shared twice; the first ({out[dept]}) is kept"))
+            continue
+        out[dept] = int(float(m.group(2)))
+    return out
+
+
+def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None,
+                      carried: set | None = None) -> list[dict]:
+    """The staff rows. `carried`, when given, collects the optional columns the sheet has ("shares"):
+    a workbook without one (the school's own, from before shares) must not clear the plan's."""
     issues = issues if issues is not None else []
     staff: list[dict] = []
     rows = list(ws.iter_rows(values_only=True))
@@ -226,6 +252,9 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None) -
     allowance_col = header.get("allowance")
     reductions_col = header.get("reductions")
     provisional_col = header.get("provisional")
+    shares_col = header.get("shares")
+    if carried is not None and shares_col is not None:
+        carried.add("shares")
 
     for row in rows[header_idx + 1:]:
         name = _text(row, name_col)
@@ -250,6 +279,7 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None) -
             "allowance": _read_allowance(_cell(row, allowance_col), name, issues),
             "reductions": _read_reductions(_cell(row, reductions_col), name, issues),
             "provisional": _yes(_cell(row, provisional_col)),
+            "shares": _read_shares(_cell(row, shares_col), name, issues),
             "source_hash": _row_hash(row),
         })
     return staff
@@ -616,7 +646,8 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         control_ws = next((ws for ws in wb.worksheets if ws.title.strip().lower() == "control"), None)
         if control_ws is None:
             control_ws = next((ws for ws in wb.worksheets if ws.title.strip().lower() == "load"), None)
-        staff = _read_staff_sheet(control_ws, org, issues) if control_ws is not None else []
+        carried: set = set()
+        staff = _read_staff_sheet(control_ws, org, issues, carried) if control_ws is not None else []
 
         requirements: list[dict] = []
         owners: dict[str, str] = {}
@@ -651,7 +682,10 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         wb.close()
 
     if existing is not None:
-        return _merge_keeping_locks(existing, new_plan, issues, M.DEPLOYMENT_UNCARRIED), issues
+        uncarried = M.DEPLOYMENT_UNCARRIED
+        if "shares" not in carried:
+            uncarried = {**uncarried, "staff": (*uncarried["staff"], "shares")}
+        return _merge_keeping_locks(existing, new_plan, issues, uncarried), issues
     return new_plan, issues
 
 

@@ -7,6 +7,8 @@
   'use strict';
 
   const el = (id) => document.getElementById(id);
+  // the department page (templates/department.html): one department, no Lock department, Submit
+  const DEPT = document.body.dataset.mode === 'department';
   const node = (tag, cls, text) => {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -32,7 +34,11 @@
   const closeDialog = (dlg) => { if (dlg.open && typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open'); };
 
   let board = null;
-  let want = { dept: store.get('plane.boardDept'), level: store.get('plane.boardLevel') };
+  // the level (and, on the admin page, the department) on screen, remembered across visits: the
+  // department page keeps its own key, so a head of department and the timetabler sharing a browser
+  // never move each other's board
+  const LEVEL_KEY = DEPT ? 'plane.deptBoardLevel' : 'plane.boardLevel';
+  let want = { dept: DEPT ? null : store.get('plane.boardDept'), level: store.get(LEVEL_KEY) };
   let selected = null;            // a teacher picked up by clicking their card
   let pending = null;             // { cell, teacher }: a drop on a filled cell waiting for Replace / Co-teach / Split…
   const cellErrors = new Map();   // cell key -> the refusal shown on that cell until the next change
@@ -65,6 +71,7 @@
     const query = (p) => { const q = new URLSearchParams(p).toString(); return '/api/plan/board' + (q ? '?' + q : ''); };
     const tries = [];
     if (want.dept && want.level) tries.push({ dept: want.dept, level: want.level });
+    else if (DEPT && want.level) tries.push({ level: want.level });      // the department is theirs anyway
     if (want.dept) tries.push({ dept: want.dept });
     tries.push({});
     let res = null;
@@ -82,9 +89,10 @@
     shownSeq = n;
     board = data;
     want = { dept: data.dept, level: data.level };
-    store.set('plane.boardDept', data.dept);
-    store.set('plane.boardLevel', data.level);
+    if (!DEPT) store.set('plane.boardDept', data.dept);
+    store.set(LEVEL_KEY, data.level);
     if (selected && !(data.tray || []).some((t) => t.id === selected)) selected = null;
+    if (readOnly()) { selected = null; pending = null; }        // submitted: nothing picked up
     render();
     if (window.showPlanIssues) {
       window.showPlanIssues(data.issues || [], !(data.departments || []).length && !(data.tray || []).length,
@@ -104,6 +112,8 @@
     }
     const payload = { ...body };
     if (!opts.noView && board && board.dept) payload.view = { dept: board.dept, level: board.level };
+    // the plan rev the board on screen was built from: an edit to something changed since is refused
+    if (board && board.rev != null) payload.rev = board.rev;
     busy = true;
     el('board').classList.add('saving');
     const n = ++seq;
@@ -111,6 +121,18 @@
       let res;
       try { res = await request('POST', path, payload); }
       catch (e) { res = { ok: false, status: 0, detail: e.message }; }
+      if (res.status === 409 && res.data && res.data.board) {
+        // stale: someone changed it since this board was loaded; show the board as it is now
+        cellErrors.clear();
+        pending = null;
+        show(res.data.board, n, opts);
+        // an undo that someone else's change is in the way of can never be made again: no "make it again"
+        const message = opts.undo ? `${res.detail}. The board now shows the latest.`
+          : `${res.detail}. The board now shows the latest: make your change again if you still want it.`;
+        if (opts.cell && findCell(opts.cell)) { cellErrors.set(opts.cell, message); redraw(renderGrid); }
+        else if (!opts.quiet) notify('error', message);
+        return { ok: false, status: res.status, message };
+      }
       if (!res.ok) {
         if (opts.cell) { cellErrors.set(opts.cell, res.detail); pending = null; redraw(renderGrid); }
         else if (!opts.quiet) notify('error', res.detail);
@@ -155,6 +177,8 @@
     return school ? `Sec ${tab}` : `Level ${tab}`;
   }
   const teacherOf = (id) => ((board && board.tray) || []).find((t) => t.id === id);
+  // a head of department's submitted department: nothing on the board changes until it is reopened
+  const readOnly = () => DEPT && !!board && (board.department_status || {}).status === 'submitted';
   const nameOf = (id) => { const t = teacherOf(id); return t ? (t.name || t.id) : id; };
   const findCell = (key) => {
     for (const row of (board && board.rows) || []) {
@@ -181,9 +205,11 @@
   function renderBar() {
     const depts = board.departments || [];
     const sel = el('board-dept');
-    sel.innerHTML = '';
-    depts.forEach((d) => { const o = node('option', null, d); o.value = d; o.selected = d === board.dept; sel.appendChild(o); });
-    sel.disabled = !depts.length;
+    if (sel) {
+      sel.innerHTML = '';
+      depts.forEach((d) => { const o = node('option', null, d); o.value = d; o.selected = d === board.dept; sel.appendChild(o); });
+      sel.disabled = !depts.length;
+    }
     const tabs = el('board-levels');
     tabs.innerHTML = '';
     (board.levels || []).forEach((lv) => {
@@ -193,16 +219,32 @@
       tabs.appendChild(b);
     });
     const rows = board.rows || [];
+    const closed = readOnly();
     const levelLocked = rows.length > 0 && rows.every((r) => r.locked);
     const lockLevel = el('board-lock-level');
     lockLevel.textContent = `${levelLocked ? 'Unlock' : 'Lock'} ${board.level ? levelLabel(board.level) : 'level'}`;
-    lockLevel.disabled = !rows.length;
+    lockLevel.disabled = !rows.length || closed;
     // offered from any level: the department is locked when every requirement of it is (dept_locked)
     const lockDept = el('board-lock-dept');
-    lockDept.textContent = `${board.dept_locked ? 'Unlock' : 'Lock'} entire ${board.dept || 'department'}`;
-    lockDept.title = board.dept_locked ? 'Unlock every level of this department' : 'Lock every level of this department';
-    lockDept.disabled = !board.dept;
-    el('board-add-band').disabled = !board.dept;
+    if (lockDept) {
+      lockDept.textContent = `${board.dept_locked ? 'Unlock' : 'Lock'} entire ${board.dept || 'department'}`;
+      lockDept.title = board.dept_locked ? 'Unlock every level of this department' : 'Lock every level of this department';
+      lockDept.disabled = !board.dept;
+    }
+    el('board-add-band').disabled = !board.dept || closed;
+    el('board-add-row').disabled = closed;
+    el('board-undo').disabled = closed;
+    // the note that says why: in place of the hint on how to drag and pick up
+    let note = el('board-closed-note');
+    if (!note) {
+      note = node('p', 'board-hint board-closed-note');
+      note.id = 'board-closed-note';
+      note.setAttribute('role', 'status');
+      el('board-hint').after(note);
+    }
+    note.textContent = closed ? `${board.dept} is submitted: nothing on the board can change until the timetabler reopens it.` : '';
+    note.hidden = !closed;
+    el('board-hint').hidden = closed;
   }
 
   // ---------- grid ----------
@@ -225,6 +267,7 @@
     th.appendChild(node('div', 'board-row-meta', `${row.level} · ${row.periods}p [${row.pattern}]`));
     const lock = button('board-mini', row.locked ? 'Unlock row' : 'Lock row',
       () => mutate('lock', { scope: { row: row.key }, locked: !row.locked }));
+    lock.disabled = readOnly();
     if (row.locked) lock.prepend(lockIcon());
     th.appendChild(lock);
     return th;
@@ -237,7 +280,7 @@
       const who = node('span', 'board-chip-name');
       who.appendChild(node('span', null, nameOf(id)));
       if ((teacherOf(id) || {}).provisional) who.appendChild(node('span', 'board-tag prov', 'PROV'));
-      if (!part.locked) {
+      if (!part.locked && !readOnly()) {
         const x = button('board-x', '×', () => mutate('unassign', { req: part.req, teacher: id }, { cell: cell.key }));
         x.setAttribute('aria-label', `Remove ${nameOf(id)}`);
         x.title = `Remove ${nameOf(id)}`;
@@ -273,7 +316,7 @@
   const shut = (cell) => cell.locked || (!cell.unassigned.some((u) => !u.locked) && cell.parts.every((p) => p.locked));
 
   function dropOn(cell, teacher) {
-    if (!teacher || !teacherOf(teacher)) return;
+    if (!teacher || !teacherOf(teacher) || readOnly()) return;
     cellErrors.delete(cell.key);
     pending = null;
     if (shut(cell)) {
@@ -320,6 +363,7 @@
     // a locked cell shows it will not take the teacher (dropEffect none: the browser then fires no
     // drop), and the drag's end says why on the cell (see the document's dragend below)
     td.addEventListener('dragover', (ev) => {
+      if (readOnly()) return;                  // no drop at all (dragover not taken)
       ev.preventDefault();
       const refused = shut(cell);
       ev.dataTransfer.dropEffect = refused ? 'none' : 'copy';
@@ -340,7 +384,7 @@
       document.body.classList.remove('board-dragging');
       dropOn(cell, ev.dataTransfer.getData('text/plain'));
     });
-    const act = () => { if (selected) dropOn(cell, selected); else openCell(cell.key); };
+    const act = () => { if (selected && !readOnly()) dropOn(cell, selected); else openCell(cell.key); };
     td.addEventListener('click', (ev) => { if (!ev.target.closest('button')) act(); });
     td.addEventListener('keydown', (ev) => {
       if (ev.target === td && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); act(); }
@@ -405,9 +449,10 @@
   }
 
   const renderTray = () => window.BoardTray.render(board);
+  const renderStatus = () => { if (window.BoardStatus) window.BoardStatus.render(board); };
   function render() {
     if (!board) return;
-    redraw(renderBar, renderGrid, renderPicked, renderTray);
+    redraw(renderBar, renderGrid, renderPicked, renderTray, renderStatus);
   }
 
   function toggleSelect(id) {
@@ -508,7 +553,7 @@
       li.appendChild(node('b', null, `${p.periods}p`));
       p.teachers.forEach((id) => {
         const who = node('span', 'board-part-name', nameOf(id));
-        if (!p.locked) {
+        if (!p.locked && !readOnly()) {
           who.appendChild(button('board-mini', 'Remove', async () => {
             const res = await mutate('unassign', { req: p.req, teacher: id }, { quiet: true, dialog: true });
             if (!res.ok) cellError(res.message);
@@ -521,8 +566,9 @@
     });
     cell.unassigned.forEach((u) => list.appendChild(node('li', 'open', `${u.periods}p not assigned yet`)));
     el('board-cell-lock').textContent = cell.locked ? 'Unlock cell' : 'Lock cell';
-    el('board-split-save').disabled = cell.locked;
-    el('board-share-add').disabled = cell.locked;
+    el('board-cell-lock').disabled = readOnly();
+    el('board-split-save').disabled = cell.locked || readOnly();
+    el('board-share-add').disabled = cell.locked || readOnly();
     if (fresh) el('board-cell-error').hidden = true;
     if (keepShares) return;
     // on opening and after the editor's own changes the split editor starts from the cell as it is
@@ -558,22 +604,24 @@
     picked.hidden = true;
     el('board-hint').after(picked);
 
-    el('board-dept').addEventListener('change', (ev) => { want = { dept: ev.target.value, level: null }; window.loadBoard(); });
+    if (!DEPT) el('board-dept').addEventListener('change', (ev) => { want = { dept: ev.target.value, level: null }; window.loadBoard(); });
     el('board-lock-level').addEventListener('click', () => {
       const locked = (board.rows || []).every((r) => r.locked);
       mutate('lock', { scope: { dept: board.dept, level: board.level }, locked: !locked });
     });
-    el('board-lock-dept').addEventListener('click', () => {
-      mutate('lock', { scope: { dept: board.dept }, locked: !board.dept_locked });
-    });
+    if (!DEPT) {
+      el('board-lock-dept').addEventListener('click', () => {
+        mutate('lock', { scope: { dept: board.dept }, locked: !board.dept_locked });
+      });
+    }
     el('board-undo').addEventListener('click', async () => {
       const btn = el('board-undo');
       btn.disabled = true;
       try {
-        const res = await change('/api/plan/board/undo', {}, { quiet: true });
+        const res = await change('/api/plan/board/undo', {}, { quiet: true, undo: true });
         if (res.status === 404) notify('', 'Nothing to undo on the board.');
         else if (!res.ok) notify(res.message === SAVING ? '' : 'error', res.message);
-      } finally { btn.disabled = false; }
+      } finally { btn.disabled = readOnly(); }
     });
 
 
@@ -602,7 +650,7 @@
         if (res.ok) el('board-cell-error').hidden = true; else cellError(res.message);
       } finally {
         const found = findCell(dialogKey);
-        btn.disabled = !!(found && found.cell.locked);
+        btn.disabled = !!(found && found.cell.locked) || readOnly();
       }
     });
 
@@ -638,8 +686,10 @@
     });
   }
 
-  window.BoardTray.init({ mutate, selected: () => selected, toggleSelect });
+  window.BoardTray.init({ mutate, selected: () => selected, toggleSelect, readOnly });
   window.BoardForms.init({ mutate, board: () => board });
+  if (window.BoardStatus) window.BoardStatus.init({ mutate, board: () => board });
   wire();
-  if (!el('plan').hidden && !el('board').hidden) window.loadBoard();
+  // the department page loads the board itself (department.js); the admin page when the board shows
+  if (!DEPT && !el('plan').hidden && !el('board').hidden) window.loadBoard();
 })();

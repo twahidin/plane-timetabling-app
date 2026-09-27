@@ -34,6 +34,7 @@ class Issue:
     level: str   # "block" | "warn"
     where: str   # id of the plan item the issue concerns
     text: str
+    dept: str | None = None    # the department it is about, when that is not `where`'s (a share issue)
 
 
 def has_blocks(issues: list[Issue]) -> bool:
@@ -46,6 +47,26 @@ def capped(texts: list[str], limit: int = ISSUE_LIMIT) -> list[str]:
     if len(texts) <= limit:
         return texts
     return [*texts[:limit], f"and {len(texts) - limit} more"]
+
+
+def _share_issues(s: dict, who: str, loads: dict[str, int], total: int, settings: dict, unit: str) -> list[Issue]:
+    """Assigned beyond the department share (spec 2026-09-27-department-accounts-design.md §4): a
+    teacher given more periods in a department than model.capacity_in allows there. At home without
+    shares, when all the load is at home, the capacity warning above already says it. Only for a
+    plan that uses shares (plan_issues): before any share is set, work across departments (or a duty
+    rota, whose "departments" are duties) is not a share to exceed."""
+    out = []
+    home = s.get("dept") or ""
+    for dept, n in sorted(loads.items()):
+        cap = M.capacity_in(s, dept, settings)
+        if not dept or n <= cap or (dept == home and not s.get("shares") and n == total):
+            continue
+        if M.available_in(s, dept):
+            text = f"{who}: {n} {unit} in {dept}, beyond the department share of {_plain(cap)}"
+        else:
+            text = f"{who}: {n} {unit} in {dept}, which has no share of them"
+        out.append(Issue("warn", s["id"], text, dept))
+    return out
 
 
 def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
@@ -120,12 +141,16 @@ def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
                 issues.append(Issue("block", where, f"{where}: unknown venue {loc!r}"))
 
     assigned: dict[str, int] = {}
+    in_dept: dict[str, dict[str, int]] = {}
     for r in plan["requirements"]:
         for t in r["teachers"]:
             assigned[t] = assigned.get(t, 0) + r["periods"]
+            loads = in_dept.setdefault(t, {})
+            loads[r["dept"]] = loads.get(r["dept"], 0) + r["periods"]
 
     # Issues are read by the person who filled the workbook in, who wrote names into it, not ids.
     unit = _load_unit(plan, settings)
+    uses_shares = any(s.get("shares") for s in plan["staff"])
     for s in plan["staff"]:
         who = str(s.get("name") or "").strip() or s["id"]
         # a staff id becomes a person id of the organisation unchanged, so one written by hand past
@@ -149,5 +174,7 @@ def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
                                  f"{who} holds {load} {unit}: name them before generating"))
         if not s.get("avail"):
             issues.append(Issue("warn", s["id"], f"{who}: no availability window"))
+        if uses_shares:
+            issues.extend(_share_issues(s, who, in_dept.get(s["id"], {}), load, settings, unit))
 
     return issues

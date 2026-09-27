@@ -163,6 +163,42 @@ MATH teacher 1" to name later with its **Edit** button (allowance, reductions su
 and **Undo** takes back the last board change. The Issues panel and Generate draft stay above the
 board and follow every change.
 
+## Department accounts
+
+The timetabler logs in with the admin password, leaving Username blank. Heads of department log in
+with the username and temporary password the timetabler gives them, and must choose a new password
+(at least 10 characters) before anything else. A department account reaches only its department's
+board, the live timetable and printing; everything else answers "not available to department
+accounts".
+
+**Setting up (the timetabler).** In **Settings → Departments & accounts**, choose the timetable
+heads of department work on (a period timetable cannot be it), then **Add account** with a
+username, name and department (as the plan names it, e.g. MATH). The temporary password is shown
+once, with a **Copy** button: pass it on, since it will not be shown again. **Reset password**
+makes a new one the same way; **Deactivate** stops the account logging in; **Delete** asks first.
+The same section lists each department of that timetable's plan as Open or Submitted, with
+**Reopen**. To let a teacher work for another department, give them a share in their **Edit**
+box on the board: "MATH 10; SCI 6" (periods a cycle each department may give them).
+
+**The department page.** A head of department logs in to one page: their name, department and
+the timetable, **Change password** and **Log out**; a status line ("Open — submit MATH when it is
+done"); their department's board (no department select; their own teachers and those shared with
+it on the tray, each against what they may be given here); the issues of their department; and
+below, the live timetable read-only with **Print this**. They can assign, split, lock, add a
+subject or a provisional teacher, name a provisional teacher, and edit their own teachers' names
+and reductions; an assignment past a teacher's share is refused. **Submit department** (asked
+once more on the page) locks every row and marks it Submitted: the board is then read-only to them
+until the timetabler presses **Reopen** (beside the department select on the board, or in
+Settings). The **Activity** panel under the board lists who changed what. When two people change
+the same cell, the later change is refused with who made the other one, and the board shows the
+latest to try again.
+
+- **Log out** ends the session on that browser only.
+- **Changing your password** logs you out everywhere else; the browser you changed it on stays
+  logged in. A password reset, deactivating or deleting the account also ends all its sessions.
+- Five wrong passwords for one username within 15 minutes pause logins to that username for the
+  rest of the 15 minutes, from any address.
+
 ## Environment variables
 
 | Variable | Required | Purpose |
@@ -172,7 +208,7 @@ board and follow every change.
 | `ENGINE_URL` | Defaults to `http://localhost:8000`; set it in production | Base URL of the `plane-engine` service, e.g. the engine's Railway URL. The Engine URL on the Settings page, when filled in, takes precedence. |
 | `ENGINE_KEY` | No | Engine API key, if the engine requires one. Can also be set (and overridden) from the Settings page — a licence key entered there is stored per-organisation and takes precedence over this variable. |
 | `DATA_DIR` | No | Where the app stores its SQLite database and generated secret key. Defaults to `./data`. In a container this should be a mounted volume. |
-| `APP_ENV` | No | Set to `production` to make `ADMIN_PASSWORD` mandatory. Proxy headers (`X-Forwarded-Proto` for the Secure cookie flag, `X-Forwarded-For` for login throttling) are always honoured. |
+| `APP_ENV` | No | Set to `production` to make `ADMIN_PASSWORD` mandatory. Proxy headers (`X-Forwarded-Proto` for the Secure cookie flag, `X-Forwarded-For` for login throttling, its rightmost entry: the address the proxy saw) are always honoured. |
 
 The engine licence/API key can also be entered on the Settings page in the browser; that value is
 stored in the app's database and takes precedence over `ENGINE_KEY`.

@@ -17,7 +17,7 @@ MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 EXAMPLE_NOTE = "example: replace or delete"
 
 _LESSON_COLS = (("Single", "1"), ("Double", "2"), ("Triple", "3"), ("Quadruple", "4"))
-_STAFF_HEAD = ["Staff", "Short", "Dept", "Teaching Load Factor", "Allowance", "Reductions", "Provisional"]
+_STAFF_HEAD = ["Staff", "Short", "Dept", "Teaching Load Factor", "Allowance", "Reductions", "Provisional", "Shares"]
 _BAD_TITLE = re.compile(r"[\[\]:*?/\\]")
 # the importer's own sheet names, and "History", which Excel keeps for itself
 _RESERVED_TITLES = I._SKIP_SHEETS | I._SPECIAL_SHEETS | {"history"}
@@ -271,6 +271,10 @@ def _reductions_text(reductions: list[dict]) -> str:
     return "; ".join(f"{r['reason']} {r['periods']}".strip() for r in reductions)
 
 
+def _shares_text(shares: dict) -> str:
+    return "; ".join(f"{d} {n}" for d, n in sorted((shares or {}).items()))
+
+
 def _write_control(ws, staff: list[dict], notes: list[str], example: bool = False) -> None:
     ws.append(_STAFF_HEAD + (["Note"] if example else []))
     rows = sorted(staff, key=lambda s: (_text(s["dept"]).lower(), _text(s["name"]).lower(), s["id"]))
@@ -292,8 +296,12 @@ def _write_control(ws, staff: list[dict], notes: list[str], example: bool = Fals
         if I._read_reductions(text, name, []) != s["reductions"]:
             notes.append(f"{name}: reductions {text!r} do not read back as written (a reason holding ';', ',' "
                          f"or a number of its own); check them after importing this workbook")
+        shares = _shares_text(s.get("shares"))
+        if I._read_shares(shares, name, []) != dict(sorted((s.get("shares") or {}).items())):
+            notes.append(f"{name}: shares {shares!r} do not read back as written (a department name holding ';' "
+                         f"or ','); check them after importing this workbook")
         ws.append([name, _text(s["short"]) or None, _text(s["dept"]) or None, s["load_factor"], s["allowance"],
-                   text or None, "yes" if s["provisional"] else None,
+                   text or None, "yes" if s["provisional"] else None, shares or None,
                    *([s.get("note")] if example else [])])
 
 
@@ -336,7 +344,9 @@ def _readme_lines(plan: dict, settings: dict, notes: list[str], example: bool) -
         f"Control: one row per {person}. Teaching Load Factor: 1 for full time, 0.5 for half. "
         f"Allowance: periods a cycle before reductions (empty: load factor × {capacity}). "
         "Reductions: each role and its periods, separated by ';', e.g. HOD 8; CCA 2. "
-        f"Provisional: yes for a placeholder {person} still to be named.",
+        f"Provisional: yes for a placeholder {person} still to be named. "
+        f"Shares: periods a cycle the {person} gives other departments, e.g. MATH 10; SCI 6 (a department "
+        f"named here may assign them).",
     ]
     if example:
         lines += ["", f"Rows whose Note says '{EXAMPLE_NOTE}' show the shape: replace them with your own or delete them."]
