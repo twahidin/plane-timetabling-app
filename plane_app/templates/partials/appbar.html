@@ -12,12 +12,12 @@
   <nav class="appbar-tabs" role="tablist" aria-label="Steps">
     {%- for key, n, label in steps %}
     {%- if appbar_page == "index" %}
-    <button type="button" role="tab" class="appbar-tab" id="tabbtn-{{ key }}" data-tab="{{ key }}" data-label="{{ label }}" aria-selected="false" aria-controls="tab-{{ key }}"><span class="n">{{ n }}</span>{{ label }}</button>
+    <button type="button" role="tab" class="appbar-tab" id="tabbtn-{{ key }}" data-tab="{{ key }}" data-label="{{ label }}" aria-selected="false" aria-controls="tab-{{ key }}" tabindex="-1"><span class="n">{{ n }}</span>{{ label }}</button>
     {%- else %}
     <a role="tab" class="appbar-tab" id="tabbtn-{{ key }}" data-tab="{{ key }}" href="/#{{ key }}" aria-selected="false"><span class="n">{{ n }}</span>{{ label }}</a>
     {%- endif %}
     {%- endfor %}
-    <a role="tab" class="appbar-tab{{ ' on' if appbar_page == 'settings' else '' }}" id="tabbtn-settings" href="/settings" aria-selected="{{ 'true' if appbar_page == 'settings' else 'false' }}"><span class="n">12</span>Settings</a>
+    <a role="tab" class="appbar-tab{{ ' on' if appbar_page == 'settings' else '' }}" id="tabbtn-settings" href="/settings"{% if appbar_page == "index" %} tabindex="-1"{% endif %} aria-selected="{{ 'true' if appbar_page == 'settings' else 'false' }}"><span class="n">12</span>Settings</a>
   </nav>
   <div class="appbar-end">
     {%- if appbar_page == "index" %}<span class="tag" id="tt-current"></span>{% endif %}

@@ -85,18 +85,27 @@
   }
 
   // ---------- Consolidation heading ----------
+  // Drawn when the tab opens, and again whenever the page loads a new check result (model.js's
+  // plane:solid), so it never disagrees with the Checks card beside it.
   let conTitleGen = 0;
-  async function loadConsolidation() {
-    const my = ++conTitleGen;
+  function renderConsolidation(s) {
     const t = el('consolidation-title');
-    let s = null;
-    try { s = await api('/api/solid'); } catch (e) { s = null; }
-    if (my !== conTitleGen) return;
     if (!s) { t.textContent = 'Checks'; return; }
     const n = ((s.check && s.check.clashes) || []).length;
     t.textContent = !s.organisation ? 'No timetable yet.' : !s.check ? 'Not checked yet'
       : n ? `${n} issue${n > 1 ? 's' : ''} to clear` : 'No issues found';
   }
+  async function loadConsolidation() {
+    const my = ++conTitleGen;
+    let s = null;
+    try { s = await api('/api/solid'); } catch (e) { s = null; }
+    if (my !== conTitleGen) return;
+    renderConsolidation(s);
+  }
+  document.addEventListener('plane:solid', (ev) => {
+    ++conTitleGen;                                    // a fetch still in flight is older than this result
+    renderConsolidation(ev.detail);
+  });
 
   document.addEventListener('plane:tab', (ev) => {
     const key = ev.detail && ev.detail.key;

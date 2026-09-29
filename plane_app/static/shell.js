@@ -25,7 +25,11 @@
     TABS.forEach((k) => {
       const panel = el('tab-' + k), btn = el('tabbtn-' + k);
       if (panel) panel.hidden = k !== key;
-      if (btn) { btn.classList.toggle('on', k === key); btn.setAttribute('aria-selected', String(k === key)); }
+      if (btn) {
+        btn.classList.toggle('on', k === key);
+        btn.setAttribute('aria-selected', String(k === key));
+        btn.tabIndex = k === key ? 0 : -1;                          // one tab in the Tab order; arrows move within
+      }
     });
     store.set('plane.tab', key);
     if (location.hash.slice(1) !== key) history.replaceState(null, '', '#' + key);
@@ -46,6 +50,24 @@
   }
   window.showTab = go;
   TABS.forEach((k) => { const b = el('tabbtn-' + k); if (b) b.addEventListener('click', () => go(k)); });
+
+  // The WAI-ARIA tabs pattern: Left/Right move to the previous/next visible tab and open it,
+  // Home/End jump to the first/last. Settings is a link: arrows focus it and Enter follows it.
+  function onTabKey(ev) {
+    const moves = { 'ArrowRight': 1, 'ArrowLeft': -1, 'Home': 'first', 'End': 'last' };
+    if (!(ev.key in moves)) return;
+    const tabs = [...document.querySelectorAll('.appbar-tabs [role="tab"]')].filter((b) => !b.hidden);
+    const at = tabs.indexOf(document.activeElement);
+    if (at < 0 || !tabs.length) return;
+    ev.preventDefault();
+    const m = moves[ev.key];
+    const next = m === 'first' ? 0 : m === 'last' ? tabs.length - 1 : (at + m + tabs.length) % tabs.length;
+    const b = tabs[next];
+    b.focus();
+    if (b.dataset.tab) go(b.dataset.tab);
+  }
+  const bar = document.querySelector('.appbar-tabs');
+  if (bar) bar.addEventListener('keydown', onTabKey);
   window.addEventListener('hashchange', () => {
     const k = location.hash.slice(1);
     if (TABS.includes(k) && k !== current) showTab(k);

@@ -506,9 +506,13 @@
   }
 
   // ---------- Loading from the API ----------
+  // Every new /api/solid result (a build, a solve, a check, an applied change) is announced as
+  // plane:solid, so parts of the page outside the 3D view (the Consolidation heading) redraw from it.
+  const announceSolid = (data) => document.dispatchEvent(new CustomEvent('plane:solid', { detail: data }));
   async function loadFromApi() {
     const data = await api('/api/solid');
     state.check = data.check;
+    announceSolid(data);
     if (window.Words) { Words.set(data.vocabulary); Words.apply(document); }   // the timetable's own words, page-wide
     if (!data.organisation) {
       state.ds = null; state.selected = null;
