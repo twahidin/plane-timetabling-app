@@ -16,7 +16,8 @@
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <label>Username <input type="text" name="username" id="username" value="{{ username or '' }}" autofocus autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Leave blank for the timetabler"></label>
     <label>Password <input type="password" name="password" id="password" autocomplete="current-password"></label>
-    <div><button class="btn primary" type="submit">Log in</button></div>
+    <button class="btn primary block" type="submit">Log in</button>
+    <p class="login-note">Department heads use the username given by the timetabler.</p>
   </form>
 </main>
 </body>

@@ -16,21 +16,40 @@ the sheets your kind of organisation needs and a few example rows to replace, a 
 what the printed timetable will look like, and a one-page **guide** explaining every column in your
 own words. Fill the workbook in and drop it back into the chat.
 
-From there it is the plan loop: the app reads the workbook into the Plan tab, lists anything that
+From there it is the plan loop: the app reads the workbook into the Requirements tab, lists anything that
 does not add up in the Issues panel, and — once nothing is blocking — **Generate** turns the plan
 into a draft timetable, **Quick timetable** places it, **Best timetable** improves it, and
 **Print** hands it out. Re-drop a corrected workbook at any time; the plan merges and the loop
 runs again.
 
-## The timetable view
+## The page
 
-The page opens on the **Timetable** tab: pick a teacher, class, option group or room and see the
-familiar grid, days down and periods across. Cells with a problem are outlined; hover for the
-reason, click to select the lesson and see what is wrong in the **Selected** card, then **Fix…**
-in the Checks list asks the assistant for a proposal. **Print this** opens the print dialog on the
-same timetable. The **3D model** tab is the expert view of the same data; "Why 'Plane'?" in the
-header explains the picture. Once a start-wizard template is chosen, the page uses its words
-(nurses, wards, shifts) everywhere.
+The app is dark (the Nocturne design system: `app.css` carries its tokens) and laid out as numbered
+steps along the top bar, with the **Assistant** chat as a panel on the right that collapses to a thin
+rail. The steps, left to right:
+
+| Tab | What it holds |
+|---|---|
+| 02 Project | The timetable picker (New, Clone, Rename, Delete), Start wizard and the document drop zone |
+| 03 Manpower | Everyone in the plan |
+| 04 Locations | The rooms of the current timetable, read-only |
+| 05 Requirements | The plan: workbook upload and export, the Issues panel, the deployment board and its tables |
+| 06 Constraints | The timetable rules (changed in Settings), the plan's rules and the five checks |
+| 07 Build | Generate draft, Quick and Best timetable, beside the 3D view |
+| 08 Consolidation | The checks and their clashes, beside the 3D view |
+| 09 Summary | The timetable grid beside the 3D view, Workload, Ask and Print |
+| 10 Relief | Absences and cover |
+| 11 Custom | Period timetables (an exam week, a camp) |
+| 12 Settings | The Settings page |
+
+The current tab is in the address (`/#build`), so Back and Forward move between tabs and a link can
+open one. A first visit lands on Summary when a timetable exists. On Summary, pick a teacher, class,
+option group or room to see the grid, days down and periods across; cells with a problem are
+outlined, a click selects the lesson for the **Selected** card, and **Print this** opens the print
+dialog. The 3D view is the expert picture of the same data ("Why 'Plane'?" on the Project tab
+explains it); both the grid and the 3D view have a full-screen button (Escape closes it). "Hide
+setup tabs 2–8" on Summary keeps the bar short once the timetable is running. Once a start-wizard
+template is chosen, the page uses its words (nurses, wards, shifts) everywhere.
 
 ## Quick and best timetables
 
@@ -117,7 +136,7 @@ classes it draws from, who teaches it, what kind of room it needs — plus the d
 of option groups that run against each other, the staff and their load factors, and rules such as
 edge subjects and pinned events like assembly. Fill it by dropping the staff-deployment workbook
 (with any `Teaching Group, Enrolled, Capacity` sizes CSVs beside it) on the intake dropzone or on
-the Plan tab's **Upload workbook** — the dropzone recognises a deployment workbook by the shape of
+the Requirements tab's **Upload workbook** — the dropzone recognises a deployment workbook by the shape of
 its sheets and routes it here — or by describing requirements in chat ("Sec 3 Science: 6 periods,
 two doubles, in a lab, Mr Tan"). The Issues panel lists what is missing or contradictory: blocking
 issues (a requirement with no teacher, periods that do not match the lesson counts) keep
@@ -141,7 +160,7 @@ lesson longer than four periods, two staff with one name) is listed on its READM
 
 ### Deployment board
 
-The Plan tab opens on the **Board** (switch to **Tables** for the same plan field by field; the
+The Requirements tab opens on the **Board** (switch to **Tables** for the same plan field by field; the
 choice, department and level are remembered in the browser). Pick a department and a level tab
 (Sec 1, Sec 2, …): subjects run down the side, classes across, and each cell says how many of its
 periods are assigned ("3/5p"), what is still unassigned, and who teaches it — one chip per

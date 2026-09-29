@@ -10,19 +10,20 @@
     their department's board and the live timetable, read-only. Its scripts call only the routes a
     department account may reach; nothing of the admin page is loaded. Until the temporary password
     is changed, only the password form. -#}
-<body data-mode="department" data-user="{{ name }}" data-must-change="{{ 'true' if must_change else 'false' }}">
+<body data-page="department" data-mode="department" data-user="{{ name }}" data-must-change="{{ 'true' if must_change else 'false' }}">
 
-<header class="top" id="dept-header">
-  <div>
-    <div class="eyebrow">Department</div>
-    <h1 id="dept-name">{{ name }} &middot; {{ dept }}</h1>
-    <p class="lede" id="dept-timetable">Timetable: {{ timetable }}</p>
-  </div>
-  <div class="links">
+<header class="appbar dept-bar" id="dept-header">
+  <span class="appbar-brand" title="Plane Timetabling">
+    <span class="appbar-mark" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5l6-3 6 3-6 3-6-3z"></path><path d="M2 8l6 3 6-3"></path><path d="M2 11l6 3 6-3"></path></svg></span>
+    <span class="appbar-word">Plane</span>
+  </span>
+  <span class="tag accent" id="dept-name">{{ name }} &middot; {{ dept }}</span>
+  <span class="dept-timetable" id="dept-timetable">Timetable: {{ timetable }}</span>
+  <div class="appbar-end">
     {% if not must_change %}
-    <button class="btn" id="dept-password" type="button">Change password</button>
+    <button class="btn ghost" id="dept-password" type="button">Change password</button>
     {% endif %}
-    <form method="post" action="/logout"><button class="btn" id="dept-logout" type="submit">Log out</button></form>
+    <form method="post" action="/logout"><button class="btn ghost" id="dept-logout" type="submit">Log out</button></form>
   </div>
 </header>
 
@@ -48,6 +49,7 @@
 <script src="/static/department.js"></script>
 {% else %}
 
+<main class="dept-main">
 <div id="notes" class="notes dept-notes"></div>
 
 <section class="dept-sign-off" aria-label="Sign-off">
@@ -80,6 +82,7 @@
     <div class="tt-wrap"><div id="grid"><p class="empty">No timetable yet.</p></div></div>
   </div>
 </section>
+</main>
 
 {% include "partials/board_dialogs.html" %}
 

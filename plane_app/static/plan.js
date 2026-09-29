@@ -70,26 +70,13 @@
   }
 
   // ---------- tabs ----------
-  // Three tabs below the timetable, full width: the draft (lessons about to be placed), the plan
-  // (what the timetable must provide) and the assistant (the chat, with the start wizard's options).
-  const TABS = { draft: ['tab-draft', 'draft-panel'], plan: ['tab-plan', 'plan'], assistant: ['tab-assistant', 'assistant-panel'] };
-  function showTab(which) {
-    if (which === 'wizard') which = 'assistant';          // the wizard lives in the assistant tab now
-    if (!TABS[which]) which = 'assistant';
-    Object.entries(TABS).forEach(([k, [tab, panel]]) => {
-      el(tab).classList.toggle('on', k === which);
-      el(tab).setAttribute('aria-selected', String(k === which));
-      el(panel).hidden = k !== which;
-    });
-    try { localStorage.setItem('plane.intakeTab', which); } catch (e) { /* private mode, etc. */ }
-    if (which === 'plan') { loadPlan(); if (planView === 'board' && window.loadBoard) window.loadBoard(); }
-    if (which === 'assistant') {
-      if (window.loadWizard) window.loadWizard().catch(() => {});
-      const log = el('chat-log'); if (log) log.scrollTop = log.scrollHeight;
-    }
-  }
-  window.showIntakeTab = showTab;
-  Object.keys(TABS).forEach((k) => el(TABS[k][0]).addEventListener('click', () => showTab(k)));
+  // The shell (shell.js) owns the tabs. The plan's tables load when a tab showing one opens: Staff on
+  // Manpower, Requirements and Divisions on Requirements (with the board), Rules on Constraints.
+  document.addEventListener('plane:tab', (ev) => {
+    const key = ev.detail && ev.detail.key;
+    if (key === 'manpower' || key === 'requirements' || key === 'constraints') loadPlan();
+    if (key === 'requirements' && planView === 'board' && window.loadBoard) window.loadBoard();
+  });
 
   // ---------- Board | Tables ----------
   // The deployment board (board.js) is the Plan tab's default view; the tables below it are the
@@ -416,13 +403,9 @@
       const s = body.summary || {};
       const warnText = (s.warnings || []).length ? ' · ' + capped(s.warnings).join('; ') : '';
       notify('good', `Generated: ${s.teachers || 0} teachers, ${s.groups || 0} groups, ${s.bands || 0} bands, ${s.events || 0} events.${warnText}`);
-      showTab('draft');
+      if (window.showIntakeTab) window.showIntakeTab('draft');
       if (window.loadDraft) await window.loadDraft();
     } catch (e) { notify('error', e.message); }
     finally { renderIssues(); if (window.loadBoard) window.loadBoard(); }
   });
-
-  let initialTab = 'assistant';
-  try { initialTab = localStorage.getItem('plane.intakeTab') || 'assistant'; } catch (e) { /* ignore */ }
-  showTab(initialTab);
 })();

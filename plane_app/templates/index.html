@@ -6,29 +6,13 @@
 <title>Plane Timetabling</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
+<body data-page="index">
+{% set appbar_page = "index" %}
+{% include "partials/appbar.html" %}
+<h1 class="sr-only">Plane Timetabling</h1>
 
-<header class="top">
-  <div>
-    <div class="eyebrow">Live timetable</div>
-    <h1>Plane Timetabling</h1>
-    <p class="lede">Upload your documents or answer a few questions in the chat, and get a checked timetable you can print. <a href="#" id="why-plane">Why "Plane"?</a></p>
-  </div>
-  <div class="links">
-    <div class="timetables" id="timetables">
-      <label for="timetable" class="eyebrow">Timetable</label>
-      <select id="timetable" aria-label="Current timetable"></select>
-      <button class="btn" id="tt-new" type="button" title="Create an empty timetable">New</button>
-      <button class="btn" id="tt-clone" type="button" title="Copy this timetable as the starting point for another period">Clone</button>
-      <button class="btn" id="tt-rename" type="button">Rename</button>
-      <button class="btn" id="tt-delete" type="button">Delete</button>
-      <button class="btn" id="print-open" type="button" title="Print or download timetables">Print</button>
-    </div>
-    <a href="/settings">Settings</a>
-    <form method="post" action="/logout"><button class="btn" type="submit">Log out</button></form>
-  </div>
-</header>
-
+<div class="app-body">
+<main class="app-main" id="app-main">
 <div class="status" id="status"></div>
 
 <div class="period-banner" id="period-banner" role="status" hidden>
@@ -37,113 +21,22 @@
   <button class="btn" id="period-banner-back" type="button" hidden>Back to the normal timetable</button>
 </div>
 
-<div id="empty" class="empty-state" hidden>No timetable yet. Drop a PDF, CSV or Excel file below to rebuild from data, or press "Start wizard" and answer a few questions in the chat.</div>
+<div id="empty" class="empty-state" hidden>No timetable yet. Open Project to drop a PDF, CSV or Excel file, or press Start wizard and answer a few questions in the assistant.</div>
 
-<main class="wrap">
-  <section class="stage">
-    <div class="seg stage-tabs" id="stage-tabs" role="tablist" aria-label="Main view">
-      <button id="stage-grid" class="on" type="button" role="tab" aria-selected="true">Timetable</button>
-      <button id="stage-model" type="button" role="tab" aria-selected="false">3D model <small>expert view</small></button>
+  <section class="tab-panel" id="tab-project" role="tabpanel" aria-labelledby="tabbtn-project" hidden>
+    <div class="tab-head"><div class="eyebrow">Project</div><h2>What are you timetabling?</h2>
+      <p class="lede">Open a timetable or start a new one. Upload your documents, or press Start wizard and answer a few plain questions in the assistant. <a href="#" id="why-plane">Why "Plane"?</a></p></div>
+    <div class="card project-card">
+    <div class="timetables" id="timetables">
+      <label for="timetable" class="eyebrow">Timetable</label>
+      <select id="timetable" aria-label="Current timetable"></select>
+      <button class="btn" id="tt-new" type="button" title="Create an empty timetable">New</button>
+      <button class="btn" id="tt-clone" type="button" title="Copy this timetable as the starting point for another period">Clone</button>
+      <button class="btn" id="tt-rename" type="button">Rename</button>
+      <button class="btn" id="tt-delete" type="button">Delete</button>
     </div>
-    <div id="grid-view">
-      <div class="grid-pick">
-        <select id="grid-kind" aria-label="What to show"></select>
-        <input id="grid-filter" type="text" placeholder="type to find" aria-label="Find" autocomplete="off">
-        <select id="grid-target" aria-label="Which one"></select>
-        <label class="grid-week">Week of <input id="grid-date" type="date" aria-label="Week of"></label>
-        <span class="seg grid-zoom" role="group" aria-label="Cell size">
-          <button id="grid-zoom-out" type="button" title="Narrower columns">&minus;</button>
-          <button id="grid-zoom-fit" type="button" title="Fit the page width">Fit</button>
-          <button id="grid-zoom-in" type="button" title="Wider columns">+</button>
-        </span>
-        <button class="btn" id="grid-print" type="button" title="Print or download this timetable">Print this</button>
-        <button class="btn" id="rebuild" title="Place everything again from the draft">Rebuild from draft</button>
-      </div>
-      <div class="tt-wrap"><div id="grid"><p class="empty">No timetable yet.</p></div></div>
     </div>
-    <div id="model-view">
-    <div class="toolbar">
-      <div class="seg" role="group" aria-label="View direction">
-        <button id="view-orbit" class="on" data-view="orbit">Orbit</button>
-        <button id="view-P" data-view="P">Along P<small>room timetable</small></button>
-        <button id="view-L" data-view="L">Along L<small>person timetable</small></button>
-        <button id="view-T" data-view="T">Along T<small>who is where</small></button>
-      </div>
-      <div class="btns">
-        <div class="seg" role="group" aria-label="Zoom">
-          <button id="zoom-in" aria-label="Zoom in">+</button>
-          <button id="zoom-out" aria-label="Zoom out">&minus;</button>
-        </div>
-      </div>
-    </div>
-    <div class="view" id="view">
-      <canvas id="c"></canvas>
-      <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; people</div>
-      <div class="hint" id="hint">Drag to rotate &middot; scroll to zoom &middot; click a tile</div>
-    </div>
-    <div class="legend" id="legend"></div>
-    </div><!-- /model-view -->
-  </section>
-
-  <aside class="panel">
-    <section class="card">
-      <h2>Checks</h2>
-      <div class="checks" id="checks"></div>
-      <div class="verdict"><span class="dot" id="verdict-dot"></span><span id="verdict"></span></div>
-      <ul class="clashes" id="clash-list"></ul>
-    </section>
-
-    <section class="card">
-      <h2>Selected <span data-word="requirement">lesson</span> <span class="eyebrow">click a cell or a tile</span></h2>
-      <div id="selected"><p class="empty">Nothing selected. Click a <span data-word="requirement">lesson</span> in the timetable to see where it is and whether anything is wrong with it.</p></div>
-    </section>
-
-    <section class="card">
-      <details id="loads-details"><summary><h2 style="display:inline">Workload</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
-    </section>
-
-    <section class="card" id="periods-card">
-      <h2>Periods <button class="btn" id="period-new" type="button">New period</button></h2>
-      <ul class="periods" id="periods-list"></ul>
-      <p id="periods-note" class="periods-note" hidden></p>
-    </section>
-
-    <section class="card" id="relief-card">
-      <h2>Relief <button class="btn" id="absence-new" type="button">Add absence</button> <a class="btn" id="relief-ledger" href="/print/relief" target="_blank" rel="noopener" title="Covers taken by each teacher this term, as a printable page">Ledger</a></h2>
-      <ul class="relief" id="relief-list"></ul>
-      <p id="relief-note" class="relief-note" hidden></p>
-      <p id="relief-since" class="relief-note"></p>
-      <details id="relief-settings" class="relief-settings">
-        <summary>Relief settings <span id="relief-settings-summary" class="eyebrow"></span></summary>
-        <label for="relief-pool">Relief pool <span class="relief-hint">teachers asked first; hold Ctrl or ⌘ to pick several</span>
-          <select id="relief-pool" multiple size="6"></select></label>
-        <label for="relief-max-per-day">Most covers a teacher takes in a day <input id="relief-max-per-day" type="number" min="1" max="20" step="1"></label>
-        <label for="relief-term-start">Term starts <span class="relief-hint">the ledger and the fairness order count covers from this day; leave blank to use the term calendar's</span>
-          <input id="relief-term-start" type="date"></label>
-        <div class="relief-settings-actions"><button class="btn" id="relief-settings-save" type="button">Save</button> <span id="relief-settings-note" class="relief-hint"></span></div>
-      </details>
-    </section>
-
-    <section class="card">
-      <h2>Ask</h2>
-      <div class="q">
-        <select id="q-type" aria-label="Question type">
-          <option value="where">Where is a person at a time?</option>
-          <option value="who">Who is in a location at a time?</option>
-          <option value="both_free">When are two people both free?</option>
-          <option value="load">How loaded is a person?</option>
-        </select>
-        <div class="row" id="q-args"></div>
-        <button class="btn primary" id="q-run">Ask</button>
-      </div>
-      <div class="answer" id="q-answer"></div>
-      <details id="q-trace-details"><summary>How this was answered</summary><ul class="trace" id="q-trace"></ul></details>
-    </section>
-  </aside>
-</main>
-
-<div class="below">
-  <section id="intake">
+    <section id="intake" class="card">
     <div class="section-title">Intake <span class="eyebrow">upload, check, build</span> <button class="btn" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">Start wizard</button> <button class="btn" id="clear-uploads" type="button">Clear uploads</button></div>
     <div id="drop" class="drop">Drop files here or <input type="file" id="files" multiple accept=".pdf,.csv,.xlsx"></div>
     <div class="import-options">
@@ -155,41 +48,27 @@
       <label class="check"><input type="checkbox" id="classes-as-planes"> Also check each <span data-word="group">class</span> for clashes <span class="hint">(a <span data-word="group">class</span> is checked like a person)</span></label>
     </div>
     <div id="notes" class="notes"></div>
+    </section>
+  </section><!-- /tab-project -->
 
-    <div class="tabs seg" id="intake-tabs" role="tablist" aria-label="Intake view">
-      <button id="tab-draft" class="on" type="button" role="tab" aria-selected="true">Draft</button>
-      <button id="tab-plan" type="button" role="tab" aria-selected="false">Plan</button>
-      <button id="tab-assistant" type="button" role="tab" aria-selected="false">Assistant</button>
+  <section class="tab-panel" id="tab-manpower" role="tabpanel" aria-labelledby="tabbtn-manpower" hidden>
+    <div class="tab-head"><div class="eyebrow">Manpower</div><h2><span data-word="person" data-word-plural data-word-cap>People</span></h2>
+      <p class="lede">Everyone in the plan. Deploy them to <span data-word="group" data-word-plural>classes</span> on the board in Requirements.</p></div>
+    <div class="card">
+        <h3>Staff</h3>
+        <div class="tablewrap"><table class="grid" id="plan-staff"></table></div>
     </div>
+  </section><!-- /tab-manpower -->
 
-    <div id="draft-panel">
-      <p class="tab-note">The <strong>draft</strong> is the list of <span data-word="requirement" data-word-plural>lessons</span>, people and <span data-word="venue" data-word-plural>rooms</span> about to be placed. <strong>Quick timetable</strong> or <strong>Best timetable</strong> places it and makes it the timetable shown above. A timetable export (aSc) lands here directly.</p>
-      <div id="solve-bar" class="solve-bar" hidden>
-        <button class="btn" id="build" type="button" title="Places everything in seconds, without polishing">Quick timetable</button>
-        <span class="or">or</span>
-        <label for="solve-preset">Prefer</label>
-        <select id="solve-preset" aria-label="Solve preset">
-          <option value="close">Keep it close</option>
-          <option value="balanced">Balanced</option>
-          <option value="quality">Best quality</option>
-          <option value="custom">Custom weights (settings)</option>
-        </select>
-        <label for="solve-time">Time limit</label>
-        <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
-        <button class="btn primary" id="solve" type="button" title="Looks for the best arrangement under your preferences, up to the time limit">Best timetable</button>
-        <button class="btn" id="score-live" type="button" title="How good is the current timetable under these preferences?">Score current</button>
-      </div>
-      <div id="solve-progress" class="progress" hidden>
-        <div class="row"><span class="spinner"></span><span id="solve-label">Finding the best timetable…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
-        <div class="bar"><i id="solve-fill"></i></div>
-        <div class="meta" id="solve-meta"></div>
-      </div>
-      <div id="quality" class="quality" hidden></div>
-      <div id="draft" class="draft" hidden></div>
-      <div id="bookings" class="bookings" hidden></div>
-    </div>
+  <section class="tab-panel" id="tab-locations" role="tabpanel" aria-labelledby="tabbtn-locations" hidden>
+    <div class="tab-head"><div class="eyebrow">Locations</div><h2><span data-word="venue" data-word-plural data-word-cap>Rooms</span></h2>
+      <p class="lede">The <span data-word="venue" data-word-plural>rooms</span> in the current timetable. A <span data-word="venue">room</span>'s kind is set in the draft, on the Build tab.</p></div>
+    <div class="card"><div class="tablewrap"><table class="grid" id="locations-table"></table></div><p class="empty" id="locations-empty" hidden></p></div>
+  </section><!-- /tab-locations -->
 
-    <div id="plan" class="plan" hidden>
+  <section class="tab-panel" id="tab-requirements" role="tabpanel" aria-labelledby="tabbtn-requirements" hidden>
+    <div class="tab-head"><div class="eyebrow">Requirements</div><h2>What has to happen</h2></div>
+    <div id="plan" class="plan">
       <p class="tab-note">The <strong>plan</strong> is what the timetable must provide: for each group, how many <span data-word="requirement" data-word-plural>lessons</span> of each subject, who teaches them, what kind of <span data-word="venue">room</span>, and when people are free. Upload a staff deployment workbook or describe it in the chat, fix what the issues list says, then <strong>Generate draft</strong>.</p>
       <div class="plan-toolbar">
         <label class="plan-upload-label" for="plan-upload">Upload workbook
@@ -211,20 +90,190 @@
         <div class="tablewrap"><table class="grid" id="plan-requirements"></table></div>
       </div>
       <div class="plan-section">
-        <h3>Staff</h3>
-        <div class="tablewrap"><table class="grid" id="plan-staff"></table></div>
-      </div>
-      <div class="plan-section">
         <h3>Divisions &amp; bands</h3>
         <div class="tablewrap"><table class="grid" id="plan-divisions"></table></div>
       </div>
-      <div class="plan-section">
-        <h3>Rules</h3>
-        <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
-      </div>
       </div>
     </div>
-    <div id="assistant-panel" hidden>
+  </section><!-- /tab-requirements -->
+
+  <section class="tab-panel" id="tab-constraints" role="tabpanel" aria-labelledby="tabbtn-constraints" hidden>
+    <div class="tab-head"><div class="eyebrow">Constraints</div><h2>What must not happen</h2></div>
+    <div class="constraints-grid">
+      <div class="card"><h2>Timetable rules</h2><div id="constraints-rules"></div></div>
+      <div class="card"><h2>Rules in the plan</h2>
+        <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
+      </div>
+    </div>
+  </section><!-- /tab-constraints -->
+
+  <section class="tab-panel" id="tab-build" role="tabpanel" aria-labelledby="tabbtn-build" hidden>
+    <div class="tab-head"><div class="eyebrow">Build</div><h2>Build the timetable</h2></div>
+    <div class="docked">
+      <div class="card">
+    <div id="draft-panel">
+      <p class="tab-note">The <strong>draft</strong> is the list of <span data-word="requirement" data-word-plural>lessons</span>, people and <span data-word="venue" data-word-plural>rooms</span> about to be placed. <strong>Quick timetable</strong> or <strong>Best timetable</strong> places it and makes it the timetable on the Summary tab. A timetable export (aSc) lands here directly.</p>
+      <div id="solve-bar" class="solve-bar" hidden>
+        <button class="btn" id="build" type="button" title="Places everything in seconds, without polishing">Quick timetable</button>
+        <span class="or">or</span>
+        <label for="solve-preset">Prefer</label>
+        <select id="solve-preset" aria-label="Solve preset">
+          <option value="close">Keep it close</option>
+          <option value="balanced">Balanced</option>
+          <option value="quality">Best quality</option>
+          <option value="custom">Custom weights (settings)</option>
+        </select>
+        <label for="solve-time">Time limit</label>
+        <input id="solve-time" type="number" min="10" max="900" step="1" aria-label="Time limit in seconds"><span class="unit">s</span>
+        <button class="btn primary" id="solve" type="button" title="Looks for the best arrangement under your preferences, up to the time limit">Best timetable</button>
+        <button class="btn" id="score-live" type="button" title="How good is the current timetable under these preferences?">Score current</button>
+        <button class="btn" id="rebuild" title="Place everything again from the draft">Rebuild from draft</button>
+      </div>
+      <div id="solve-progress" class="progress" hidden>
+        <div class="row"><span class="spinner"></span><span id="solve-label">Finding the best timetable…</span><button class="btn" id="solve-cancel" type="button" title="Stop the search and keep the best timetable found so far">Stop, keep best</button></div>
+        <div class="bar"><i id="solve-fill"></i></div>
+        <div class="meta" id="solve-meta"></div>
+      </div>
+      <div id="quality" class="quality" hidden></div>
+      <div id="draft" class="draft" hidden></div>
+      <div id="bookings" class="bookings" hidden></div>
+    </div>
+      </div>
+      <div class="model-dock" id="dock-build"></div>
+    </div>
+  </section><!-- /tab-build -->
+
+  <section class="tab-panel" id="tab-consolidation" role="tabpanel" aria-labelledby="tabbtn-consolidation" hidden>
+    <div class="tab-head"><div class="eyebrow">Consolidation</div><h2 id="consolidation-title">Checks</h2></div>
+    <div class="docked">
+    <section class="card">
+      <h2>Checks</h2>
+      <div class="checks" id="checks"></div>
+      <div class="verdict"><span class="dot" id="verdict-dot"></span><span id="verdict"></span></div>
+      <ul class="clashes" id="clash-list"></ul>
+    </section>
+      <div class="model-dock" id="dock-consolidation"></div>
+    </div>
+  </section><!-- /tab-consolidation -->
+
+  <section class="tab-panel" id="tab-summary" role="tabpanel" aria-labelledby="tabbtn-summary" hidden>
+    <div class="tab-head tab-head-row">
+      <div><div class="eyebrow">Summary</div><h2>Timetable</h2></div>
+      <div class="tab-actions">
+        <label class="check"><input type="checkbox" id="hide-setup"> Hide setup tabs 2–8</label>
+        <button class="btn" id="print-open" type="button" title="Print or download timetables">Print</button>
+      </div>
+    </div>
+    <div class="docked">
+      <div class="card grid-card">
+    <div id="grid-view">
+      <div class="grid-pick">
+        <select id="grid-kind" aria-label="What to show"></select>
+        <input id="grid-filter" type="text" placeholder="type to find" aria-label="Find" autocomplete="off">
+        <select id="grid-target" aria-label="Which one"></select>
+        <label class="grid-week">Week of <input id="grid-date" type="date" aria-label="Week of"></label>
+        <span class="seg grid-zoom" role="group" aria-label="Cell size">
+          <button id="grid-zoom-out" type="button" title="Narrower columns">&minus;</button>
+          <button id="grid-zoom-fit" type="button" title="Fit the page width">Fit</button>
+          <button id="grid-zoom-in" type="button" title="Wider columns">+</button>
+        </span>
+        <button class="btn" id="grid-print" type="button" title="Print or download this timetable">Print this</button>
+        <button class="btn icon" type="button" data-expand="grid-view" title="Full screen" aria-label="Full screen"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"></path></svg></button>
+      </div>
+      <div class="tt-wrap"><div id="grid"><p class="empty">No timetable yet.</p></div></div>
+    </div>
+      </div>
+      <div class="model-dock" id="dock-summary">
+    <div id="model-view">
+    <div class="toolbar">
+      <div class="seg" role="group" aria-label="View direction">
+        <button id="view-orbit" class="on" data-view="orbit">Orbit</button>
+        <button id="view-P" data-view="P" title="Room timetable">Along P<small>room timetable</small></button>
+        <button id="view-L" data-view="L" title="Person timetable">Along L<small>person timetable</small></button>
+        <button id="view-T" data-view="T" title="Who is where">Along T<small>who is where</small></button>
+      </div>
+      <div class="btns">
+        <div class="seg" role="group" aria-label="Zoom">
+          <button id="zoom-in" aria-label="Zoom in">+</button>
+          <button id="zoom-out" aria-label="Zoom out">&minus;</button>
+        </div>
+        <button class="btn icon" type="button" data-expand="model-view" title="Full screen" aria-label="Full screen"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"></path></svg></button>
+      </div>
+    </div>
+    <div class="view" id="view">
+      <canvas id="c"></canvas>
+      <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; people</div>
+      <div class="hint" id="hint">Drag to rotate &middot; scroll to zoom &middot; click a tile</div>
+    </div>
+    <div class="legend" id="legend"></div>
+    </div><!-- /model-view -->
+        <section class="card" id="selected-card">
+      <h2>Selected <span data-word="requirement">lesson</span> <span class="eyebrow">click a cell or a tile</span></h2>
+      <div id="selected"><p class="empty">Nothing selected. Click a <span data-word="requirement">lesson</span> in the timetable to see where it is and whether anything is wrong with it.</p></div>
+        </section>
+      </div>
+    </div>
+    <div class="summary-below">
+    <section class="card">
+      <details id="loads-details"><summary><h2 style="display:inline">Workload</h2> <span id="loads-summary" class="eyebrow"></span></summary><div class="loads" id="loads"></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Ask</h2>
+      <div class="q">
+        <select id="q-type" aria-label="Question type">
+          <option value="where">Where is a person at a time?</option>
+          <option value="who">Who is in a location at a time?</option>
+          <option value="both_free">When are two people both free?</option>
+          <option value="load">How loaded is a person?</option>
+        </select>
+        <div class="row" id="q-args"></div>
+        <button class="btn primary" id="q-run">Ask</button>
+      </div>
+      <div class="answer" id="q-answer"></div>
+      <details id="q-trace-details"><summary>How this was answered</summary><ul class="trace" id="q-trace"></ul></details>
+    </section>
+    </div>
+  </section><!-- /tab-summary -->
+
+  <section class="tab-panel" id="tab-relief" role="tabpanel" aria-labelledby="tabbtn-relief" hidden>
+    <div class="tab-head"><div class="eyebrow">Relief</div><h2>Absences and cover</h2></div>
+    <section class="card" id="relief-card">
+      <h2>Relief <button class="btn" id="absence-new" type="button">Add absence</button> <a class="btn" id="relief-ledger" href="/print/relief" target="_blank" rel="noopener" title="Covers taken by each teacher this term, as a printable page">Ledger</a></h2>
+      <ul class="relief" id="relief-list"></ul>
+      <p id="relief-note" class="relief-note" hidden></p>
+      <p id="relief-since" class="relief-note"></p>
+      <details id="relief-settings" class="relief-settings">
+        <summary>Relief settings <span id="relief-settings-summary" class="eyebrow"></span></summary>
+        <label for="relief-pool">Relief pool <span class="relief-hint">teachers asked first; hold Ctrl or ⌘ to pick several</span>
+          <select id="relief-pool" multiple size="6"></select></label>
+        <label for="relief-max-per-day">Most covers a teacher takes in a day <input id="relief-max-per-day" type="number" min="1" max="20" step="1"></label>
+        <label for="relief-term-start">Term starts <span class="relief-hint">the ledger and the fairness order count covers from this day; leave blank to use the term calendar's</span>
+          <input id="relief-term-start" type="date"></label>
+        <div class="relief-settings-actions"><button class="btn" id="relief-settings-save" type="button">Save</button> <span id="relief-settings-note" class="relief-hint"></span></div>
+      </details>
+    </section>
+  </section><!-- /tab-relief -->
+
+  <section class="tab-panel" id="tab-custom" role="tabpanel" aria-labelledby="tabbtn-custom" hidden>
+    <div class="tab-head"><div class="eyebrow">Custom timetable</div><h2>A timetable for a short period</h2>
+      <p class="lede">An exam week, a camp, the weeks after exams. Everything outside its scope is copied from the normal timetable; you plan only what changes.</p></div>
+    <section class="card" id="periods-card">
+      <h2>Periods <button class="btn" id="period-new" type="button">New period</button></h2>
+      <ul class="periods" id="periods-list"></ul>
+      <p id="periods-note" class="periods-note" hidden></p>
+    </section>
+  </section><!-- /tab-custom -->
+</main>
+
+<aside id="assistant" aria-label="Assistant">
+  <div class="assistant-head">
+    <span class="assistant-dot" aria-hidden="true"></span><span class="assistant-name">Assistant</span>
+    <span class="tag accent" id="assistant-context"></span>
+    <button class="btn ghost icon" id="assistant-collapse" type="button" aria-controls="assistant" aria-expanded="true" title="Collapse the assistant" aria-label="Collapse the assistant">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l5 5-5 5"></path></svg></button>
+  </div>
+  <div id="assistant-panel">
       <p class="tab-note">The <strong>assistant</strong> answers questions about the timetable, proposes changes and applies one only after your yes. Try “Where is Ms Lee at P3?”, “Fix Mr Tan's clashes”, “Ms Lee is away on Tuesday”, or <strong>Start wizard</strong> to set up a new timetable from a few plain questions.</p>
       <div id="wizard" class="card wizard" hidden>
         <h2>Start wizard <span class="eyebrow">options that fit what you told the assistant</span></h2>
@@ -237,16 +286,18 @@
       <div id="chat-log" class="chat-log"></div>
       <form id="chat-form" class="chat-form"><input id="chat-text" autocomplete="off" placeholder="Where is Ms Lee at P3?" aria-label="Message"><button class="btn primary" type="submit">Send</button></form>
     </section>
-    </div>
-  </section>
-
-</div>
+  </div>
+</aside>
+<button id="assistant-rail" type="button" aria-controls="assistant" aria-expanded="false" title="Open the assistant" hidden>
+  <span class="assistant-dot" aria-hidden="true"></span><span class="assistant-rail-label">Assistant</span>
+</button>
+</div><!-- /app-body -->
 
 <dialog id="why-dialog" class="dialog">
   <form method="dialog">
     <h2>Why "Plane"?</h2>
     <p class="dialog-text">Every person is a plane. Time runs along it, location runs up it, and its shape is the person's contract. A lesson or shift is a prism that pierces every plane it needs at the same time and place. Rest is a row of its own.</p>
-    <p class="dialog-text">You never need this picture; the Timetable tab shows the same thing as a grid.</p>
+    <p class="dialog-text">You never need this picture; the Summary tab shows the same thing as a grid.</p>
     <div class="dialog-actions"><button type="submit" class="btn primary">Close</button></div>
   </form>
 </dialog>
@@ -364,5 +415,7 @@
 <script src="/static/relief.js"></script>
 <script src="/static/print.js"></script>
 <script src="/static/grid.js"></script>
+<script src="/static/tabs.js"></script>
+<script src="/static/shell.js"></script>
 </body>
 </html>

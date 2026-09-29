@@ -1,0 +1,26 @@
+{#- The top bar (spec docs/superpowers/specs/2026-09-29-nocturne-redesign-design.md §2). On the main page
+    (appbar_page == "index") the tabs are buttons shell.js drives; on other pages they link back to it. -#}
+{%- set steps = [("project", "02", "Project"), ("manpower", "03", "Manpower"), ("locations", "04", "Locations"),
+                 ("requirements", "05", "Requirements"), ("constraints", "06", "Constraints"), ("build", "07", "Build"),
+                 ("consolidation", "08", "Consolidation"), ("summary", "09", "Summary"), ("relief", "10", "Relief"),
+                 ("custom", "11", "Custom")] %}
+<header class="appbar">
+  <a class="appbar-brand" href="/" title="Plane Timetabling">
+    <span class="appbar-mark" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 5l6-3 6 3-6 3-6-3z"></path><path d="M2 8l6 3 6-3"></path><path d="M2 11l6 3 6-3"></path></svg></span>
+    <span class="appbar-word">Plane</span>
+  </a>
+  <nav class="appbar-tabs" role="tablist" aria-label="Steps">
+    {%- for key, n, label in steps %}
+    {%- if appbar_page == "index" %}
+    <button type="button" role="tab" class="appbar-tab" id="tabbtn-{{ key }}" data-tab="{{ key }}" data-label="{{ label }}" aria-selected="false" aria-controls="tab-{{ key }}"><span class="n">{{ n }}</span>{{ label }}</button>
+    {%- else %}
+    <a role="tab" class="appbar-tab" id="tabbtn-{{ key }}" data-tab="{{ key }}" href="/#{{ key }}" aria-selected="false"><span class="n">{{ n }}</span>{{ label }}</a>
+    {%- endif %}
+    {%- endfor %}
+    <a role="tab" class="appbar-tab{{ ' on' if appbar_page == 'settings' else '' }}" id="tabbtn-settings" href="/settings" aria-selected="{{ 'true' if appbar_page == 'settings' else 'false' }}"><span class="n">12</span>Settings</a>
+  </nav>
+  <div class="appbar-end">
+    {%- if appbar_page == "index" %}<span class="tag" id="tt-current"></span>{% endif %}
+    <form method="post" action="/logout"><button class="btn ghost" type="submit">Log out</button></form>
+  </div>
+</header>

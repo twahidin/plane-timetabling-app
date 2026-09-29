@@ -6,19 +6,13 @@
 <title>Settings &middot; Plane Timetabling</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
-
-<header class="top">
-  <div>
-    <div class="eyebrow">Settings</div>
-    <h1>Plane Timetabling</h1>
-    <p class="lede">The time grid and rules shape every extraction; the solve weights say what a good timetable is; the model provider reads your documents and answers chat; the engine builds, solves and checks the solid.</p>
-  </div>
-  <div class="links">
-    <a href="/">Back to the timetable</a>
-    <form method="post" action="/logout"><button class="btn" type="submit">Log out</button></form>
-  </div>
-</header>
+<body data-page="settings">
+{% set appbar_page = "settings" %}
+{% include "partials/appbar.html" %}
+<main class="settings-main">
+  <div class="tab-head"><div class="eyebrow">Settings</div><h1>Administrator</h1>
+    <p class="lede">The time grid and rules shape every extraction; the solve weights say what a good timetable is; the model provider reads your documents and answers chat; the engine builds, solves and checks the timetable.</p></div>
+  <div class="settings-grid">
 
 <section id="accounts" class="form accounts" aria-labelledby="accounts-title">
   <fieldset>
@@ -117,6 +111,8 @@
     <span class="msg-line" id="msg"></span>
   </div>
 </form>
+  </div>
+</main>
 
 <script src="/static/settings.js"></script>
 <script src="/static/accounts.js"></script>
