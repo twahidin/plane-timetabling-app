@@ -51,6 +51,10 @@ explains it); both the grid and the 3D view have a full-screen button (Escape cl
 setup tabs 2–8" on Summary keeps the bar short once the timetable is running. Once a start-wizard
 template is chosen, the page uses its words (nurses, wards, shifts) everywhere.
 
+Templates load scripts and the stylesheet through `{{ asset('name') }}` (`plane_app/assets.py`),
+which adds a hash of the file's contents (`/static/model.js?v=…`): a deploy that changes a file
+changes its address, so browsers never run a cached old copy beside a new one.
+
 ## Quick and best timetables
 
 **Quick timetable** places a draft in seconds. **Best timetable** runs the constraint solver as a

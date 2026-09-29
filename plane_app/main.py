@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import auth
+from .assets import make_asset_url
 from . import users
 from . import bookings
 from . import calendar as cal_mod
@@ -176,6 +177,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
         with solve_locks_guard:
             return app.state.solve_locks.setdefault(db.current_timetable(), threading.Lock())
     templates = Jinja2Templates(directory=str(HERE / "templates"))
+    templates.env.globals["asset"] = make_asset_url(HERE / "static")   # versioned /static URLs (assets.py)
     app.include_router(print_router(db, templates))
     app.include_router(plan_router(db))
     app.include_router(grid_router(db))

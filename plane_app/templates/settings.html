@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Settings &middot; Plane Timetabling</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
 </head>
 <body data-page="settings">
 {% set appbar_page = "settings" %}
@@ -114,7 +114,7 @@
   </div>
 </main>
 
-<script src="/static/settings.js"></script>
-<script src="/static/accounts.js"></script>
+<script src="{{ asset('settings.js') }}"></script>
+<script src="{{ asset('accounts.js') }}"></script>
 </body>
 </html>

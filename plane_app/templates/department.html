@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ dept }} &middot; Plane Timetabling</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="{{ asset('app.css') }}">
 </head>
 {#- A head of department's page (spec docs/superpowers/specs/2026-09-27-department-accounts-design.md §5):
     their department's board and the live timetable, read-only. Its scripts call only the routes a
@@ -46,7 +46,7 @@
 <main class="password-first dialog" id="password-first">
   {{ password_form(true) }}
 </main>
-<script src="/static/department.js"></script>
+<script src="{{ asset('department.js') }}"></script>
 {% else %}
 
 <main class="dept-main">
@@ -90,13 +90,13 @@
   {{ password_form(false) }}
 </dialog>
 
-<script src="/static/words.js"></script>
-<script src="/static/board-tray.js"></script>
-<script src="/static/board-forms.js"></script>
-<script src="/static/board-status.js"></script>
-<script src="/static/board.js"></script>
-<script src="/static/grid.js"></script>
-<script src="/static/department.js"></script>
+<script src="{{ asset('words.js') }}"></script>
+<script src="{{ asset('board-tray.js') }}"></script>
+<script src="{{ asset('board-forms.js') }}"></script>
+<script src="{{ asset('board-status.js') }}"></script>
+<script src="{{ asset('board.js') }}"></script>
+<script src="{{ asset('grid.js') }}"></script>
+<script src="{{ asset('department.js') }}"></script>
 {% endif %}
 </body>
 </html>
