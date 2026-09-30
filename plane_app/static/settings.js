@@ -14,6 +14,25 @@
     tokenrouter: 'https://api.tokenrouter.io/v1',
   };
   const DEFAULT_MODEL = { anthropic: 'claude-opus-5-5' };
+  // The Claude models Settings lists (mirrors plane_app.llm.anthropic_provider.FALLBACK_MODELS); any other
+  // model, and every model of an OpenAI-compatible provider, is typed into the Model name box.
+  const CLAUDE_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1'];
+  function showModel(kind, model) {
+    const listed = kind === 'anthropic' && CLAUDE_MODELS.includes(model);
+    const choice = el('model_choice');
+    choice.hidden = kind !== 'anthropic';
+    choice.closest('label').hidden = kind !== 'anthropic';
+    choice.value = listed ? model : 'other';
+    el('model').value = listed ? '' : (model || '');
+    el('model_label').hidden = listed;
+    el('model_help').textContent = kind === 'anthropic' ? 'a Claude model ID, for example claude-haiku-4-5'
+      : 'exactly as your provider lists it, for example an OpenAI model name';
+  }
+  function chosenModel() {
+    const kind = el('provider_kind').value;
+    if (kind === 'anthropic' && el('model_choice').value !== 'other') return el('model_choice').value;
+    return el('model').value.trim();
+  }
   // Mirrors plane_app.db.PRESETS (the server is the authority; these fill the inputs when a preset is picked)
   const RULES = ['spread', 'stability', 'compact', 'even_days', 'edge', 'venue'];
   const PRESETS = {
@@ -54,7 +73,7 @@
     el('max_run').value = r.max_run ?? 4;
     el('mandatory_rest').value = (r.mandatory_rest || []).join(', ');
     el('provider_kind').value = p.kind || 'anthropic';
-    el('model').value = p.model || '';
+    showModel(p.kind || 'anthropic', p.model || '');
     el('base_url').value = p.base_url || '';
     el('api_key').value = p.api_key || '';
     el('engine_url').value = e.url || '';
@@ -85,7 +104,7 @@
     return {
       time: { slot_minutes: ints('slot_minutes'), slots_per_day: n, start: el('start').value, labels },
       rules: { max_load: ints('max_load'), max_run: ints('max_run'), mandatory_rest: rest },
-      provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: el('model').value.trim() },
+      provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: chosenModel() },
       engine: { url: el('engine_url').value.trim(), key: el('engine_key').value },
       solve: { preset: el('solve_preset').value, time_limit: solveLimit(), weights: Object.fromEntries(RULES.map((r) => [r, weight(r)])) },
       calendar: {
@@ -113,10 +132,15 @@
     if (w) RULES.forEach((r) => { el('w_' + r).value = w[r]; });
   });
   RULES.forEach((r) => el('w_' + r).addEventListener('input', () => { el('solve_preset').value = 'custom'; }));
+  el('model_choice').addEventListener('change', () => {
+    const other = el('model_choice').value === 'other';
+    el('model_label').hidden = !other;
+    if (other) el('model').focus();
+  });
   el('provider_kind').addEventListener('change', () => {
     const kind = el('provider_kind').value;
     el('base_url').value = DEFAULT_BASE_URLS[kind] || '';
-    el('model').value = DEFAULT_MODEL[kind] || '';
+    showModel(kind, DEFAULT_MODEL[kind] || '');
     el('api_key').value = '';   // a key belongs to one provider; never carry it across a switch
   });
 

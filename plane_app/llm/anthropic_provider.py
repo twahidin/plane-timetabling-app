@@ -31,14 +31,31 @@ def to_anthropic_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+# The models Settings lists. Each can decline a request under its safeguards; for these the API's
+# server-side fallback re-runs a declined request on a suitable model inside the same call.
+FALLBACK_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")
+
+
 class AnthropicProvider:
     def __init__(self, api_key: str, model: str):
         self.model = model
         self.client = anthropic.Anthropic(api_key=api_key)
 
+    def _create(self, **kw):
+        if self.model in FALLBACK_MODELS:
+            return self.client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kw)
+        return self.client.messages.create(**kw)      # a model typed in Settings: no fallback, which it may not accept
+
+    @staticmethod
+    def _check(resp) -> None:
+        """A declined request comes back as HTTP 200 with stop_reason "refusal" and no answer: say so."""
+        if getattr(resp, "stop_reason", None) == "refusal":
+            category = getattr(getattr(resp, "stop_details", None), "category", None)
+            raise ProviderError("The model declined this request" + (f" ({category})." if category else "."))
+
     def complete(self, system: str, messages: list[dict], tools: list[ToolSpec]) -> Turn:
         try:
-            resp = self.client.messages.create(
+            resp = self._create(
                 model=self.model, max_tokens=8000, system=system,
                 output_config={"effort": "high"},   # Opus 5.5 defaults to medium; keep the depth Opus 5 ran at
                 messages=to_anthropic_messages(messages),
@@ -46,6 +63,7 @@ class AnthropicProvider:
             )
         except anthropic.APIError as e:
             raise ProviderError(f"Anthropic: {e}")
+        self._check(resp)
         text, calls = [], []
         for b in resp.content:
             if b.type == "text":
@@ -56,13 +74,14 @@ class AnthropicProvider:
 
     def extract_json(self, system: str, user: str, schema: dict) -> dict:
         try:
-            resp = self.client.messages.create(
+            resp = self._create(
                 model=self.model, max_tokens=16000, system=system,
                 messages=[{"role": "user", "content": user}],
                 output_config={"effort": "high", "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)}},
             )
         except anthropic.APIError as e:
             raise ProviderError(f"Anthropic: {e}")
+        self._check(resp)
         text = next((b.text for b in resp.content if b.type == "text"), "")
         try:
             return json.loads(text)

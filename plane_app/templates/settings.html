@@ -95,7 +95,14 @@
   <fieldset>
     <legend>Model provider</legend>
     <label>Provider<select id="provider_kind"><option value="anthropic">anthropic</option><option value="openai">openai</option><option value="openrouter">openrouter</option><option value="tokenrouter">tokenrouter</option></select></label>
-    <label>Model<input type="text" id="model"></label>
+    <label for="model_choice">Model
+      <select id="model_choice">
+        <option value="claude-opus-5-5">Claude Opus 5.5 (recommended)</option>
+        <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (faster, cheaper)</option>
+        <option value="claude-fable-5-1">Claude Fable 5.1 (most capable, costs more)</option>
+        <option value="other">Another model: type its name</option>
+      </select></label>
+    <label id="model_label" for="model">Model name <span class="help" id="model_help">exactly as your provider lists it</span><input type="text" id="model" autocomplete="off" spellcheck="false"></label>
     <label class="wide">Base URL <span class="help">only for OpenAI-compatible providers</span><input type="text" id="base_url"></label>
     <label class="wide">API key <span class="help">stored server-side; shown masked</span><input type="password" id="api_key"></label>
   </fieldset>
