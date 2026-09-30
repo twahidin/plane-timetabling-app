@@ -89,6 +89,13 @@
   function candidateCard(c) {
     const card = node('div', 'wizard-candidate');
     card.appendChild(node('h4', null, c.name));
+    // where the template comes from (learning spec §1.3, §2.2): the school's own, or another school's shared one
+    if (c.shared) {
+      card.appendChild(node('div', 'wizard-origin',
+        `Shared by other schools · used by ${Number(c.shared.schools) || 0} · ${Number(c.shared.kept) || 0} kept`));
+    } else if (c.local) {
+      card.appendChild(node('div', 'wizard-origin', 'Your template'));
+    }
     const trade = (c.tradeoffs || [])[0];
     if (trade) card.appendChild(node('p', null, trade));
     const fl = factsLine(c.facts);

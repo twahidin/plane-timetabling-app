@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import auth, users
 from ..config import MAX_UPLOAD
+from ..learning import sharing
 from . import board as B
 from . import export as X
 from . import generate as G
@@ -212,7 +213,7 @@ def make_router(db) -> APIRouter:
         return {"plan": plan, "issues": [_issue_dict(i) for i in issues], "note": note}
 
     @r.post("/api/plan/generate")
-    def generate_plan(sid: str = Depends(auth.require_session)):
+    def generate_plan(request: Request, background: BackgroundTasks, sid: str = Depends(auth.require_session)):
         plan = _current_plan(db)
         settings = db.get_settings()
         base_org = db.get_org("live")
@@ -222,6 +223,10 @@ def make_router(db) -> APIRouter:
             return JSONResponse({"detail": f"{len(blocks)} blocking issues", "blocks": capped(blocks)}, status_code=409)
         org, summary = G.generate(plan, base_org, settings)
         db.set_org("draft", org)
+        # a timetable started from another school's shared template: the first draft reports it kept (§2.2), after
+        # the response has gone, so a slow engine never holds the draft
+        background.add_task(sharing.report_kept, db, lambda: request.app.state.engine_factory(db.get_settings()),
+                            db.working_timetable())
         return {"ok": True, "summary": summary, "issues": [_issue_dict(i) for i in issues]}
 
     def _xlsx(data: bytes, filename: str) -> Response:

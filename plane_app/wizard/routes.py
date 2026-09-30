@@ -7,13 +7,15 @@ the plan's vocabulary and the three downloads (workbook, sample PDF, guide). No 
 chat tools (`chat.py`), so the route handlers and the tools write the same thing the same way."""
 from __future__ import annotations
 
+import copy
 import time as _time
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
 from .. import auth
 from ..engine_client import EngineError
+from ..learning import sharing
 from ..plan import model as M
 from . import instantiate as I
 from . import library as L
@@ -23,49 +25,93 @@ from . import library as L
 DOWNLOADS = {"workbook": "/api/wizard/workbook.xlsx", "sample": "/api/wizard/sample.pdf", "guide": "/api/wizard/guide"}
 
 
-def resolve(template_id, knobs, db=None) -> tuple[dict, dict]:
+def _chosen_shared(db, template_id: str) -> dict | None:
+    """The shared template this timetable was started from, as the wizard record keeps it: its downloads and
+    preview keep working when the engine cannot be reached or no longer offers it."""
+    record = db.get_value("wizard") if db is not None else None
+    if (isinstance(record, dict) and record.get("template") == template_id
+            and isinstance(record.get("shared_template"), dict)):
+        try:
+            return L.validate_template(copy.deepcopy(record["shared_template"]))
+        except L.WizardError:
+            return None
+    return None
+
+
+def resolve(template_id, knobs, db=None, engine=None) -> tuple[dict, dict]:
     """The template and its checked knobs for an id and knob values a caller gave; with a db, the
-    school's own templates resolve too. Raises `KeyError` for an unknown template id,
-    `library.WizardError` for a knob out of range — each caller (an HTTP route or a chat tool) turns
-    that into its own error shape."""
-    template = L.get(str(template_id or ""), db)
+    school's own templates resolve too, and with an engine as well other schools' shared ones. Raises
+    `KeyError` for an unknown template id, `library.WizardError` for a knob out of range — each caller
+    (an HTTP route or a chat tool) turns that into its own error shape."""
+    template_id = str(template_id or "")
+    try:
+        template = L.get(template_id, db, engine)
+    except KeyError:
+        template = _chosen_shared(db, template_id) if template_id.startswith(L.SHARED_PREFIX) else None
+        if template is None:
+            raise
     return template, L.check_knobs(template, knobs if isinstance(knobs, dict) else {})
 
 
-def instantiate(db, template: dict, knobs: dict) -> dict:
+def instantiate(db, template: dict, knobs: dict, engine=None, background=None) -> dict:
     """Write the timetable's settings (through the same cleaning `PUT /api/settings` uses), the
     wizard's own record of the choice, and the plan's vocabulary (creating an empty plan when there
     is none yet); return the facts and the three download links. A school's own template also brings
     its solver preset and weights and its plan rules (learning spec §1.3); a built-in one leaves them
-    as they are."""
+    as they are. A shared template (learning spec §2.2) is kept in the record with its item id, and its use
+    reported to the engine (a failure there is ignored) — after the response when a route passes its
+    `BackgroundTasks`, else at once with the library's short timeout (a chat tool, already inside a slow turn)."""
     settings = I.settings_for(template, knobs, db.get_settings())
     groups = {"time": settings["time"], "rules": settings["rules"]}
     if I.solve_for(template):
         groups["solve"] = I.solve_for(template)                   # cleaned by store_settings; keeps the time limit
     db.store_settings(groups)
-    db.set_value("wizard", {"template": template["id"], "knobs": knobs, "chosen_at": _time.time()})
+    record = {"template": template["id"], "knobs": knobs, "chosen_at": _time.time()}
+    shared = template.get("shared") if template["id"].startswith(L.SHARED_PREFIX) else None
+    if isinstance(shared, dict) and shared.get("id"):
+        record["shared_id"] = shared["id"]
+        record["shared_template"] = copy.deepcopy(template)
+    db.set_value("wizard", record)
     with db.plan_lock():
         plan = db.get_value("plan") or M.empty_plan()
         patch = {"vocabulary": dict(template["vocabulary"])}
         if I.plan_rules_for(template):
             patch["rules"] = I.plan_rules_for(template)             # merged into the plan's rules; pins stay
         db.set_value("plan", M.apply_patch(plan, patch))
+    if "shared_id" in record:
+        if background is not None:
+            background.add_task(sharing.report_use, engine, template)
+        else:
+            sharing.report_use(engine, template)
     return {"facts": I.facts(template, knobs), "downloads": dict(DOWNLOADS)}
 
 
 def make_router(db, templates, engine) -> APIRouter:
     r = APIRouter()
 
-    def _template(template_id) -> dict:
+    def _engine():
+        """The engine for the shared library, or None when none can be made (the rest of the wizard works)."""
         try:
-            return L.get(str(template_id or ""), db)
-        except KeyError:
+            return engine()
+        except Exception:       # noqa: BLE001 - no engine configured: built-in and local templates only
+            return None
+
+    def _template(template_id) -> dict:
+        """The template of the wizard's record (a shared one from the record itself: no engine call)."""
+        kept = _chosen_shared(db, str(template_id or ""))
+        if kept is not None:
+            return kept
+        try:
+            return resolve(template_id, {}, db, _engine() if str(template_id or "").startswith(L.SHARED_PREFIX)
+                           else None)[0]
+        except (KeyError, L.WizardError):
             raise HTTPException(404, f"no such template {template_id!r}")
 
     def _resolved(body: dict) -> tuple[dict, dict]:
         body = body if isinstance(body, dict) else {}
+        shared = str(body.get("template") or "").startswith(L.SHARED_PREFIX)
         try:
-            return resolve(body.get("template"), body.get("knobs"), db)
+            return resolve(body.get("template"), body.get("knobs"), db, _engine() if shared else None)
         except KeyError:
             raise HTTPException(404, f"no such template {body.get('template')!r}")
         except L.WizardError as e:
@@ -81,7 +127,7 @@ def make_router(db, templates, engine) -> APIRouter:
 
     @r.get("/api/wizard/library")
     def library(sid: str = Depends(auth.require_session)):
-        return L.domains(db)
+        return L.listing(db, _engine())
 
     @r.post("/api/wizard/preview")
     def preview(body: dict, sid: str = Depends(auth.require_session)):
@@ -89,9 +135,9 @@ def make_router(db, templates, engine) -> APIRouter:
         return I.facts(template, knobs)
 
     @r.post("/api/wizard/instantiate")
-    def instantiate_route(body: dict, sid: str = Depends(auth.require_session)):
+    def instantiate_route(body: dict, background: BackgroundTasks, sid: str = Depends(auth.require_session)):
         template, knobs = _resolved(body)
-        result = instantiate(db, template, knobs)
+        result = instantiate(db, template, knobs, _engine() if "shared" in template else None, background)
         return {"ok": True, **result}
 
     @r.get("/api/wizard")

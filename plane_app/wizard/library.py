@@ -61,6 +61,10 @@ EDGE_SUBJECTS_MAX, EDGE_SUBJECT_CHARS = 30, 60
 # ones in their domain. Their ids always start with LOCAL_PREFIX, so one never shadows a built-in id.
 LOCAL_KEY = "local_templates"
 LOCAL_PREFIX = "local-"
+# Other schools' approved templates from the engine library (learning spec §2.2), listed after the school's
+# own: `shared-<item id>`, which no built-in or local id can equal.
+SHARED_PREFIX = "shared-"
+SHARED_ERROR = "The shared library could not be reached."
 
 _cache: dict[str, dict] | None = None
 
@@ -331,41 +335,77 @@ def local(db) -> dict[str, dict]:
     return out
 
 
-def _all(db=None) -> dict[str, dict]:
-    """The built-in templates, then (given a db) the school's own. The built-in cache is never
-    written to: the local ones are read fresh from the db each time."""
+def _shared(db, engine, errors: list | None = None) -> dict[str, dict]:
+    """Other schools' approved templates (learning spec §2.2), when there is an engine to ask. The engine
+    being unreachable is not an error here: the wizard lists the rest and `errors` gets SHARED_ERROR."""
+    if db is None or engine is None:
+        return {}
+    from ..learning import sharing                       # not at import time: sharing imports this module
+    try:
+        return {t["id"]: t for t in sharing.shared_templates(db, engine)}
+    except Exception:       # noqa: BLE001 - an engine error or an unreadable answer: list without them
+        if errors is not None:
+            errors.append(SHARED_ERROR)
+        return {}
+
+
+def _all(db=None, engine=None, errors: list | None = None) -> dict[str, dict]:
+    """The built-in templates, then (given a db) the school's own, then (given an engine too) other schools'
+    shared ones. The built-in cache is never written to: the others are read fresh each time (the shared ones
+    through `sharing`'s short cache)."""
     templates = _load()
-    return {**templates, **local(db)} if db is not None else templates
+    if db is None:
+        return templates
+    return {**templates, **local(db), **_shared(db, engine, errors)}
 
 
-def load_all(db=None) -> dict[str, dict]:
+def load_all(db=None, engine=None) -> dict[str, dict]:
     """Every template by id, in the order of the launch table, then the school's own when a db is
-    given. Cached; the caller gets a copy it may edit (the wizard fills knobs into a template before
-    rendering from it)."""
-    return copy.deepcopy(_all(db))
+    given, then shared ones when an engine is given too. Cached; the caller gets a copy it may edit (the
+    wizard fills knobs into a template before rendering from it)."""
+    return copy.deepcopy(_all(db, engine))
 
 
-def get(template_id: str, db=None) -> dict:
-    """One template by id — a built-in one, or with a db one of the school's own. `KeyError` when the
-    id is unknown — an id the model invented."""
+def get(template_id: str, db=None, engine=None) -> dict:
+    """One template by id — a built-in one, with a db one of the school's own, with an engine as well a
+    shared one (`shared-…`; only those ask the engine). `KeyError` when the id is unknown — an id the model
+    invented, or a shared template the engine no longer offers or cannot be asked about."""
+    if template_id.startswith(SHARED_PREFIX):
+        return copy.deepcopy(_shared(db, engine)[template_id])
     return copy.deepcopy(_all(db)[template_id])
 
 
 def card(template: dict) -> dict:
-    """What a candidate card shows; a school's own template is marked `local`."""
+    """What a candidate card shows; a school's own template is marked `local`, another school's shared one
+    `shared: {schools, kept}` (how many schools used it and how many kept it)."""
     out = {field: template[field] for field in CARD_FIELDS}
     if template["id"].startswith(LOCAL_PREFIX):
         out["local"] = True
+    elif template["id"].startswith(SHARED_PREFIX):
+        record = template.get("shared") if isinstance(template.get("shared"), dict) else {}
+        out["shared"] = {"schools": record.get("schools", 0), "kept": record.get("kept", 0)}
     return out
 
 
-def domains(db=None) -> list[dict]:
-    """The domains in the wizard's order, each with the cards of its templates: the built-in ones,
-    then (given a db) the school's own."""
-    templates = _all(db)
+def _domains(templates: dict) -> list[dict]:
     return [{"id": domain, "name": name,
              "templates": [card(t) for t in templates.values() if t["domain"] == domain]}
             for domain, name in DOMAINS]
+
+
+def domains(db=None, engine=None) -> list[dict]:
+    """The domains in the wizard's order, each with the cards of its templates: the built-in ones,
+    then (given a db) the school's own, then (given an engine too) other schools' shared ones."""
+    return _domains(_all(db, engine))
+
+
+def listing(db=None, engine=None) -> dict:
+    """`{"domains": domains(db, engine)}`, plus `shared_error` when the shared library could not be reached."""
+    errors: list = []
+    out = {"domains": _domains(_all(db, engine, errors))}
+    if errors:
+        out["shared_error"] = errors[0]
+    return out
 
 
 # ---------------------------------------------------------------------------

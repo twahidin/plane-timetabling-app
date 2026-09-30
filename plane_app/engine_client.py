@@ -1,7 +1,15 @@
 """The only way the app reaches the engine."""
 from __future__ import annotations
 
+import hashlib
+from urllib.parse import quote, urlencode
+
 import httpx
+
+
+# The shared library is a nicety beside the timetable: its calls give up quickly, so a slow or hung engine never
+# holds the wizard, the Project tab or a Generate draft for long (the solver's calls keep the client's 30 s).
+LIBRARY_TIMEOUT = 4.0
 
 
 class EngineError(Exception):
@@ -18,9 +26,19 @@ class EngineClient:
         else:
             self._client = httpx.Client(base_url=url.rstrip("/"), transport=transport, timeout=30.0)
 
-    def _call(self, method: str, path: str, json: dict | None = None) -> dict:
+    @property
+    def identity(self) -> str:
+        """The engine's URL and a digest of the key: what a per-process cache of this engine's answers is keyed by
+        (two schools on one engine never share an entry; the key itself is not kept)."""
+        return f"{self._client.base_url}#{hashlib.sha256(self._key.encode()).hexdigest()[:16]}"
+
+    def _call(self, method: str, path: str, json: dict | None = None, timeout: float | None = None) -> dict:
+        headers = {"Authorization": f"Bearer {self._key}"}
         try:
-            r = self._client.request(method, path, json=json, headers={"Authorization": f"Bearer {self._key}"})
+            if timeout is None:
+                r = self._client.request(method, path, json=json, headers=headers)
+            else:                    # built then sent: the per-request timeout travels in the request's extensions
+                r = self._client.send(self._client.build_request(method, path, json=json, headers=headers, timeout=timeout))
         except httpx.HTTPError as e:
             raise EngineError(0, f"engine unreachable: {e}")
         if r.status_code >= 400:
@@ -30,7 +48,10 @@ class EngineClient:
                 body = None
             detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
             raise EngineError(r.status_code, str(detail))
-        return r.json()
+        try:
+            return r.json()
+        except ValueError:
+            raise EngineError(502, "the engine sent an answer that is not JSON")
 
     def build(self, org: dict, max_repair: int = 50) -> dict:
         return self._call("POST", "/v1/build", {"organisation": org, "max_repair": max_repair})
@@ -79,3 +100,21 @@ class EngineClient:
     def score(self, org: dict, previous: dict | None = None, weights: dict | None = None) -> dict:
         """The soft-rule score of a placed organisation: {total, breakdown, ideal, worst, scores}."""
         return self._call("POST", "/v1/score", {"organisation": org, "previous": previous, "weights": weights})
+
+    # -- the shared library (learning spec §2) ------------------------------------------------------------------
+
+    def library_publish(self, kind: str, body: dict) -> dict:
+        """Send an item for the operator's review: {"id", "status": "pending"}."""
+        return self._call("POST", "/v1/library", {"kind": kind, "body": body}, timeout=LIBRARY_TIMEOUT)
+
+    def library_list(self, kind: str, clash: str | None = None) -> dict:
+        """{"items": approved items from every school, "own": this key's items with status and note}."""
+        query = {"kind": kind} if clash is None else {"kind": kind, "clash": clash}
+        return self._call("GET", f"/v1/library?{urlencode(query)}", timeout=LIBRARY_TIMEOUT)
+
+    def library_use(self, item_id: str, kept: bool) -> dict:
+        return self._call("POST", f"/v1/library/{quote(str(item_id), safe='')}/use", {"kept": bool(kept)},
+                          timeout=LIBRARY_TIMEOUT)
+
+    def library_withdraw(self, item_id: str) -> dict:
+        return self._call("DELETE", f"/v1/library/{quote(str(item_id), safe='')}", timeout=LIBRARY_TIMEOUT)

@@ -23,6 +23,7 @@ from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
 from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, vocabulary_of
 from .learning import habits as learning_habits
 from .learning import log as decisions
+from .learning import sharing as learning_sharing
 from .promote import promote_build
 from .wizard import instantiate as wiz_instantiate
 from .wizard import library as wiz_library
@@ -639,6 +640,8 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             org, summary = plan_generate_mod.generate(p, base_org, settings)
             db.set_org("draft", org)
             events.append({"kind": "draft_updated"})
+            if engine is not None:
+                learning_sharing.report_kept(db, lambda: engine)      # a timetable started from a shared template
             result = {"ok": True, "summary": summary, "issues": [_plan_issue_dict(i) for i in issues[:ISSUE_LIMIT]]}
             if len(issues) > ISSUE_LIMIT:
                 result["more"] = len(issues) - ISSUE_LIMIT
@@ -677,14 +680,14 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                                "note": "This updated the period's draft only. Build it again — Quick or Best "
                                        "timetable — for its dates to use this."})
         if call.name == "wizard_library":
-            domains = wiz_library.domains(db)                      # the school's own templates too
+            listing = wiz_library.listing(db, engine)             # the school's own and other schools' shared too
             domain = call.args.get("domain")
             if domain:
-                domains = [d for d in domains if d["id"] == domain]
-            return json.dumps({"domains": domains})
+                listing["domains"] = [d for d in listing["domains"] if d["id"] == domain]
+            return json.dumps(listing)
         if call.name in ("wizard_preview", "wizard_instantiate"):
             try:
-                template, knobs = wizard_resolve(call.args.get("template"), call.args.get("knobs"), db)
+                template, knobs = wizard_resolve(call.args.get("template"), call.args.get("knobs"), db, engine)
             except KeyError:
                 return json.dumps({"error": f"no such template {call.args.get('template')!r}"})
             except wiz_library.WizardError as e:
@@ -694,6 +697,8 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                 candidate = {"template": template["id"], "name": template["name"], "summary": template["summary"],
                              "when_to_choose": template["when_to_choose"], "tradeoffs": facts["tradeoffs"],
                              "facts": facts, "knobs": knobs}
+                card = wiz_library.card(template)                 # "Your template" / "Shared by other schools"
+                candidate.update({k: card[k] for k in ("local", "shared") if k in card})
                 panel = next((e for e in events if e.get("kind") == "wizard" and e.get("stage") == "preview"), None)
                 if panel is None:
                     panel = {"kind": "wizard", "stage": "preview", "candidates": []}
@@ -701,7 +706,7 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                 if len(panel["candidates"]) < 3:      # the side panel shows at most three candidates at once
                     panel["candidates"].append(candidate)
                 return json.dumps(facts)
-            result = wizard_apply(db, template, knobs)
+            result = wizard_apply(db, template, knobs, engine)
             events.append({"kind": "wizard", "stage": "done", "downloads": result["downloads"]})
             events.append({"kind": "settings_updated"})
             return json.dumps({"ok": True, **result})

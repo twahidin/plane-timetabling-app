@@ -126,10 +126,41 @@
     renderEdits(edits, got.edits);
   }
 
-  // ---------- the Project tab's "Your templates" card (spec §1.3, §1.4) ----------
+  // ---------- the Project tab's "Your templates" card (spec §1.3, §1.4, §2.2) ----------
   // Save as template opens #template-dialog; the list shows each saved template with Delete, which asks for a
-  // second click instead of a native confirm (embedded browsers suppress those).
+  // second click instead of a native confirm (embedded browsers suppress those). A template not yet shared offers
+  // Share with other schools (#share-dialog shows exactly what is sent); a shared one shows the review status and
+  // Stop sharing, which also asks for a second click.
   let tgen = 0;
+  const KINDS = { education: 'Education', health: 'Health', business: 'Business', sports: 'Sports' };
+  const STATUS = { pending: 'Waiting for review', approved: 'Shared with other schools' };
+
+  const statusText = (shared) => {
+    if (shared.status === 'rejected') return shared.note ? `Not accepted: ${shared.note}` : 'Not accepted.';
+    return STATUS[shared.status] || STATUS.pending;
+  };
+
+  // A button that acts on the second click only: the first changes its label for a few seconds. A refusal is
+  // handed to `failed` and the button can be pressed again.
+  function twoClick(label, again, aria, fn, failed) {
+    const b = node('button', 'btn ghost', label);
+    b.type = 'button';
+    b.setAttribute('aria-label', aria);
+    let armed = null;
+    b.addEventListener('click', async () => {
+      if (!armed) {
+        b.textContent = again;
+        armed = setTimeout(() => { armed = null; b.textContent = label; }, 4000);
+        return;
+      }
+      clearTimeout(armed);
+      armed = null;
+      b.disabled = true;
+      try { await fn(); }
+      catch (e) { b.disabled = false; b.textContent = label; failed(e); }
+    });
+    return b;
+  }
 
   function renderTemplates(box, list) {
     box.textContent = '';
@@ -142,25 +173,28 @@
       const body = node('div', 'learning-body');
       body.appendChild(node('div', 'learning-text', t.name));
       body.appendChild(node('div', 'learning-evidence', t.summary));
+      const shared = t.shared && typeof t.shared === 'object' ? t.shared : null;
+      if (shared) body.appendChild(node('div', 'learning-status', statusText(shared)));
       row.appendChild(body);
       const acts = node('div', 'learning-actions');
-      const del = node('button', 'btn ghost', 'Delete');
-      del.type = 'button';
-      del.setAttribute('aria-label', `Delete ${t.name}`);
-      let armed = null;
-      del.addEventListener('click', async () => {
-        if (!armed) {                                  // the first click asks; the second deletes
-          del.textContent = 'Click again to delete';
-          armed = setTimeout(() => { armed = null; del.textContent = 'Delete'; }, 4000);
-          return;
-        }
-        clearTimeout(armed);
-        del.disabled = true;
-        try { await call(`/api/templates/local/${slug(t.id)}`, 'DELETE'); }
-        catch (e) { body.appendChild(node('div', 'learning-note', e.message)); del.disabled = false; del.textContent = 'Delete'; armed = null; return; }
+      const failed = (e) => body.appendChild(node('div', 'learning-note', e.message));    // says why, under the name
+      if (shared) {
+        const stop = twoClick('Stop sharing', 'Click again to stop sharing', `Stop sharing ${t.name}`, async () => {
+          await call(`/api/templates/local/${slug(t.id)}/withdraw`, 'POST');
+          loadTemplates();
+        }, failed);
+        acts.appendChild(stop);
+      } else {
+        const share = node('button', 'btn', 'Share with other schools');
+        share.type = 'button';
+        share.setAttribute('aria-label', `Share ${t.name} with other schools`);
+        share.addEventListener('click', () => openShare(t));
+        acts.appendChild(share);
+      }
+      acts.appendChild(twoClick('Delete', 'Click again to delete', `Delete ${t.name}`, async () => {
+        await call(`/api/templates/local/${slug(t.id)}`, 'DELETE');
         loadTemplates();
-      });
-      acts.appendChild(del);
+      }, failed));
       row.appendChild(acts);
       box.appendChild(row);
     });
@@ -175,6 +209,141 @@
     if (my !== tgen) return;
     if (failed) { box.textContent = ''; box.appendChild(node('p', 'empty', failed.message)); return; }
     renderTemplates(box, Array.isArray(got) ? got : []);
+  }
+
+  // Every time the Project tab opens the saved templates are drawn at once from the app's own record; once per page
+  // load the review status of shared ones is then asked of the engine and, when it answers, drawn again. A slow or
+  // unreachable shared library never holds the list back.
+  let refreshed = false;
+  async function refreshTemplates() {
+    const first = loadTemplates();
+    if (refreshed) return first;
+    refreshed = true;
+    const mark = tgen;                                 // the load just started
+    let got = null;
+    try { got = await call('/api/templates/shared/refresh', 'POST'); } catch (e) { got = null; }
+    await first;
+    const box = el('template-list');
+    if (!box || !Array.isArray(got) || mark !== tgen) return;     // unreachable, or something newer drew the list
+    ++tgen;
+    renderTemplates(box, got);
+  }
+
+  // ---------- the share dialog: the template as a readable list, exactly what is sent ----------
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+
+  function lengthsText(lengths) {
+    const parts = Object.keys(lengths || {}).map(Number).filter((k) => lengths[k] > 0).sort((a, b) => a - b)
+      .map((k) => `${plural(lengths[k], 'lesson')} of ${plural(k, 'period')}`);
+    return parts.join(', ');
+  }
+
+  function shareLines(t) {
+    const out = [];
+    const add = (text, subs) => out.push({ text, subs: subs || [] });
+    const time = t.time || {}, rules = t.rules || {}, sample = t.sample || {}, voc = t.vocabulary || {};
+    const unit = time.slot_minutes === 60 ? 'hour' : 'period';
+    const cycle = ((t.knobs || []).find((k) => k.key === 'cycle_days') || {}).default;
+    add(`Name: ${t.name}`);
+    add(`About it: ${t.summary}`);
+    add(`When to choose it: ${t.when_to_choose}`);
+    add(`Kind: ${KINDS[t.domain] || t.domain}`);
+    add(`Words it uses: ${[voc.person, voc.group, voc.requirement, voc.venue].filter(Boolean).join(', ')}`);
+    add(`Days: ${cycle != null ? plural(cycle, 'day') + ' in the cycle, ' : ''}${plural(time.slots_per_day, unit)} a day ` +
+        `of ${time.slot_minutes} minutes, starting at ${time.day_start}`);
+    const rest = (rules.mandatory_rest || []).map((o) => `${unit} ${o + 1}`);
+    add(`Rules: at most ${plural(rules.max_load_slots, unit)} a day and ${rules.max_run_slots} in a row for each ${voc.person || 'person'}` +
+        (rest.length ? `; a break at ${rest.join(', ')}` : ''));
+    if (t.sheets === 'deployment') {
+      add(`Shape: ${plural(sample.levels, 'level')} of ${plural(sample.classes_per_level, voc.group || 'class', (voc.group || 'class') + 'es')}, ` +
+          `${plural(sample.teachers, voc.person || 'teacher')}`);
+      add('Subjects:', (sample.subjects || []).map((s) =>
+        `${s.name}: ${plural(s.periods, unit)} (${lengthsText(s.lengths)})${s.band ? ', in an option block' : ''}`));
+    } else {
+      add(`Shape: ${plural(sample.units, voc.group || 'unit')}, ${plural(sample.staff, voc.person || 'person', (voc.person || 'person') + 's')}`);
+      add(`${(voc.requirement || 'duty').replace(/^./, (c) => c.toUpperCase())}s:`, (sample.duties || []).map((d) =>
+        `${d.name}: ${plural(d.per_cycle, 'time')} a cycle, ${plural(d.length_slots, unit)} long, at least ${plural(d.min_staff, voc.person || 'person', (voc.person || 'person') + 's')}`));
+    }
+    const learned = [];
+    const pr = t.plan_rules;
+    if (pr) {
+      if ((pr.edge_subjects || []).length) learned.push(`Kept away from the first and last ${unit}: ${pr.edge_subjects.join(', ')}`);
+      learned.push(pr.no_double_across_rest ? 'No double lesson runs across a break' : 'Double lessons may run across a break');
+    }
+    if (t.solve && t.solve.preset) learned.push(`Timetable preference: ${t.solve.preset}`);
+    if (learned.length) add('Learned rules:', learned);
+    (t.tradeoffs || []).forEach((x) => add(`Note: ${x}`));
+    return out;
+  }
+
+  // Everything that is sent, field by field, below the summary: the dialog promises "exactly what other schools
+  // will see", so nothing in the body is left out of it. One line per value, its place in plain words
+  // ("knobs › 1 › help: …").
+  const fieldWords = (key) => String(key).replace(/_/g, ' ');
+  function everyField(value, path, out) {
+    const at = path.join(' › ');
+    if (Array.isArray(value)) {
+      if (!value.length) out.push(`${at}: none`);
+      value.forEach((v, i) => everyField(v, path.concat(String(i + 1)), out));
+    } else if (value && typeof value === 'object') {
+      const keys = Object.keys(value);
+      if (!keys.length) out.push(`${at}: none`);
+      keys.forEach((k) => everyField(value[k], path.concat(fieldWords(k)), out));
+    } else {
+      out.push(`${at}: ${value === true ? 'yes' : value === false ? 'no' : value}`);
+    }
+    return out;
+  }
+  const sentBody = (t) => {
+    const body = {};
+    Object.keys(t).forEach((k) => { if (k !== 'shared') body[k] = t[k]; });      // the app's own record is never sent
+    return body;
+  };
+
+  const sdlg = el('share-dialog'), sform = el('share-form'), serr = el('share-error');
+  let sharing = null;                                  // the template the dialog is open for
+  const sclose = () => { if (sdlg.open) sdlg.close(); else sdlg.removeAttribute('open'); };
+
+  function openShare(t) {
+    if (!sdlg || !sform) return;
+    sharing = t;
+    const list = el('share-list');
+    list.textContent = '';
+    shareLines(t).forEach((line) => {
+      const li = node('li', null, line.text);
+      if (line.subs.length) {
+        const ul = node('ul');
+        line.subs.forEach((x) => ul.appendChild(node('li', null, x)));
+        li.appendChild(ul);
+      }
+      list.appendChild(li);
+    });
+    const full = el('share-full');
+    if (full) {
+      full.textContent = '';
+      const body = sentBody(t);
+      Object.keys(body).forEach((k) => everyField(body[k], [fieldWords(k)], []).forEach((line) => full.appendChild(node('li', null, line))));
+    }
+    if (el('share-all')) el('share-all').open = false;
+    serr.hidden = true; serr.textContent = '';
+    el('share-ok').disabled = false;
+    if (typeof sdlg.showModal === 'function') sdlg.showModal(); else sdlg.setAttribute('open', '');
+    el('share-ok').focus();
+  }
+
+  if (sdlg && sform) {
+    el('share-cancel').addEventListener('click', sclose);
+    sform.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      if (!sharing) return sclose();
+      el('share-ok').disabled = true;
+      try {
+        await call(`/api/templates/local/${slug(sharing.id)}/publish`, 'POST');
+        sclose();
+        loadTemplates();
+      } catch (e) { serr.textContent = e.message; serr.hidden = false; }
+      finally { el('share-ok').disabled = false; }
+    });
   }
 
   const tdlg = el('template-dialog'), tform = el('template-form'), terr = el('template-error');
@@ -207,6 +376,6 @@
 
   document.addEventListener('plane:tab', (ev) => {
     if (ev.detail && ev.detail.key === 'constraints') load();
-    if (ev.detail && ev.detail.key === 'project') loadTemplates();
+    if (ev.detail && ev.detail.key === 'project') refreshTemplates();
   });
 })();

@@ -72,6 +72,21 @@ relief covers, and every quick or best timetable), per timetable, as ids and the
   wizard template (times, rules, the plan's shape and learned rules; never names, class codes or the
   timetable's name). Saved templates appear in the wizard beside the built-in ones.
 
+### Sharing templates with other schools
+
+A saved template can be shared: **Share with other schools** on the Project tab shows every field
+that will be sent (structure only — never names, class codes or the timetable's name) and sends it to
+the shared library on the engine. It waits there until the operator approves it; the template then
+shows "Shared with other schools", and other schools see it in their start wizard with how many
+schools used it and kept it. **Stop sharing** withdraws it. If the engine is slow or down, the wizard
+simply shows the built-in and your own templates.
+
+**Reviewing shared items (operator).** Open `<engine URL>/admin/library` and log in as `admin` with
+the engine's `ENGINE_ADMIN_TOKEN` (a Railway variable on the plane-engine service). Approve or reject
+each waiting item, with a note the school sees. From a shell the same works with
+`railway ssh --service plane-engine -- python -m plane_engine.library list|approve ID|reject ID --note "…"`.
+Without `ENGINE_ADMIN_TOKEN` the review page does not exist.
+
 ## Quick and best timetables
 
 **Quick timetable** places a draft in seconds. **Best timetable** runs the constraint solver as a

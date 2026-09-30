@@ -8,7 +8,9 @@ class code, requirement id, reduction reason, source file or sign-off name is co
 own placeholders when it renders the sample. The timetable's name (often the school's) is not copied either:
 the trade-off line says only that it was made from a finished timetable, and when.
 
-Saved templates are the school's, not one timetable's: global kv `local_templates` (`{id: template}`)."""
+Saved templates are the school's, not one timetable's: global kv `local_templates` (`{id: template}`). A saved
+template that has been shared through the engine library (§2.2, `sharing.py`) also carries `shared: {id, status,
+note}`; that record is the app's own bookkeeping and never part of what is sent."""
 from __future__ import annotations
 
 import re
@@ -269,4 +271,21 @@ def delete_local(db, template_id: str) -> None:
     with _lock:
         stored = _stored(db)
         del stored[template_id]
+        db.set_value(L.LOCAL_KEY, stored)
+
+
+def local_entry(db, template_id: str) -> dict:
+    """One saved template as stored (with its `shared` record, if any). `KeyError` when there is none."""
+    entry = _stored(db)[template_id]
+    if not isinstance(entry, dict):
+        raise KeyError(template_id)
+    return entry
+
+
+def edit_local(db, change) -> None:
+    """Run `change(stored)` on the stored `{id: template}` and write it back, under the same lock as save and
+    delete so no writer loses another's change."""
+    with _lock:
+        stored = _stored(db)
+        change(stored)
         db.set_value(L.LOCAL_KEY, stored)
