@@ -90,6 +90,53 @@
     store.set('plane.assistant', open ? 'open' : 'closed');
     applyAssistant(open);
   }
+  // ---------- Assistant width ----------
+  // A share of the window, a third by default: ¼ · ⅓ · ⅔ in the panel's header, or drag its left edge to
+  // anything between a quarter and two thirds (double-click the edge for a third). Remembered per browser.
+  // Narrow screens overlay the panel at a fixed width instead (app.css).
+  const MIN_W = 0.25, MAX_W = 2 / 3, DEFAULT_W = 1 / 3;
+  const clampW = (f) => Math.min(MAX_W, Math.max(MIN_W, f));
+  let width = (() => { const n = Number(store.get('plane.assistantWidth')); return n >= MIN_W && n <= MAX_W ? n : DEFAULT_W; })();
+  function applyWidth(f, save) {
+    width = clampW(f);
+    document.documentElement.style.setProperty('--assistant-w', (width * 100).toFixed(3) + 'vw');
+    document.querySelectorAll('.assistant-size [data-size]').forEach((b) => {
+      const on = Math.abs(Number(b.dataset.size) - width) < 0.01;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    const grip = el('assistant-grip');
+    if (grip) grip.setAttribute('aria-valuenow', String(Math.round(width * 100)));
+    if (save) store.set('plane.assistantWidth', String(width));
+    resize();
+  }
+  document.querySelectorAll('.assistant-size [data-size]').forEach((b) =>
+    b.addEventListener('click', () => applyWidth(Number(b.dataset.size), true)));
+  const grip = el('assistant-grip');
+  if (grip) {
+    grip.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      document.body.classList.add('assistant-dragging');
+      const move = (e) => applyWidth((window.innerWidth - e.clientX) / window.innerWidth, false);
+      const up = () => {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+        document.body.classList.remove('assistant-dragging');
+        applyWidth(width, true);
+      };
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+    grip.addEventListener('dblclick', () => applyWidth(DEFAULT_W, true));
+    grip.addEventListener('keydown', (ev) => {                        // the handle is focusable: arrows resize
+      const step = { 'ArrowLeft': 0.05, 'ArrowRight': -0.05 }[ev.key];
+      if (step === undefined) return;
+      ev.preventDefault();
+      applyWidth(width + step, true);
+    });
+  }
+  applyWidth(width, false);
+
   el('assistant-collapse').addEventListener('click', () => setAssistant(false));
   el('assistant-rail').addEventListener('click', () => setAssistant(true));
 

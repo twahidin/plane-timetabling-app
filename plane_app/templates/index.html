@@ -272,9 +272,17 @@
 </main>
 
 <aside id="assistant" aria-label="Assistant">
+  <div id="assistant-grip" class="assistant-grip" role="separator" aria-orientation="vertical" aria-controls="assistant"
+       aria-label="Drag to resize the assistant" aria-valuemin="25" aria-valuemax="67" aria-valuenow="33" tabindex="0"
+       title="Drag to resize; double-click for a third of the window"></div>
   <div class="assistant-head">
     <span class="assistant-dot" aria-hidden="true"></span><span class="assistant-name">Assistant</span>
     <span class="tag accent" id="assistant-context"></span>
+    <span class="seg assistant-size" role="group" aria-label="Assistant width">
+      <button type="button" data-size="0.25" aria-pressed="false" title="A quarter of the window">&frac14;</button>
+      <button type="button" data-size="0.3333" aria-pressed="false" title="A third of the window">&#8531;</button>
+      <button type="button" data-size="0.6667" aria-pressed="false" title="Two thirds of the window">&#8532;</button>
+    </span>
     <button class="btn ghost icon" id="assistant-collapse" type="button" aria-controls="assistant" aria-expanded="true" title="Collapse the assistant" aria-label="Collapse the assistant">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l5 5-5 5"></path></svg></button>
   </div>
