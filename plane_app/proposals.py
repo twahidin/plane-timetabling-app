@@ -26,6 +26,7 @@ import logging
 
 from . import bookings, calendar as cal, changes, periods
 from .bookings import BookingError
+from .learning import fixes
 from .learning import log as decisions
 
 _log = logging.getLogger(__name__)
@@ -244,9 +245,14 @@ def _stale(db, item: dict) -> str | None:
     return None
 
 
+def _touching_list(clashes: list[dict], ids: set[str]) -> list[dict]:
+    """The `clashes` that name one of the lessons `ids` (as the clash's event or in its tiles, "<event>@<person>")."""
+    return [c for c in clashes if c.get("event") in ids or any(str(t).split("@")[0] in ids for t in c.get("tiles") or ())]
+
+
 def _touching(clashes: list[dict], ids: set[str]) -> int:
-    """How many of `clashes` name one of the lessons `ids` (as the clash's event or in its tiles, "<event>@<person>")."""
-    return sum(1 for c in clashes if c.get("event") in ids or any(str(t).split("@")[0] in ids for t in c.get("tiles") or ()))
+    """How many of `clashes` name one of the lessons `ids`."""
+    return len(_touching_list(clashes, ids))
 
 
 def _pair(p: dict | None) -> list | None:
@@ -254,7 +260,7 @@ def _pair(p: dict | None) -> list | None:
     return None if p is None else [p.get("t0"), p.get("loc")]
 
 
-def _log_move(db, item: dict, before: list[dict], after: list[dict]) -> None:
+def _log_move(db, item: dict, before: list[dict], after: list[dict], engine=None) -> None:
     """Record an applied move or swap in the decision log. `clashes_before` and `clashes_after` count the
     clashes of the whole timetable that involve the lesson(s) the card moves: `before` is the baseline
     `apply` took before the change, `after` the check that ran after it. Never raises."""
@@ -273,6 +279,29 @@ def _log_move(db, item: dict, before: list[dict], after: list[dict]) -> None:
         _log.warning("decision log row not built (%s)", item.get("kind"), exc_info=True)
         return
     decisions.safe_record(db, item["kind"], data)
+    if data["clashes_after"] < data["clashes_before"]:
+        _log_fix(db, item, data, _touching_list(before, ids), engine)
+
+
+def _log_fix(db, item: dict, data: dict, clashes: list[dict], engine=None) -> None:
+    """A move or swap that cleared clashes worked: record the kind of clash the lesson had and the kind of
+    change that cleared it, and nothing else (no id, name or time; spec §3.1). When the school shares its solved
+    problems (§3.3) the pair's new count then goes to the engine on a background thread, so the apply does not
+    wait for it. Never raises."""
+    try:
+        spd = data["slots_per_day"]
+        sig = fixes.signature(clashes, data["dur"], data["from"][0], spd)
+        row = None if sig is None else {"signature": sig,
+                                        "fix": fixes.classify(data["from"], data["to"], spd, item["kind"] == "swap")}
+    except Exception:  # noqa: BLE001 - a fix that cannot be described never breaks the apply
+        _log.warning("fix row not built (%s)", item.get("kind"), exc_info=True)
+        return
+    if row is not None:
+        decisions.safe_record(db, "fix", row)
+        try:
+            fixes.publish_soon(db, engine, row["signature"], row["fix"])
+        except Exception:  # noqa: BLE001 - sharing never breaks an apply
+            _log.warning("fix aggregate not queued", exc_info=True)
 
 
 def _offered(card: dict) -> list:
@@ -359,5 +388,5 @@ def apply(db, engine, pid: str, session_id: str = "") -> dict:
     db.set_value("last_check", check)
     clear_pending(db, session_id)
     if item["kind"] in ("move", "swap"):
-        _log_move(db, item, base, check["clashes"])
+        _log_move(db, item, base, check["clashes"], engine)
     return {"ok": True, "description": item["text"], "clashes": check["clashes"]}

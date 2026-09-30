@@ -106,6 +106,16 @@
     <label class="wide">Licence key<input type="password" id="engine_key"></label>
   </fieldset>
 
+  <fieldset id="learning">
+    <legend>Learning</legend>
+    <label class="check wide"><input type="checkbox" id="share-fixes"> Share solved problems with other schools
+      <span class="help">Only the kind of clash and the kind of fix are sent, with a count &mdash; never names, lessons or timetables. Other schools' counts help your assistant choose fixes. Turning this off stops sending; counts already shared stay.</span></label>
+    <div class="actions wide">
+      <button class="btn" type="button" id="learning-save">Save</button>
+      <span class="msg-line" id="learning-msg"></span>
+    </div>
+  </fieldset>
+
   <div class="actions">
     <button class="btn primary" type="submit" id="save">Save</button>
     <span class="msg-line" id="msg"></span>
@@ -116,5 +126,6 @@
 
 <script src="{{ asset('settings.js') }}"></script>
 <script src="{{ asset('accounts.js') }}"></script>
+<script src="{{ asset('learning-settings.js') }}"></script>
 </body>
 </html>

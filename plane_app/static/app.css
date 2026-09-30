@@ -301,6 +301,10 @@
   }
   .form .help { font-family: var(--mono); font-size: 11px; color: var(--muted); }
   .form .actions { display: flex; gap: 10px; align-items: center; }
+  .form label.check { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); }
+  .form label.check input { width: auto; }
+  .form label.check .help { flex-basis: 100%; }
+  .form .actions.wide { grid-column: 1 / -1; }
   .form .msg-line { font-size: 13px; }
   .form .msg-line.ok { color: var(--good); }
   .form .msg-line.bad { color: var(--bad); }

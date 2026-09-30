@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from .llm import Provider, ProviderError, ToolCall, ToolSpec
 from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
 from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, vocabulary_of
+from .learning import fixes as learning_fixes
 from .learning import habits as learning_habits
 from .learning import log as decisions
 from .learning import sharing as learning_sharing
@@ -28,6 +30,8 @@ from .promote import promote_build
 from .wizard import instantiate as wiz_instantiate
 from .wizard import library as wiz_library
 from .wizard.routes import instantiate as wizard_apply, resolve as wizard_resolve
+
+_log = logging.getLogger(__name__)
 
 MAX_ROUNDS = 8
 # A bare yes applies the first pending proposal without troubling the model.
@@ -90,6 +94,7 @@ relief pool, the most covers a teacher takes in a day and the term start the led
 away (tell the user what you changed). cover_remove takes one applied cover back straight away; say what
 was removed and that Undo puts it back.
 When asked what the app has learned or for suggestions, call learning_suggestions; accepting happens on the Constraints tab.
+Before proposing fixes, call past_fixes once per clash type in this conversation — in the same turn as your first propose — and prefer the kind of fix that has worked before; its answer does not change within a conversation.
 Dated questions already reflect applied covers: where/who with a date and a printed week show the covering
 teacher."""
 
@@ -225,6 +230,12 @@ TOOLS: list[ToolSpec] = [
     ToolSpec("learning_suggestions", "What the app has noticed from how the user works: suggestions waiting for a yes on the "
                                      "Constraints tab, and the rules already learned. Read-only: it changes nothing.",
              {"type": "object", "properties": {}}),
+    ToolSpec("past_fixes", "The kinds of fix that solved a clash of this type before in this school's timetables, with how "
+                           "often, as plain sentences; shared counts (other schools) include this school's own once approved. "
+                           "Read-only. Call it once per clash type before proposing fixes.",
+             {"type": "object", "properties": {
+                 "clash": {"type": "string", "enum": list(learning_fixes.CLASHES), "description": "The clash type"},
+                 "dur": {"type": "integer", "description": "The lesson's length in periods"}}, "required": ["clash"]}),
     ToolSpec("cover_remove", "Take back one applied cover. Say which by any of: the absence, the date, a teacher "
                              "(absent or covering) and the lesson. Several matching: they are listed, ask the user "
                              "which. Applied straight away; Undo puts it back.",
@@ -557,6 +568,32 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             return json.dumps({"suggestions": [s["text"] for s in learning_habits.suggestions(db)],
                                "learned": [{"rule": e["rule"], "active": e["active"]} for e in learning_habits.learned(db)],
                                "note": "Accepting or switching off happens on the Constraints tab; nothing changes until then."})
+        if call.name == "past_fixes":
+            clash = call.args.get("clash")
+            if clash not in learning_fixes.CLASHES:
+                return json.dumps({"error": f"clash must be one of {', '.join(learning_fixes.CLASHES)}"})
+            dur = call.args.get("dur")
+            if dur is not None and (isinstance(dur, bool) or not isinstance(dur, int)):
+                return json.dumps({"error": "dur must be a whole number of periods"})
+            vocab = vocabulary_of(db)
+            here, here_note = learning_fixes.advice(learning_fixes.local_counts(db, clash), vocab, dur)
+            out = {"here": here, "shared": None}
+            if here_note:
+                out["here_note"] = here_note
+            if not learning_fixes.sharing_on(db):
+                return json.dumps({**out, "note": "Sharing with other schools is off."})
+            try:
+                counts = learning_fixes.shared_counts(db, engine, clash)
+                if counts is None:
+                    return json.dumps({**out, "note": "The shared library could not be reached; these are this "
+                                                      "school's own counts only."})
+                out["shared"], shared_note = learning_fixes.advice(counts, vocab, dur, shared=True)
+                if shared_note:
+                    out["shared_note"] = shared_note
+            except Exception:  # noqa: BLE001 - never put an exception's text (it may hold another school's words) in front of the model
+                _log.warning("shared fix counts not read", exc_info=True)
+                return json.dumps({**out, "shared": None, "note": "The shared counts could not be read."})
+            return json.dumps(out)
         if call.name in _RELIEF_TOOLS:
             return _relief_tool(call, db, events, session_id, run)
         if call.name == "undo":

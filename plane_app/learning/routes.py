@@ -3,7 +3,8 @@ the rules already learned and the edits-after-a-timetable measure, and the three
 does with them: accept a suggestion, hide one, switch a learned rule off or on. Also the school's own wizard
 templates (§1.3): save the current timetable as one, list them, delete one. Admin only, like the plan's
 own routes. Ids contain `:` and may contain a space or a slash, hence the `path` converter. And sharing a saved
-template with other schools through the engine library (§2.2): publish, withdraw, and follow the review."""
+template with other schools through the engine library (§2.2): publish, withdraw, and follow the review. And the
+switch for sharing solved problems (§3.3)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,6 +13,7 @@ from .. import auth
 from ..engine_client import EngineError
 from ..wizard.library import SHARED_ERROR
 from ..wizard.library import WizardError
+from . import fixes
 from . import habits
 from . import sharing
 from . import templates
@@ -55,6 +57,24 @@ def make_router(db) -> APIRouter:
             return habits.switch(db, lid, bool(body.get("on")))
         except habits.LearningError as e:
             raise HTTPException(404 if str(e) == "no such learned rule" else 409, str(e))
+
+    @r.get("/api/learning/sharing")
+    def get_sharing(session: str = Depends(auth.require_session)):
+        return {"fixes": fixes.sharing_on(db)}
+
+    @r.put("/api/learning/sharing")
+    def put_sharing(body: dict, request: Request, session: str = Depends(auth.require_session)):
+        """Switch sharing solved problems on or off. Turning it on sends the school's current counts once, after
+        the answer has gone: the run is paced and can take many minutes, so it goes on a daemon thread, one run at
+        a time (an engine that cannot be reached leaves the switch on and the counts to go with the next fix).
+        Turning it off only stops sending and fetching: what was shared stays."""
+        if set(body) != {"fixes"} or not isinstance(body["fixes"], bool):
+            raise HTTPException(400, 'the body must be {"fixes": true} or {"fixes": false}')
+        was = fixes.sharing_on(db)
+        fixes.set_sharing(db, body["fixes"])
+        if body["fixes"] and not was:
+            fixes.publish_all_soon(db, lambda: request.app.state.engine_factory(db.get_settings()))
+        return {"fixes": fixes.sharing_on(db)}
 
     @r.get("/api/templates/local")
     def local_templates(session: str = Depends(auth.require_session)):

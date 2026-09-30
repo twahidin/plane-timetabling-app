@@ -87,6 +87,27 @@ each waiting item, with a note the school sees. From a shell the same works with
 `railway ssh --service plane-engine -- python -m plane_engine.library list|approve ID|reject ID --note "…"`.
 Without `ENGINE_ADMIN_TOKEN` the review page does not exist.
 
+### Solved problems
+
+When you apply a move, swap or room change that clears a clash, the app records a small note of it so
+the assistant can prefer the kind of fix that has worked before (it asks before proposing fixes).
+
+- **What is recorded.** Only the kind of clash (a person in two places, a room double-booked, lessons
+  that must start together, someone outside their hours, an overloaded person), the lesson's length
+  (1 to 8 periods), whether it sat at the start or end of a day, and the kind of fix (another period
+  the same day, another day, another room, a swap). No names, ids, class codes or text.
+- **Undo still counts.** A fix that was applied and then undone stays in the count: it was tried, and
+  the note records what was applied, not whether it lasted.
+- **Deleting a timetable** removes its records with it.
+- **Sharing (off by default).** Switch on **Share solved problems with other schools** in
+  Settings → Learning. Then, for each combination of clash, length, start/end of day and kind of fix,
+  the app sends exactly that combination and how many times this school has used it (`count`, 1 to
+  100000) to the shared library on the engine; nothing else. The first time you switch it on, the
+  existing counts are sent in small batches (about 20 a minute) in the background. With sharing off,
+  the app makes no fix request to the engine at all. Turning it off stops sending; counts already
+  shared stay. What comes back is numbers only (how many schools and how often); the assistant's
+  sentences are written by the app in your timetable's own words.
+
 ## Quick and best timetables
 
 **Quick timetable** places a draft in seconds. **Best timetable** runs the constraint solver as a

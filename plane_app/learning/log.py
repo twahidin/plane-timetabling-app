@@ -70,3 +70,16 @@ def subject_of(plan: dict | None, event: dict) -> tuple[str, str]:
 def slot_of(t0: int, slots_per_day: int) -> tuple[int, int]:
     """(day, slot) of a start time."""
     return divmod(int(t0), int(slots_per_day))
+
+
+def rows_all(db, kinds: tuple[str, ...] | None = None, since: float = 0) -> list[dict]:
+    """[{id, timetable_id, kind, at, data}] of every timetable of this deployment, oldest first (the
+    school's whole history, for what is learned across its timetables)."""
+    sql, args = "select id, timetable_id, kind, at, data from decisions where at >= ?", [since]
+    if kinds:
+        sql += f" and kind in ({','.join('?' * len(kinds))})"
+        args += list(kinds)
+    with db._con() as con:
+        found = con.execute(sql + " order by id", args).fetchall()
+    return [{"id": r["id"], "timetable_id": r["timetable_id"], "kind": r["kind"], "at": r["at"], "data": json.loads(r["data"])}
+            for r in found]
