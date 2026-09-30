@@ -55,6 +55,23 @@ Templates load scripts and the stylesheet through `{{ asset('name') }}` (`plane_
 which adds a hash of the file's contents (`/static/model.js?v=…`): a deploy that changes a file
 changes its address, so browsers never run a cached old copy beside a new one.
 
+## Learning from use
+
+The app keeps a log of what people decide (moves and swaps they apply, proposals they dismiss,
+relief covers, and every quick or best timetable), per timetable, as ids and the plan's own words
+(`plane_app/learning/`). From it:
+
+- **Suggestions.** The Constraints tab's "Learned from how you work" card suggests rules when the
+  same kind of change keeps happening: keep a subject away from the ends of the day, keep new
+  timetables close to the last one, add a teacher who keeps being picked to the relief pool. Nothing
+  changes until you accept; every learned rule has an on/off switch, and switching one off puts back
+  exactly what it changed (unless it has been changed by hand since).
+- **Proof.** The same card shows how many changes were made after each of the last timetables, so
+  you can see whether the learned rules cut the hand-fixing.
+- **Templates.** "Save as template" on the Project tab turns the current timetable into a start
+  wizard template (times, rules, the plan's shape and learned rules; never names, class codes or the
+  timetable's name). Saved templates appear in the wizard beside the built-in ones.
+
 ## Quick and best timetables
 
 **Quick timetable** places a draft in seconds. **Best timetable** runs the constraint solver as a

@@ -728,6 +728,26 @@
   .constraints-checks { margin: var(--space-3) 0 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
   .constraints-link { font-size: 12px; margin: 0; }
 
+  /* the Constraints tab's learning card (spec 2026-09-30-learning-design.md §1.2): a suggestion or a learned rule and what to do with it */
+  #learning-card { grid-column: 1 / -1; }
+  .learning-item { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-3) 0; }
+  .learning-item + .learning-item { box-shadow: 0 -1px 0 var(--color-neutral-900); }
+  .learning-body { flex: 1 1 280px; min-width: 0; }
+  .learning-text { font-size: 13px; color: var(--ink); }
+  .learning-evidence { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .learning-note { font-size: 12px; color: var(--bad); margin-top: 2px; }
+  .learning-actions { display: flex; gap: 6px; flex: none; }
+  .learning-actions .btn { padding: 4px 10px; font-size: 12px; }
+  .learning-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; }
+  .learning-sub { font-size: 13px; font-weight: 500; margin: var(--space-4) 0 0; color: var(--color-neutral-300); }
+  .learning-edits { font-size: 12px; color: var(--muted); margin: var(--space-4) 0 0; }
+  /* the Project tab's saved wizard templates (spec §1.3): its rows reuse .learning-item; the dialog's fields stack */
+  #template-list .empty { margin: 0; }
+  #template-dialog label { margin-top: 10px; }
+  #template-dialog .dialog-text + label { margin-top: 0; }
+  #template-dialog select { display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 14px; padding: 7px 9px;
+    border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+
   /* ---------- settings and department pages (spec §4) ---------- */
   .settings-main, .dept-main { padding: var(--space-8); display: flex; flex-direction: column; gap: var(--space-6); }
   .settings-main { max-width: 1200px; margin-inline: auto; }      /* Settings is a form page: centred and capped; the department board uses the full width */

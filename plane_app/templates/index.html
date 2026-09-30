@@ -49,6 +49,10 @@
     </div>
     <div id="notes" class="notes"></div>
     </section>
+    <section class="card" id="templates-card">
+      <div class="section-title">Your templates <span class="eyebrow">start the next timetable from this one</span> <button class="btn" id="template-save" type="button" title="Save this timetable's times, rules and shape for the start wizard">Save as template</button></div>
+      <div id="template-list"></div>
+    </section>
   </section><!-- /tab-project -->
 
   <section class="tab-panel" id="tab-manpower" role="tabpanel" aria-labelledby="tabbtn-manpower" hidden>
@@ -104,6 +108,7 @@
       <div class="card"><h2>Rules in the plan</h2>
         <div class="tablewrap"><table class="grid" id="plan-rules"></table></div>
       </div>
+      <section class="card" id="learning-card"><h2>Learned from how you work</h2><div id="learning-suggestions"></div><div id="learning-rules"></div><p class="learning-edits" id="learning-edits"></p></section>
     </div>
   </section><!-- /tab-constraints -->
 
@@ -315,6 +320,27 @@
   </form>
 </dialog>
 
+<dialog id="template-dialog" class="dialog">
+  <form method="dialog" id="template-form">
+    <h2>Save as template</h2>
+    <p class="dialog-text">The start wizard will offer this timetable's times, rules and shape — never its names or class codes — to your next timetable.</p>
+    <label for="template-name">Name <input id="template-name" type="text" autocomplete="off" maxlength="80" placeholder="for example Our secondary timetable"></label>
+    <label for="template-summary">One line about it <input id="template-summary" type="text" autocomplete="off" maxlength="300"></label>
+    <label for="template-when">When to choose it <input id="template-when" type="text" autocomplete="off" maxlength="300"></label>
+    <label for="template-domain">Kind <select id="template-domain">
+      <option value="education">Education</option>
+      <option value="health">Health</option>
+      <option value="business">Business</option>
+      <option value="sports">Sports</option>
+    </select></label>
+    <p id="template-error" class="error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="template-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="template-ok">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="period-dialog" class="dialog">
   <form method="dialog" id="period-form">
     <h2>New period</h2>
@@ -416,6 +442,7 @@
 <script src="{{ asset('print.js') }}"></script>
 <script src="{{ asset('grid.js') }}"></script>
 <script src="{{ asset('tabs.js') }}"></script>
+<script src="{{ asset('learning.js') }}"></script>
 <script src="{{ asset('shell.js') }}"></script>
 </body>
 </html>

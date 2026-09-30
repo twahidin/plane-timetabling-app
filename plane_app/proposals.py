@@ -22,8 +22,13 @@ from __future__ import annotations
 
 import secrets
 
+import logging
+
 from . import bookings, calendar as cal, changes, periods
 from .bookings import BookingError
+from .learning import log as decisions
+
+_log = logging.getLogger(__name__)
 
 STALE = "the timetable changed since this was proposed"
 LOG_MOVED = "the change log moved since this was proposed"
@@ -239,6 +244,46 @@ def _stale(db, item: dict) -> str | None:
     return None
 
 
+def _touching(clashes: list[dict], ids: set[str]) -> int:
+    """How many of `clashes` name one of the lessons `ids` (as the clash's event or in its tiles, "<event>@<person>")."""
+    return sum(1 for c in clashes if c.get("event") in ids or any(str(t).split("@")[0] in ids for t in c.get("tiles") or ()))
+
+
+def _pair(p: dict | None) -> list | None:
+    """A placement {loc, t0} as the decision log stores it: [t0, loc], the shape of a `solve` row's `before` values."""
+    return None if p is None else [p.get("t0"), p.get("loc")]
+
+
+def _log_move(db, item: dict, before: list[dict], after: list[dict]) -> None:
+    """Record an applied move or swap in the decision log. `clashes_before` and `clashes_after` count the
+    clashes of the whole timetable that involve the lesson(s) the card moves: `before` is the baseline
+    `apply` took before the change, `after` the check that ran after it. Never raises."""
+    try:
+        by_id = {e["id"]: e for e in (db.get_org("live") or {"events": []})["events"]}
+        e = by_id[item["event"]]
+        subject, group = decisions.subject_of(db.get_value("plan"), e)
+        ids = {item["event"], *([item["with"]] if item["kind"] == "swap" else [])}
+        data = {"event": e["id"], "subject": subject, "group": group, "dur": e.get("dur"),
+                "members": list(e.get("members") or []), "from": _pair(item.get("from")), "to": _pair(item.get("to")),
+                "slots_per_day": db.get_settings()["time"]["slots_per_day"],
+                "clashes_before": _touching(before, ids), "clashes_after": _touching(after, ids)}
+        if item["kind"] == "swap":
+            data["with"], data["with_from"] = item["with"], _pair(item.get("with_from"))
+    except Exception:  # noqa: BLE001 - a log that cannot be built never breaks the apply
+        _log.warning("decision log row not built (%s)", item.get("kind"), exc_info=True)
+        return
+    decisions.safe_record(db, item["kind"], data)
+
+
+def _offered(card: dict) -> list:
+    """The assistant's own ranking for a cover (`ranked`, set before any user choice); `candidates` is what
+    the card shows, which puts a picked teacher first, so it stands in only for a card staged without `ranked`."""
+    ranked = card.get("ranked")
+    if isinstance(ranked, list):
+        return list(ranked)
+    return [c.get("person") for c in card.get("candidates") or []]
+
+
 def _apply_cover(db, item: dict, session_id: str) -> dict:
     from . import relief                                # relief imports this module: import lazily
     if (why := relief.refusal(db, item)) is not None:
@@ -255,6 +300,10 @@ def _apply_cover(db, item: dict, session_id: str) -> dict:
         changes.undo(db)
         raise
     take(db, item["id"], session_id)                    # the other lessons' cards stay on offer
+    decisions.safe_record(db, "cover", lambda: {"absence": item.get("absence"), "event": item.get("event"),
+                                                "offered": _offered(item),
+                                                "chosen": item.get("covering")},
+                          tid=lambda: periods.base_tid(db))  # relief lives on the base timetable (relief._base)
     return {"ok": True, "description": description, "clashes": []}
 
 
@@ -309,4 +358,6 @@ def apply(db, engine, pid: str, session_id: str = "") -> dict:
         return {"ok": False, "description": f"not applied: {item['text']} would clash", "clashes": new}
     db.set_value("last_check", check)
     clear_pending(db, session_id)
+    if item["kind"] in ("move", "swap"):
+        _log_move(db, item, base, check["clashes"])
     return {"ok": True, "description": item["text"], "clashes": check["clashes"]}

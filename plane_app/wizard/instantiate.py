@@ -140,7 +140,23 @@ def settings_for(template: dict, knobs: dict, current_settings: dict) -> dict:
     for key in CARRIED_SETTINGS:
         if key in (current_settings or {}):
             settings[key] = copy.deepcopy(current_settings[key])
+    if "solve" in template:          # a template saved from a timetable brings its preset and weights (learning §1.3)
+        settings["solve"] = {**settings.get("solve", {}), **solve_for(template)}
     return settings
+
+
+def solve_for(template: dict) -> dict:
+    """The solver's preset and weights a template carries (a school's own template), else nothing: the
+    timetable keeps its time limit either way."""
+    solve = template.get("solve")
+    return {"preset": solve["preset"], "weights": dict(solve["weights"])} if solve else {}
+
+
+def plan_rules_for(template: dict) -> dict:
+    """The plan rules a template carries (`edge_subjects`, `no_double_across_rest`), else nothing."""
+    rules = template.get("plan_rules")
+    return ({"edge_subjects": list(rules["edge_subjects"]), "no_double_across_rest": rules["no_double_across_rest"]}
+            if rules else {})
 
 
 # ---------------------------------------------------------------------------

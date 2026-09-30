@@ -23,24 +23,33 @@ from . import library as L
 DOWNLOADS = {"workbook": "/api/wizard/workbook.xlsx", "sample": "/api/wizard/sample.pdf", "guide": "/api/wizard/guide"}
 
 
-def resolve(template_id, knobs) -> tuple[dict, dict]:
-    """The template and its checked knobs for an id and knob values a caller gave. Raises `KeyError`
-    for an unknown template id, `library.WizardError` for a knob out of range — each caller (an HTTP
-    route or a chat tool) turns that into its own error shape."""
-    template = L.get(str(template_id or ""))
+def resolve(template_id, knobs, db=None) -> tuple[dict, dict]:
+    """The template and its checked knobs for an id and knob values a caller gave; with a db, the
+    school's own templates resolve too. Raises `KeyError` for an unknown template id,
+    `library.WizardError` for a knob out of range — each caller (an HTTP route or a chat tool) turns
+    that into its own error shape."""
+    template = L.get(str(template_id or ""), db)
     return template, L.check_knobs(template, knobs if isinstance(knobs, dict) else {})
 
 
 def instantiate(db, template: dict, knobs: dict) -> dict:
     """Write the timetable's settings (through the same cleaning `PUT /api/settings` uses), the
     wizard's own record of the choice, and the plan's vocabulary (creating an empty plan when there
-    is none yet); return the facts and the three download links."""
+    is none yet); return the facts and the three download links. A school's own template also brings
+    its solver preset and weights and its plan rules (learning spec §1.3); a built-in one leaves them
+    as they are."""
     settings = I.settings_for(template, knobs, db.get_settings())
-    db.store_settings({"time": settings["time"], "rules": settings["rules"]})
+    groups = {"time": settings["time"], "rules": settings["rules"]}
+    if I.solve_for(template):
+        groups["solve"] = I.solve_for(template)                   # cleaned by store_settings; keeps the time limit
+    db.store_settings(groups)
     db.set_value("wizard", {"template": template["id"], "knobs": knobs, "chosen_at": _time.time()})
     with db.plan_lock():
         plan = db.get_value("plan") or M.empty_plan()
-        db.set_value("plan", M.normalise({**plan, "vocabulary": dict(template["vocabulary"])}))
+        patch = {"vocabulary": dict(template["vocabulary"])}
+        if I.plan_rules_for(template):
+            patch["rules"] = I.plan_rules_for(template)             # merged into the plan's rules; pins stay
+        db.set_value("plan", M.apply_patch(plan, patch))
     return {"facts": I.facts(template, knobs), "downloads": dict(DOWNLOADS)}
 
 
@@ -49,14 +58,14 @@ def make_router(db, templates, engine) -> APIRouter:
 
     def _template(template_id) -> dict:
         try:
-            return L.get(str(template_id or ""))
+            return L.get(str(template_id or ""), db)
         except KeyError:
             raise HTTPException(404, f"no such template {template_id!r}")
 
     def _resolved(body: dict) -> tuple[dict, dict]:
         body = body if isinstance(body, dict) else {}
         try:
-            return resolve(body.get("template"), body.get("knobs"))
+            return resolve(body.get("template"), body.get("knobs"), db)
         except KeyError:
             raise HTTPException(404, f"no such template {body.get('template')!r}")
         except L.WizardError as e:
@@ -72,7 +81,7 @@ def make_router(db, templates, engine) -> APIRouter:
 
     @r.get("/api/wizard/library")
     def library(sid: str = Depends(auth.require_session)):
-        return L.domains()
+        return L.domains(db)
 
     @r.post("/api/wizard/preview")
     def preview(body: dict, sid: str = Depends(auth.require_session)):

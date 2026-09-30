@@ -21,6 +21,8 @@ from .llm import Provider, ProviderError, ToolCall, ToolSpec
 from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
 from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, vocabulary_of
+from .learning import habits as learning_habits
+from .learning import log as decisions
 from .promote import promote_build
 from .wizard import instantiate as wiz_instantiate
 from .wizard import library as wiz_library
@@ -86,6 +88,7 @@ lessons are covered, relief_ledger counts each teacher's covers this term, and r
 relief pool, the most covers a teacher takes in a day and the term start the ledger counts from straight
 away (tell the user what you changed). cover_remove takes one applied cover back straight away; say what
 was removed and that Undo puts it back.
+When asked what the app has learned or for suggestions, call learning_suggestions; accepting happens on the Constraints tab.
 Dated questions already reflect applied covers: where/who with a date and a printed week show the covering
 teacher."""
 
@@ -218,6 +221,9 @@ TOOLS: list[ToolSpec] = [
                  "pool": {"type": "array", "items": {"type": "string"}, "description": "Names or ids; replaces the pool"},
                  "max_per_day": {"type": "integer"},
                  "term_start": {"type": "string", "description": "YYYY-MM-DD; \"\" to use the term calendar's"}}}),
+    ToolSpec("learning_suggestions", "What the app has noticed from how the user works: suggestions waiting for a yes on the "
+                                     "Constraints tab, and the rules already learned. Read-only: it changes nothing.",
+             {"type": "object", "properties": {}}),
     ToolSpec("cover_remove", "Take back one applied cover. Say which by any of: the absence, the date, a teacher "
                              "(absent or covering) and the lesson. Several matching: they are listed, ask the user "
                              "which. Applied straight away; Undo puts it back.",
@@ -546,6 +552,10 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             res = proposals.apply(db, engine, pid, session_id)
             events.extend(_applied_events((item or {}).get("kind", ""), res))
             return json.dumps(res)
+        if call.name == "learning_suggestions":
+            return json.dumps({"suggestions": [s["text"] for s in learning_habits.suggestions(db)],
+                               "learned": [{"rule": e["rule"], "active": e["active"]} for e in learning_habits.learned(db)],
+                               "note": "Accepting or switching off happens on the Constraints tab; nothing changes until then."})
         if call.name in _RELIEF_TOOLS:
             return _relief_tool(call, db, events, session_id, run)
         if call.name == "undo":
@@ -667,14 +677,14 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
                                "note": "This updated the period's draft only. Build it again — Quick or Best "
                                        "timetable — for its dates to use this."})
         if call.name == "wizard_library":
-            domains = wiz_library.domains()
+            domains = wiz_library.domains(db)                      # the school's own templates too
             domain = call.args.get("domain")
             if domain:
                 domains = [d for d in domains if d["id"] == domain]
             return json.dumps({"domains": domains})
         if call.name in ("wizard_preview", "wizard_instantiate"):
             try:
-                template, knobs = wizard_resolve(call.args.get("template"), call.args.get("knobs"))
+                template, knobs = wizard_resolve(call.args.get("template"), call.args.get("knobs"), db)
             except KeyError:
                 return json.dumps({"error": f"no such template {call.args.get('template')!r}"})
             except wiz_library.WizardError as e:
@@ -770,6 +780,7 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
         return ChatResult(text, _applied_events(first["kind"], res))
     if pend and norm in DECLINE_WORDS:
         # The mirror of the yes: the card goes, every run of it, and the model never sees the turn.
+        decisions.safe_record(db, "dismissed", lambda: {"cards": [{"kind": c.get("kind"), "event": c.get("event")} for c in pend]})
         proposals.clear_pending(db, session_id)
         db.add_message(session_id, "assistant", {"text": "Dismissed.", "tool_calls": []})
         return ChatResult("Dismissed.", [{"kind": "dismissed"}])

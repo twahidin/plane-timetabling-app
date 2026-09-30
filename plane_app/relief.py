@@ -925,6 +925,7 @@ def plan(db, absence_id, choices=None, session_id="", run="") -> list[dict]:
                       "absent": absence["person"], "date": date, "timetable": lesson["timetable"],
                       "event": lesson["event"], "slot": lesson["slot"], "dur": lesson["dur"],
                       "covering": chosen["person"] if chosen else None, "candidates": top,
+                      "ranked": [c["person"] for c in cands[:3]],     # the assistant's own top three, before any choice
                       "uncovered": chosen is None, "text": text, "review": [],
                       "absent_name": absent_name, "lesson": lesson["name"], "when": when})
         for other in shared.get((date, lesson["event"]), ()):

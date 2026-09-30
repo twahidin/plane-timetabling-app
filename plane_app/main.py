@@ -28,6 +28,7 @@ from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
 from .grid_api import make_router as grid_router
+from .learning.routes import make_router as learning_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import periods
@@ -38,6 +39,7 @@ from .plan.model import vocabulary_of
 from .periods_api import make_router as periods_router
 from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
 from .print.routes import make_router as print_router
+from .learning import log as decisions
 from .promote import promote_build
 from .relief_api import make_router as relief_router
 from .wizard.routes import make_router as wizard_router
@@ -181,6 +183,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.include_router(print_router(db, templates))
     app.include_router(plan_router(db))
     app.include_router(grid_router(db))
+    app.include_router(learning_router(db))
     static = HERE / "static"
     static.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static)), name="static")
@@ -746,7 +749,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 # A cancelled job keeps the best solution found so far; it is promoted like a finished one.
                 if job.get("result") is not None and db.get_org("draft") is not None:
                     job["result"]["organisation"] = bookings.strip(job["result"]["organisation"])
-                    record["promoted"] = promote_build(db, job["result"])
+                    record["promoted"] = promote_build(db, job["result"], how="best", preset=record.get("preset"))
                 record["final"] = {k: v for k, v in job.items() if k != "trace"}
                 if record["final"].get("result") is not None:
                     record["final"]["result"] = {k: v for k, v in record["final"]["result"].items() if k != "organisation"}
@@ -807,7 +810,10 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.post("/api/proposals/dismiss")
     def dismiss_proposal(sid: str = Depends(auth.require_session)):
+        cards = proposals.pending(db, THREAD)
         proposals.clear_pending(db, THREAD)
+        if cards:
+            decisions.safe_record(db, "dismissed", lambda: {"cards": [{"kind": c.get("kind"), "event": c.get("event")} for c in cards]})
         return {"ok": True}
 
     @app.get("/api/changes")

@@ -13,6 +13,8 @@ import copy
 import json
 from pathlib import Path
 
+from ..db import PRESETS, RULES as SOLVE_RULES
+
 LIBRARY_DIR = Path(__file__).parent / "library"
 
 # The launch table of spec §3, in the order the wizard offers them.
@@ -51,6 +53,14 @@ SAMPLE_SCHEMA = {
 SUBJECT_SCHEMA = {"name": str, "periods": int, "lengths": dict, "band": bool}
 DUTY_SCHEMA = {"name": str, "per_cycle": int, "length_slots": int, "min_staff": int, "venue_kind": str}
 VENUE_SCHEMA = {"name": str, "kind": str, "capacity": int}
+# Optional keys a template saved from a timetable carries (learning spec §1.3): the solver's preset and
+# weights, and the plan's own rules, so rules learned on one timetable travel with the template.
+EDGE_SUBJECTS_MAX, EDGE_SUBJECT_CHARS = 30, 60
+
+# A school's own templates (learning spec §1.3): global kv `{id: template}`, listed after the built-in
+# ones in their domain. Their ids always start with LOCAL_PREFIX, so one never shadows a built-in id.
+LOCAL_KEY = "local_templates"
+LOCAL_PREFIX = "local-"
 
 _cache: dict[str, dict] | None = None
 
@@ -224,6 +234,34 @@ def _validate_sample(template: dict, where: str) -> None:
         raise WizardError(f"{where}: sample needs 1-8 people, got {people}")
 
 
+def _validate_optional(template: dict, where: str) -> None:
+    if "solve" in template:
+        solve = template["solve"]
+        spot = f"{where}: solve"
+        if not isinstance(solve, dict):
+            raise WizardError(f"{spot}: must be an object")
+        if solve.get("preset") not in (*PRESETS, "custom"):
+            raise WizardError(f"{spot}: preset {solve.get('preset')!r} must be one of {[*PRESETS, 'custom']}")
+        weights = solve.get("weights")
+        if not isinstance(weights, dict) or set(weights) != set(SOLVE_RULES):
+            raise WizardError(f"{spot}: weights must name exactly {SOLVE_RULES}")
+        for rule, value in weights.items():
+            if not _is_int(value) or value < 0:
+                raise WizardError(f"{spot}: weight {rule!r} must be a whole number of at least 0, not {value!r}")
+    if "plan_rules" in template:
+        rules = template["plan_rules"]
+        spot = f"{where}: plan_rules"
+        if not isinstance(rules, dict):
+            raise WizardError(f"{spot}: must be an object")
+        edge = rules.get("edge_subjects")
+        if not isinstance(edge, list) or len(edge) > EDGE_SUBJECTS_MAX:
+            raise WizardError(f"{spot}: edge_subjects must be a list of at most {EDGE_SUBJECTS_MAX} subjects")
+        if not all(isinstance(x, str) and x.strip() and len(x) <= EDGE_SUBJECT_CHARS for x in edge):
+            raise WizardError(f"{spot}: every edge subject must be a name of 1-{EDGE_SUBJECT_CHARS} characters")
+        if not isinstance(rules.get("no_double_across_rest"), bool):
+            raise WizardError(f"{spot}: no_double_across_rest must be true or false")
+
+
 def validate_template(template: dict) -> dict:
     """Raise `WizardError` naming the first fault, or return the template unchanged."""
     if not isinstance(template, dict):
@@ -248,6 +286,7 @@ def validate_template(template: dict) -> dict:
     _validate_knobs(template, where)
     _validate_time_and_rules(template, where)
     _validate_sample(template, where)
+    _validate_optional(template, where)
     return template
 
 
@@ -275,23 +314,57 @@ def _load() -> dict[str, dict]:
     return _cache
 
 
-def load_all() -> dict[str, dict]:
-    """Every template by id, in the order of the launch table. Cached; the caller gets a copy
-    it may edit (the wizard fills knobs into a template before rendering from it)."""
-    return copy.deepcopy(_load())
+def local(db) -> dict[str, dict]:
+    """The school's own templates that still pass validation, in the order they were saved. An entry
+    that does not (a hand-edited row, a template from an older schema) is skipped, not an error."""
+    stored = db.get_value(LOCAL_KEY) if db is not None else None
+    out = {}
+    for template_id, template in (stored.items() if isinstance(stored, dict) else ()):
+        if not (isinstance(template_id, str) and template_id.startswith(LOCAL_PREFIX)
+                and isinstance(template, dict) and template.get("id") == template_id):
+            continue
+        try:
+            validate_template(template)
+        except WizardError:
+            continue
+        out[template_id] = template
+    return out
 
 
-def get(template_id: str) -> dict:
-    """One template by id. `KeyError` when the id is unknown — an id the model invented."""
-    return copy.deepcopy(_load()[template_id])
-
-
-def domains() -> list[dict]:
-    """The domains in the wizard's order, each with the cards of its templates."""
+def _all(db=None) -> dict[str, dict]:
+    """The built-in templates, then (given a db) the school's own. The built-in cache is never
+    written to: the local ones are read fresh from the db each time."""
     templates = _load()
+    return {**templates, **local(db)} if db is not None else templates
+
+
+def load_all(db=None) -> dict[str, dict]:
+    """Every template by id, in the order of the launch table, then the school's own when a db is
+    given. Cached; the caller gets a copy it may edit (the wizard fills knobs into a template before
+    rendering from it)."""
+    return copy.deepcopy(_all(db))
+
+
+def get(template_id: str, db=None) -> dict:
+    """One template by id — a built-in one, or with a db one of the school's own. `KeyError` when the
+    id is unknown — an id the model invented."""
+    return copy.deepcopy(_all(db)[template_id])
+
+
+def card(template: dict) -> dict:
+    """What a candidate card shows; a school's own template is marked `local`."""
+    out = {field: template[field] for field in CARD_FIELDS}
+    if template["id"].startswith(LOCAL_PREFIX):
+        out["local"] = True
+    return out
+
+
+def domains(db=None) -> list[dict]:
+    """The domains in the wizard's order, each with the cards of its templates: the built-in ones,
+    then (given a db) the school's own."""
+    templates = _all(db)
     return [{"id": domain, "name": name,
-             "templates": [{field: t[field] for field in CARD_FIELDS}
-                           for t in templates.values() if t["domain"] == domain]}
+             "templates": [card(t) for t in templates.values() if t["domain"] == domain]}
             for domain, name in DOMAINS]
 
 
