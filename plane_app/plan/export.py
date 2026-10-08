@@ -264,6 +264,45 @@ def _write_groups(ws, plan: dict, notes: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Venues and Classes sheets (spec docs/superpowers/specs/2026-10-08-smart-workbook-reader-design.md §1)
+# ---------------------------------------------------------------------------
+
+_VENUES_HEAD = ["Room", "Block", "Level", "Capacity", "Kind"]
+_CLASSES_HEAD = ["Class", "Level", "Size", "Home room"]
+
+_EXAMPLE_VENUES = [
+    {"name": "Room 1-01", "block": "Block A", "level": "1", "capacity": 40, "kind": "classroom"},
+    {"name": "Room 1-02", "block": "Block A", "level": "1", "capacity": 40, "kind": "classroom"},
+    {"name": "Science Lab 1", "block": "Block B", "level": "2", "capacity": 32, "kind": "lab"},
+]
+_EXAMPLE_CLASSES = [
+    {"code": "1A", "level": "1", "size": 36, "home": "Room 1-01"},
+    {"code": "1B", "level": "1", "size": 36, "home": "Room 1-02"},
+    {"code": "1C", "level": "1", "size": 35, "home": None},
+]
+
+
+def _write_venues(ws, venues: list[dict], example: bool = False) -> None:
+    ws.append(_VENUES_HEAD + (["Note"] if example else []))
+    for v in venues:
+        ws.append([v["name"], v["block"], v["level"], v["capacity"], v["kind"]])
+    if example:
+        for v in _EXAMPLE_VENUES:
+            ws.append([v["name"], v["block"], v["level"], v["capacity"], v["kind"], EXAMPLE_NOTE])
+
+
+def _write_classes(ws, plan: dict, example: bool = False) -> None:
+    """One row a class; its Home room is written as the venue's name, which the importer reads back."""
+    rooms = {v["id"]: v["name"] for v in plan["venues"]}
+    ws.append(_CLASSES_HEAD + (["Note"] if example else []))
+    for c in plan["classes"]:
+        ws.append([c["code"], _text(c.get("level")) or None, c.get("size"), rooms.get(c.get("home") or "")])
+    if example:
+        for c in _EXAMPLE_CLASSES:
+            ws.append([c["code"], c["level"], c["size"], c["home"], EXAMPLE_NOTE])
+
+
+# ---------------------------------------------------------------------------
 # Control sheet
 # ---------------------------------------------------------------------------
 
@@ -311,7 +350,7 @@ def _write_control(ws, staff: list[dict], notes: list[str], example: bool = Fals
 
 def _readme_lines(plan: dict, settings: dict, notes: list[str], example: bool) -> list[str]:
     v = plan.get("vocabulary") or M.DEFAULT_VOCABULARY
-    person, group, lesson = v["person"], v["group"], v["requirement"]
+    person, group, lesson, venue = v["person"], v["group"], v["requirement"], v["venue"]
     rules = (settings or {}).get("rules") or {}
     try:
         capacity = f"{rules['max_load']} × {M.cycle_days(settings)} periods"
@@ -340,6 +379,13 @@ def _readme_lines(plan: dict, settings: dict, notes: list[str], example: bool) -
         "Groups: one row per division. Class(es) in a Division lists the classes whose option groups run "
         "at the same time; Groups (Subjects) lists those groups' codes. Codes of one family (1ELP, 1ELR) "
         "make one band.",
+        "",
+        f"Venues: one row per {venue}. Room: its name as the school writes it, e.g. 2-04 (at most 40 characters). "
+        f"Block, Level: where it is.  Capacity: its seats (1 to 2000).  Kind: e.g. lab, the word a {lesson}'s "
+        "Venue kind uses.",
+        f"Classes: one row per {group}. Class: its code.  Level, Size: as on the department sheets.  "
+        f"Home room: the Room (from Venues) its {lesson}s meet in when they name no Venue kind; leave it empty "
+        f"for none. A workbook exported before any {venue} was set has neither sheet: copy both from the template.",
         "",
         f"Control: one row per {person}. Teaching Load Factor: 1 for full time, 0.5 for half. "
         f"Allowance: periods a cycle before reductions (empty: load factor × {capacity}). "
@@ -379,8 +425,9 @@ _EXAMPLE_STAFF = [
 
 
 def write_workbook(plan: dict, settings: dict, *, example: bool = False) -> bytes:
-    """The plan as the importer's own workbook: README, one sheet per department (sorted), Groups
-    and Control. `example` adds the template's example MATH sheet and Control rows. PlanError when
+    """The plan as the importer's own workbook: README, one sheet per department (sorted), Groups,
+    Venues and Classes (in the template, and in an export once the plan has venues) and Control.
+    `example` adds the template's example MATH sheet and its Venues, Classes and Control rows. PlanError when
     the plan does not normalise."""
     import openpyxl
 
@@ -403,7 +450,9 @@ def write_workbook(plan: dict, settings: dict, *, example: bool = False) -> byte
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     readme = wb.create_sheet("README")
-    used: set[str] = {"readme", "groups", "control"}
+    # the Venues and Classes sheets: always in the template, in an export once the plan has rooms
+    rooms = example or bool(plan["venues"])
+    used: set[str] = {"readme", "groups", "control"} | ({"venues", "classes"} if rooms else set())
     seen: dict[str, str] = {}
     owners: dict[str, str] = {}            # the importer's own record of the ids it has given out
     for dept in sorted(by_dept, key=str.lower):
@@ -427,6 +476,9 @@ def write_workbook(plan: dict, settings: dict, *, example: bool = False) -> byte
         room = {"min_classes": 4, "min_teachers": 3} if example else {}     # room to fill the template in
         _write_department(wb.create_sheet(title), rows, **room)
     _write_groups(wb.create_sheet("Groups"), plan, notes)
+    if rooms:
+        _write_venues(wb.create_sheet("Venues"), plan["venues"], example)
+        _write_classes(wb.create_sheet("Classes"), plan, example)
     _write_control(wb.create_sheet("Control"), plan["staff"], notes, example)
     for line in _readme_lines(plan, settings, notes, example):
         readme.append([line or None])

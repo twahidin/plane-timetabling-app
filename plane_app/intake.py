@@ -181,12 +181,33 @@ def extract_organisation(provider: Provider, settings: dict, texts: list[tuple[s
     data = provider.extract_json(extraction_prompt(settings), user, ORG_SCHEMA)
     if not isinstance(data, dict):
         raise IntakeError("The model did not return an object.")
-    notes = data.pop("notes", []) or []
+    notes = _notes(data.pop("notes", None))
     for key in ("locations", "persons", "events"):
         if not isinstance(data.get(key), list):
             raise IntakeError(f"The extracted data has no {key} list.")
-    _ensure_rest(data, settings)
-    return _validate(data), notes
+    # a reply read without schema enforcement (the provider's retry) can be any shape: a person that
+    # is text, a missing field. Whatever slips past the checks is still the caller's plain error.
+    try:
+        _ensure_rest(data, settings)
+        return _validate(data), notes
+    except (KeyError, TypeError, AttributeError, ValueError) as e:
+        missing = f"a missing field {e}" if isinstance(e, KeyError) else str(e)
+        raise IntakeError(f"The extracted data is not a valid organisation ({missing}).")
+
+
+def _notes(raw) -> list[dict]:
+    """The model's notes as {section, source, note} of text, whatever shape they came in: a note may
+    be plain text; anything else is dropped."""
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for item in items:
+        if isinstance(item, str) and item.strip():
+            out.append({"section": "", "source": "", "note": item.strip()})
+        elif isinstance(item, dict):
+            note = {k: "" if item.get(k) is None else str(item.get(k)) for k in ("section", "source", "note")}
+            if note["note"] or note["section"]:
+                out.append(note)
+    return out
 
 
 def apply_patch(org: dict, patch: dict) -> dict:

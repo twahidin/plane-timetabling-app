@@ -53,6 +53,10 @@
       <div class="section-title">Your templates <span class="eyebrow">start the next timetable from this one</span> <button class="btn" id="template-save" type="button" title="Save this timetable's times, rules and shape for the start wizard">Save as template</button></div>
       <div id="template-list"></div>
     </section>
+    <section class="card" id="readers-card">
+      <div class="section-title">Saved readers <span class="eyebrow">workbook layouts the app has learned to read</span></div>
+      <div id="reader-list" class="reader-list"></div>
+    </section>
   </section><!-- /tab-project -->
 
   <section class="tab-panel" id="tab-manpower" role="tabpanel" aria-labelledby="tabbtn-manpower" hidden>
@@ -74,6 +78,7 @@
     <div class="tab-head"><div class="eyebrow">Requirements</div><h2>What has to happen</h2></div>
     <div id="plan" class="plan">
       <p class="tab-note">The <strong>plan</strong> is what the timetable must provide: for each group, how many <span data-word="requirement" data-word-plural>lessons</span> of each subject, who teaches them, what kind of <span data-word="venue">room</span>, and when people are free. Upload a staff deployment workbook or describe it in the chat, fix what the issues list says, then <strong>Generate draft</strong>.</p>
+      <div id="readings" class="readings" aria-live="polite"></div>
       <div class="plan-toolbar">
         <label class="plan-upload-label" for="plan-upload">Upload workbook
           <input type="file" id="plan-upload" multiple accept=".xlsx,.csv">
@@ -466,6 +471,7 @@
 <script src="{{ asset('periods.js') }}"></script>
 <script src="{{ asset('relief.js') }}"></script>
 <script src="{{ asset('print.js') }}"></script>
+<script src="{{ asset('reader.js') }}"></script>
 <script src="{{ asset('grid.js') }}"></script>
 <script src="{{ asset('tabs.js') }}"></script>
 <script src="{{ asset('learning.js') }}"></script>

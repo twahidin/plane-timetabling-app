@@ -475,6 +475,109 @@ def _read_department_sheet(ws, org, staff, issues: list[Issue], owners: dict[str
 
 
 # ---------------------------------------------------------------------------
+# Venues and Classes sheets (spec docs/superpowers/specs/2026-10-08-smart-workbook-reader-design.md §1)
+# ---------------------------------------------------------------------------
+
+_ROOM_SHEETS = {"venues": "room", "classes": "class"}       # title -> the header that marks the shape
+
+
+def rooms_sheet(ws) -> str | None:
+    """"venues" or "classes" for a sheet of that title whose first row has the shape's header (Room;
+    Class) and no Subject column; None for every other sheet, so a department sheet, or anything else
+    a school named Venues or Classes, reads exactly as it did before these sheets existed."""
+    title = ws.title.strip().lower()
+    if title not in _ROOM_SHEETS:
+        return None
+    header = _header_map(next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None))
+    return title if _ROOM_SHEETS[title] in header and "subject" not in header else None
+
+
+def _plain(value) -> str:
+    """A cell as text, a whole number without its ".0" (a level typed as 3 may come back 3.0)."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return "" if value is None else str(value).strip()
+
+
+def _read_venues_sheet(ws, issues: list[Issue]) -> list[dict]:
+    """One venue per row with a Room, by header name (Room, Block, Level, Capacity, Kind, any order
+    or case). A row that does not read, or repeats a room, is an issue and is left out. A venue has
+    only the fields the sheet has a column for (always id and name): a sheet without a Capacity
+    column says nothing of capacity, so the stored one stays (merge_import upserts by id)."""
+    rows = list(ws.iter_rows(values_only=True))
+    header = _header_map(rows[0]) if rows else {}
+    cols = {field: header.get(head) for field, head in
+            (("name", "room"), ("block", "block"), ("level", "level"), ("capacity", "capacity"), ("kind", "kind"))}
+    venues: list[dict] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        raw = {field: _cell(row, col) for field, col in cols.items()}
+        if not _plain(raw["name"]):
+            continue
+        try:
+            venue = M.normalise_venue(raw)
+        except M.PlanError as e:
+            issues.append(Issue("warn", ws.title, f"{ws.title}: {e}; the row was left out"))
+            continue
+        venue = {k: v for k, v in venue.items() if k == "id" or cols.get(k) is not None}
+        if venue["id"] in seen:
+            issues.append(Issue("warn", ws.title, f"{ws.title}: {venue['name']} is listed twice; the first row was kept"))
+            continue
+        seen.add(venue["id"])
+        venues.append(venue)
+    return venues
+
+
+def _read_classes_sheet(ws, venues: list[dict], issues: list[Issue]) -> list[dict]:
+    """One class per row with a Class, by header name (Class, Level, Size, Home room). A Home room
+    names a venue by its name as written or its id, case aside; one that names no venue is an issue
+    and the class gets no home room."""
+    rows = list(ws.iter_rows(values_only=True))
+    header = _header_map(rows[0]) if rows else {}
+    code_col, level_col = header.get("class"), header.get("level")
+    size_col, home_col = header.get("size"), header.get("home room")
+    rooms: dict[str, str] = {}
+    for v in venues:
+        rooms.setdefault(str(v["name"]).strip().lower(), v["id"])
+        rooms.setdefault(v["id"], v["id"])
+    classes: list[dict] = []
+    seen: set[str] = set()
+    for row in rows[1:]:
+        code = _plain(_cell(row, code_col))
+        if not code:
+            continue
+        if code in seen:
+            issues.append(Issue("warn", code, f"{ws.title}: {code} is listed twice; the first row was kept"))
+            continue
+        seen.add(code)
+        size_raw = _cell(row, size_col)
+        size = None
+        if _plain(size_raw):
+            try:
+                number = float(size_raw)
+            except (TypeError, ValueError):
+                number = -1.0
+            if number.is_integer() and number >= 0:
+                size = int(number)
+            else:
+                issues.append(Issue("warn", code, f"{code}: size {size_raw!r} is not a whole number, left empty"))
+        home_raw = _plain(_cell(row, home_col))
+        home = None
+        if home_raw:
+            home = rooms.get(home_raw.lower()) or rooms.get(M.venue_id(home_raw))
+            if home is None:
+                issues.append(Issue("warn", code, f"{code}: unknown home room {home_raw!r}, left empty"))
+        classes.append({"code": code, "level": _plain(_cell(row, level_col)), "size": size, "home": home})
+    return classes
+
+
+def _known_venues(existing: dict | None) -> list[dict]:
+    """The stored plan's venues, as far as they read: a home room may name one the workbook does not list."""
+    raw = (existing or {}).get("venues") if isinstance(existing, dict) else None
+    return [v for v in raw or [] if isinstance(v, dict) and v.get("id") and v.get("name")]
+
+
+# ---------------------------------------------------------------------------
 # Groups sheet (divisions and bands)
 # ---------------------------------------------------------------------------
 
@@ -651,9 +754,14 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
 
         requirements: list[dict] = []
         owners: dict[str, str] = {}
+        room_sheets: dict[str, object] = {}
         for ws in wb.worksheets:
             title_l = ws.title.strip().lower()
             if title_l in _SKIP_SHEETS or title_l.startswith("sheet") or title_l in _SPECIAL_SHEETS:
+                continue
+            shape = rooms_sheet(ws)
+            if shape is not None:
+                room_sheets.setdefault(shape, ws)
                 continue
             requirements.extend(_read_department_sheet(ws, org, staff, issues, owners))
 
@@ -667,6 +775,22 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         class_codes = sorted({c for r in requirements for c in r["classes"]})
         classes = [{"code": c, "level": "", "size": None} for c in class_codes]
 
+        # the Venues and Classes sheets, when the workbook has them: rooms and each class's home room
+        venues = _read_venues_sheet(room_sheets["venues"], issues) if "venues" in room_sheets else []
+        if "classes" in room_sheets:
+            listed = {v["id"] for v in venues}
+            known = venues + [v for v in _known_venues(existing) if v["id"] not in listed]
+            by_code = {c["code"]: c for c in classes}
+            for row in _read_classes_sheet(room_sheets["classes"], known, issues):
+                if row["code"] in by_code:
+                    by_code[row["code"]].update(row)
+                else:
+                    by_code[row["code"]] = row
+                    classes.append(row)
+            # a home room the stored plan already has goes along with the class that names it
+            homes = {c.get("home") for c in classes}
+            venues += [copy.deepcopy(v) for v in known[len(venues):] if v["id"] in homes]
+
         plan = {
             "version": M.PLAN_VERSION,
             "staff": staff,
@@ -674,6 +798,7 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
             "divisions": divisions,
             "requirements": requirements,
             "bands": bands,
+            "venues": venues,
             "rules": {"edge_subjects": [], "no_double_across_rest": True, "pinned": []},
             "source": {"file": filename, "imported": datetime.now(timezone.utc).isoformat()},
         }
@@ -685,7 +810,10 @@ def read_workbook(data: bytes, org: dict | None, existing: dict | None, filename
         uncarried = M.DEPLOYMENT_UNCARRIED
         if "shares" not in carried:
             uncarried = {**uncarried, "staff": (*uncarried["staff"], "shares")}
-        return _merge_keeping_locks(existing, new_plan, issues, uncarried), issues
+        # the venues as read, not as normalised: a field the Venues sheet has no column for is left
+        # out, so the merge's upsert keeps the stored value rather than clearing it
+        merging = {**new_plan, "venues": copy.deepcopy(venues)}
+        return _merge_keeping_locks(existing, merging, issues, uncarried), issues
     return new_plan, issues
 
 

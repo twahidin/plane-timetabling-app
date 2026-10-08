@@ -12,7 +12,7 @@ import hashlib
 
 from .. import intake
 from .issues import capped, has_blocks, plan_issues
-from .model import PlanError, plan_slug
+from .model import PlanError, home_room, plan_slug, unique_id
 
 _ORG_ID_MAX = 31          # intake.ID_PATTERN; plan ids may be longer (model.PLAN_ID_MAX)
 _ORG_ID_HEAD = 24         # 24 + "-" + 6 hex digits = 31
@@ -125,9 +125,50 @@ def _groups_and_bands(plan: dict, warnings: list[str]) -> tuple[list[dict], list
     return groups, bands, group_of_req
 
 
-def _eligible_locs(r: dict, locations: list[dict], warnings: list[str]) -> list[str]:
+_DEFAULT_VENUE_CAP = 40       # seats a venue has when the plan does not say
+
+
+def _locations(plan: dict, base: dict) -> tuple[list[dict], dict[str, str]]:
+    """The draft's locations and the map from each plan venue id to its location id. The plan's
+    venues come first ({id, name, cap, kind}), then every base location whose name is not already a
+    venue's (the rest location among them, unchanged). A venue named like a base location takes that
+    location's id, so whatever already names it (a pinned event, a support person's rooms) still does;
+    any other venue's id is fitted to the organisation's pattern and kept clear of the base's ids.
+    Two passes: the venues named like base locations take those ids first, so a venue sorted before
+    them can never take one of their ids (a venue "Hall" with id hall beside a base location hall
+    named "School Hall")."""
+    base_locs = [copy.deepcopy(l) for l in base.get("locations", [])]
+    by_name = {str(l.get("name") or "").strip().lower(): l for l in base_locs if not l.get("rest")}
+    venues = plan.get("venues") or []
+    venue_names = {v["name"].strip().lower() for v in venues}
+    kept = [l for l in base_locs if l.get("rest") or str(l.get("name") or "").strip().lower() not in venue_names]
+    taken = {l["id"] for l in kept}
+    loc_of: dict[str, str] = {}
+    for v in venues:                    # first: a venue named like a base location takes its id
+        match = by_name.get(v["name"].strip().lower())
+        if match is not None and match["id"] not in taken:
+            taken.add(match["id"])
+            loc_of[v["id"]] = match["id"]
+    for v in venues:                    # then every other venue, clear of all those ids
+        if v["id"] in loc_of:
+            continue
+        loc_id = _fit_id(v["id"])
+        if loc_id in taken:
+            loc_id = unique_id(loc_id, taken, _ORG_ID_MAX)
+        taken.add(loc_id)
+        loc_of[v["id"]] = loc_id
+    venue_locs = [{"id": loc_of[v["id"]], "name": v["name"], "cap": v.get("capacity") or _DEFAULT_VENUE_CAP,
+                   "kind": v.get("kind") or "", "shared": False, "rest": False} for v in venues]
+    return venue_locs + kept, loc_of
+
+
+def _eligible_locs(r: dict, locations: list[dict], warnings: list[str], home: str | None = None) -> list[str]:
+    """Where a requirement may meet: its room, else every room of its kind, else its class's home room
+    (`home`, a location id: model.home_room), else any room."""
     non_rest = [l["id"] for l in locations if not l.get("rest")]
     room, kind = r["venue"].get("room"), r["venue"].get("kind")
+    if home and not room and not kind:
+        return [home]
     if room:
         if room in {l["id"] for l in locations}:
             return [room]
@@ -179,14 +220,19 @@ def _band_syncs(plan: dict, group_of_req: dict[str, str]) -> dict[tuple[str, str
 
 
 def _events(plan: dict, locations: list[dict], group_of_req: dict[str, str],
-            warnings: list[str]) -> list[dict]:
+            warnings: list[str], loc_of: dict[str, str] | None = None) -> list[dict]:
+    """`loc_of`: plan venue id -> location id (_locations); a requirement's room may name either."""
+    loc_of = loc_of or {}
     sync_of = _band_syncs(plan, group_of_req)
     events = []
     for r in plan["requirements"]:
         grouped = r["grouping"] != "class"
         label = r["grouping"] if grouped else (r["classes"][0] if r["classes"] else r["id"])
         name = f"{r['subject']} {label}".strip()
-        eligible = _eligible_locs(r, locations, warnings)
+        room = r["venue"].get("room")
+        if room in loc_of:
+            r = {**r, "venue": {**r["venue"], "room": loc_of[room]}}
+        eligible = _eligible_locs(r, locations, warnings, loc_of.get(home_room(plan, r) or ""))
         members = list(r["teachers"]) + [group_of_req[r["id"]]]
         for k, count in r["lessons"].items():
             for i in range(count):
@@ -227,14 +273,14 @@ def generate(plan: dict, base_org: dict | None, settings: dict) -> tuple[dict, d
         raise PlanError(f"{len(blocks)} blocking issues: " + "; ".join(capped(blocks)))
     warnings = [i.text for i in issues if i.level == "warn"]
 
-    locations = [copy.deepcopy(l) for l in base.get("locations", [])]
+    locations, loc_of = _locations(plan, base)
     loc_ids = [l["id"] for l in locations]
     n_slots = len(base["time_labels"])
 
     persons = _persons(plan, base, n_slots, loc_ids)
     groups, bands, group_of_req = _groups_and_bands(plan, warnings)
     teacher_ids = [s["id"] for s in plan["staff"]]
-    events = _events(plan, locations, group_of_req, warnings)
+    events = _events(plan, locations, group_of_req, warnings, loc_of)
     events += _pinned(plan, settings, teacher_ids, locations)
 
     rules = copy.deepcopy(base.get("rules")) if base.get("rules") else intake.rules_from_settings(settings)

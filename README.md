@@ -205,7 +205,8 @@ availability, a day's maximum, rules and class sizes — and, while a row is unc
 
 **Download template** beside Upload workbook gives a blank workbook in the importer's own shape: a
 README sheet explaining every column, an example `MATH` sheet (rows marked "example: replace or
-delete"), `Groups` and `Control` with example staff. **Export to Excel** writes the current plan
+delete"), `Groups` and `Control` with example staff, `Classes` (code, level, size, home room) and
+`Venues` (room, block, level, capacity, kind). **Export to Excel** writes the current plan
 the same way — one sheet per department with a row per cell (a split cell is one row with its
 teachers and `Split` "3/2", locked rows say `Locked: yes`), the divisions and band codes on
 `Groups`, and staff with their allowance, reductions ("HOD 8; CCA 2") and provisional flag on
@@ -214,6 +215,26 @@ one share: a name, `(unassigned)`, or `Kelly Wong + Eugene Lee` for a share taug
 Importing an export into an empty timetable gives the same plan back, and uploading it into the
 timetable it came from keeps rooms and availability; anything a workbook cannot hold exactly (a
 lesson longer than four periods, two staff with one name) is listed on its README sheet.
+
+### Any other workbook: the smart reader
+
+Schools keep rooms and manpower in their own layouts. A `.xlsx` or `.csv` the importers above do not
+recognise, dropped on the intake dropzone or on **Upload workbook**, goes to the **reader**: the
+configured model looks at the sheets once and writes a short *reading recipe* (where the rows or the
+room codes are, which cells hold class and size, which labels give block and level); the app runs
+that recipe itself, checks the result against the plan, and shows it as a card on the Requirements
+tab — counts, a few sample rows with the cell each came from, and the things to check (a cell that
+did not match, a home room for a class the plan does not have, a room used twice). Nothing changes
+until **Apply**, which merges rooms and home rooms into the plan (adding and updating, never
+deleting); **Discard** throws the reading away. Each file in an upload is reported on its own, so
+one file the reader cannot read never hides another's import.
+
+On Apply the recipe is saved as a **reader** for that layout (Project tab, **Saved readers**, with
+Delete). The next workbook in the same layout — next semester's copy — is read by the saved reader
+without calling the model. The workbook's text goes to the configured model provider only when no
+saved reader fits; nothing is shared with other schools. Rooms (`venues`) and home rooms become the
+draft's locations on **Generate draft**: a lesson for one class with no room kind set is placed in
+that class's home room. The template's `Venues` and `Classes` sheets remain the AI-free way in.
 
 ### Deployment board
 

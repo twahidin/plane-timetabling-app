@@ -69,6 +69,7 @@ def empty_plan() -> dict:
         "divisions": [],
         "requirements": [],
         "bands": [],
+        "venues": [],
         "rules": {"edge_subjects": [], "no_double_across_rest": True, "pinned": []},
         "vocabulary": dict(DEFAULT_VOCABULARY),
         "source": None,
@@ -215,12 +216,104 @@ def _normalise_staff(item: dict) -> dict:
     }
 
 
-def _normalise_class(item: dict) -> dict:
+def _normalise_class(item: dict, venue_ids=frozenset()) -> dict:
+    """A class: code, level, size and, only while one is set, `home` — the id of its home room, one
+    of the plan's venues (spec 2026-10-08-smart-workbook-reader-design.md §1). A class without a
+    home room has no `home` key at all, so a plan that uses no rooms reads exactly as before."""
     item = as_dict(item, "class item")
     code = item.get("code")
     if not isinstance(code, str) or not code:
         raise PlanError(f"class: code {code!r} must be a non-empty string")
-    return {"code": code, "level": item.get("level", ""), "size": item.get("size")}
+    out = {"code": code, "level": item.get("level", ""), "size": item.get("size")}
+    home = item.get("home")
+    if home not in (None, ""):
+        if not isinstance(home, str) or home not in venue_ids:
+            raise PlanError(f"class {code}: unknown home room {home!r}")
+        out["home"] = home
+    return out
+
+
+# ---------------------------------------------------------------------------
+# venues: the school's rooms (spec 2026-10-08-smart-workbook-reader-design.md §1)
+# ---------------------------------------------------------------------------
+
+VENUE_TEXT_MAX = 40
+VENUE_CAPACITY_MAX = 2000
+_VENUE_TEXT_FIELDS = ("block", "level", "kind")
+
+
+def _venue_text(value, name: str) -> str | None:
+    """An optional short text of a venue as a person or a spreadsheet wrote it (101, 2.0, "Block B"):
+    stripped, None when empty, PlanError past VENUE_TEXT_MAX characters or when not text at all."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise PlanError(f"{name}: {value!r} must be text")
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if isinstance(value, (int, float)):
+        value = str(value)
+    if not isinstance(value, str):
+        raise PlanError(f"{name}: {value!r} must be text")
+    value = value.strip()
+    if len(value) > VENUE_TEXT_MAX:
+        raise PlanError(f"{name}: {value[:VENUE_TEXT_MAX]!r}... is longer than {VENUE_TEXT_MAX} characters")
+    return value or None
+
+
+def _venue_capacity(value, name: str) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise PlanError(f"{name}: {value!r} must be a whole number of seats")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise PlanError(f"{name}: {value!r} must be a whole number of seats")
+    if not number.is_integer() or not 1 <= number <= VENUE_CAPACITY_MAX:
+        raise PlanError(f"{name}: {value!r} must be a whole number of seats from 1 to {VENUE_CAPACITY_MAX}")
+    return int(number)
+
+
+def venue_id(name) -> str:
+    """The id a venue named `name` gets: the slug of its name as written ("Room 2-04" -> room-2-04)."""
+    return plan_slug(str(name).strip())
+
+
+def normalise_venue(item: dict) -> dict:
+    """One venue {id, name, block, level, capacity, kind}; PlanError naming what does not read."""
+    item = as_dict(item, "venue item")
+    name = _venue_text(item.get("name"), "venue name")
+    if not name:
+        raise PlanError(f"venue {item.get('id')!r}: a venue needs a name")
+    vid = _check_id(item.get("id") or venue_id(name), "venues")
+    out = {"id": vid, "name": name}
+    for field in _VENUE_TEXT_FIELDS:
+        out[field] = _venue_text(item.get(field), f"venue {name} {field}")
+    out["capacity"] = _venue_capacity(item.get("capacity"), f"venue {name} capacity")
+    return {k: out[k] for k in ("id", "name", "block", "level", "capacity", "kind")}
+
+
+def normalise_venues(raw) -> list[dict]:
+    """The plan's venues sorted by id; PlanError for a bad venue or two of one id."""
+    venues = [normalise_venue(v) for v in _as_list(raw, "venues")]
+    seen: set[str] = set()
+    for v in venues:
+        if v["id"] in seen:
+            raise PlanError(f"venues: two venues have the id {v['id']!r}")
+        seen.add(v["id"])
+    return sorted(venues, key=lambda v: v["id"])
+
+
+def home_room(plan: dict, req: dict) -> str | None:
+    """The venue id a requirement meets in by default: its class's home room, when the requirement is
+    an entire-class one naming exactly one class, sets neither a venue kind nor a room, and that class
+    has a home room. None otherwise (an explicit venue always wins; a group is not a class)."""
+    venue = req.get("venue") or {}
+    classes = req.get("classes") or []
+    if (req.get("grouping") or "class") != "class" or len(classes) != 1 or venue.get("kind") or venue.get("room"):
+        return None
+    return next((c.get("home") for c in plan.get("classes") or [] if c.get("code") == classes[0]), None) or None
 
 
 def _normalise_division(item: dict) -> dict:
@@ -336,13 +429,16 @@ def department_status(plan: dict, dept) -> dict:
 
 def normalise(plan: dict) -> dict:
     plan = as_dict(plan, "plan")
+    venues = normalise_venues(plan.get("venues"))
+    venue_ids = frozenset(v["id"] for v in venues)
     out = {
         "version": plan.get("version", PLAN_VERSION),
         "staff": [_normalise_staff(s) for s in _as_list(plan.get("staff"), "staff")],
-        "classes": [_normalise_class(c) for c in _as_list(plan.get("classes"), "classes")],
+        "classes": [_normalise_class(c, venue_ids) for c in _as_list(plan.get("classes"), "classes")],
         "divisions": [_normalise_division(d) for d in _as_list(plan.get("divisions"), "divisions")],
         "requirements": [_normalise_requirement(r) for r in _as_list(plan.get("requirements"), "requirements")],
         "bands": [_normalise_band(b) for b in _as_list(plan.get("bands"), "bands")],
+        "venues": venues,
         "rules": _normalise_rules(plan.get("rules")),
         "vocabulary": _normalise_vocabulary(plan.get("vocabulary")),
         "source": plan.get("source"),
@@ -434,6 +530,65 @@ def check_locks(before: dict, after: dict) -> None:
             raise LockError(locked, f"{locked['id']} is locked: unlock it before adding {r['id']} to its cell")
 
 
+def upsert_venues(venues: list, items) -> None:
+    """Add or update venues in place by id (an item's `id`, else the slug of its `name`): the fields an
+    item gives replace the venue's, the rest stay. Nothing is ever deleted."""
+    for item in _as_list(items, "venues upsert"):
+        item = as_dict(item, "venues upsert item")
+        vid = item.get("id") or (venue_id(item["name"]) if item.get("name") not in (None, "") else None)
+        if not vid:
+            raise PlanError("venues upsert: each venue needs a name or an id")
+        idx = next((i for i, v in enumerate(venues) if isinstance(v, dict) and v.get("id") == vid), None)
+        fields = {k: v for k, v in item.items() if k != "id"}
+        if idx is None:
+            venues.append({"id": vid, **fields})
+        else:
+            venues[idx] = {**venues[idx], **fields}
+
+
+def _apply_venues_patch(out: dict, value) -> None:
+    if not isinstance(value, dict) or set(value) != {"upsert"} or not isinstance(value["upsert"], list):
+        raise PlanError('venues: a patch is {"upsert": [venue, ...]}; venues are added or updated, never deleted')
+    upsert_venues(out.setdefault("venues", []), value["upsert"])
+
+
+# A classes patch is {code: fields-or-None} as for every keyed section, plus these two operations.
+_CLASS_OPERATIONS = ("upsert", "homes")
+
+
+def _upsert_classes(classes: list, items) -> None:
+    """Add or update classes by code; a class keeps every field the item does not give."""
+    for item in _as_list(items, "classes upsert"):
+        item = as_dict(item, "classes upsert item")
+        code = item.get("code")
+        if not isinstance(code, str) or not code:
+            raise PlanError(f"classes upsert: code {code!r} must be a non-empty string")
+        fields = {k: item[k] for k in ("level", "size") if k in item}
+        idx = next((i for i, c in enumerate(classes) if c.get("code") == code), None)
+        if idx is None:
+            classes.append({"code": code, **fields})
+        else:
+            classes[idx] = {**classes[idx], **fields}
+
+
+def _set_homes(classes: list, homes) -> None:
+    """{class code: venue id or None}: set or clear home rooms; the venue is checked by normalise."""
+    for code, home in as_dict(homes, "classes homes").items():
+        idx = next((i for i, c in enumerate(classes) if c.get("code") == code), None)
+        if idx is None:
+            raise PlanError(f"classes homes: unknown class {code!r}")
+        classes[idx] = {**classes[idx], "home": home}
+
+
+def _apply_classes_patch(out: dict, value: dict) -> None:
+    classes = out.setdefault("classes", [])
+    _apply_keyed_patch(classes, {k: v for k, v in value.items() if k not in _CLASS_OPERATIONS}, "code")
+    if "upsert" in value:
+        _upsert_classes(classes, value["upsert"])
+    if "homes" in value:
+        _set_homes(classes, value["homes"])
+
+
 def apply_patch(plan: dict, patch: dict) -> dict:
     try:
         before = normalise(plan)
@@ -444,8 +599,10 @@ def apply_patch(plan: dict, patch: dict) -> dict:
         for key, value in patch.items():
             if key in _BY_ID and isinstance(value, dict):
                 _apply_keyed_patch(out.setdefault(key, []), value, "id")
+            elif key == "venues":
+                _apply_venues_patch(out, value)
             elif key == "classes" and isinstance(value, dict):
-                _apply_keyed_patch(out.setdefault(key, []), value, "code")
+                _apply_classes_patch(out, value)
             elif key == "rules" and isinstance(value, dict):
                 out["rules"] = {**out.get("rules", {}), **value}
             elif value is None:
@@ -597,6 +754,9 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
     imported_vocabulary = imported.get("vocabulary")
     out["vocabulary"] = (existing_n["vocabulary"] if imported_vocabulary is None or _vocabulary_is_default(imported_vocabulary)
                           else imported_vocabulary)
+    # venues are added or updated by an import, never deleted: a home room stays a room
+    out["venues"] = copy.deepcopy(existing_n["venues"])
+    upsert_venues(out["venues"], imported.get("venues") or [])
     out["version"] = imported.get("version", existing_n["version"])
     out["source"] = imported.get("source", existing_n["source"])
     # no workbook carries the sign-off or the rev
@@ -616,6 +776,8 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
             c["size"] = old.get("size")
         if not c.get("level"):
             c["level"] = old.get("level", "")
+        if not c.get("home") and old.get("home"):
+            c["home"] = old["home"]
 
     old_reqs = {r["id"]: r for r in existing_n["requirements"]}
     for r in out["requirements"]:

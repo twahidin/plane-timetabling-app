@@ -358,17 +358,33 @@
   async function uploadPlan(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
+    // A workbook with .csv files beside it: the .csv files are its class sizes. A lone .csv is sent
+    // as the file itself, and the server decides (a workbook it does not recognise goes to the
+    // reader, and comes back as a reading to check and Apply).
     const csvs = files.filter((f) => /\.csv$/i.test(f.name));
-    const main = files.find((f) => !/\.csv$/i.test(f.name));
-    if (!main) { notify('error', 'Pick a workbook (.xlsx); .csv files are read as sizes alongside it.'); planUpload.value = ''; return; }
+    const workbook = files.find((f) => !/\.csv$/i.test(f.name));
+    // Several CSVs and no workbook: none of them is sizes, and this upload reads one file. The
+    // main upload reads each file it is given.
+    if (!workbook && csvs.length > 1) {
+      notify('error', 'Upload one CSV at a time here, or drop them on the main upload.');
+      planUpload.value = '';
+      return;
+    }
+    const main = workbook || csvs[0];
     const fd = new FormData();
     fd.append('file', main, main.name);
-    csvs.forEach((f) => fd.append('sizes', f, f.name));
+    csvs.filter((f) => f !== main).forEach((f) => fd.append('sizes', f, f.name));
     planUpload.disabled = true;
     try {
       const r = await fetch('/api/plan/upload', { method: 'POST', body: fd });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) { notify('error', body.detail || r.statusText); return; }
+      if (body.reading) {
+        // read, not imported: the plan is unchanged until its card's Apply
+        if (window.loadReadings) window.loadReadings();
+        notify('', `Read ${body.reading.file || main.name}: check its card above and press Apply.`);
+        return;
+      }
       plan = body.plan; issues = body.issues || []; issueCounts = null;
       applyVocabulary(plan.vocabulary);
       renderAll();

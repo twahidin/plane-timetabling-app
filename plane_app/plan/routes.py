@@ -21,6 +21,7 @@ from . import generate as G
 from . import importer as IMP
 from . import model as M
 from .issues import Issue, capped, has_blocks, plan_issues
+from .reader import routes as reader_routes
 
 
 def _issue_dict(i: Issue) -> dict:
@@ -194,13 +195,24 @@ def make_router(db) -> APIRouter:
         return {"plan": new, "issues": [_issue_dict(i) for i in _issues_for(db, new)]}
 
     @r.post("/api/plan/upload")
-    async def upload_plan(file: UploadFile = File(...), sizes: list[UploadFile] = File(default=[]),
+    async def upload_plan(request: Request, file: UploadFile = File(...), sizes: list[UploadFile] = File(default=[]),
                           sid: str = Depends(auth.require_session)):
         data = await file.read()
+        name = file.filename or "upload"
         if len(data) > MAX_UPLOAD:
             raise HTTPException(400, f"{file.filename or 'file'} is over 20 MB")
         if not (IMP.is_deployment_workbook(data) or IMP.is_generic_workbook(data)):
-            raise HTTPException(400, f"{file.filename or 'file'} is not a staff-deployment or duties workbook")
+            if not name.lower().endswith((".xlsx", ".csv")):
+                raise HTTPException(400, f"{file.filename or 'file'} is not a staff-deployment or duties workbook")
+            # any other workbook: the smart reader, as the general upload does; a reading to Apply.
+            # The provider is made only when no saved reader reads the file.
+            result = await run_in_threadpool(
+                reader_routes.read_upload, db, lambda: request.app.state.provider_factory(db.get_settings()),
+                name, data, db.working_timetable())
+            result.pop("code", None)
+            if result["status"] == "error":
+                return JSONResponse({"detail": result["message"], "files": [result]}, status_code=422)
+            return {"reading": reader_routes.public(db, result["id"]), "files": [result]}
         sizes_texts = []
         for s in sizes:
             sdata = await s.read()

@@ -137,6 +137,7 @@
       else if (ev.kind === 'bookings_updated') loadBookings();
       else if (ev.kind === 'relief') { if (window.loadRelief) window.loadRelief().catch(() => {}); }
       else if (ev.kind === 'periods') { if (window.loadPeriods) window.loadPeriods().catch(() => {}); if (window.loadTimetables) window.loadTimetables(); }
+      else if (ev.kind === 'readings') document.dispatchEvent(new CustomEvent('plane:readings'));
       else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadBoard) window.loadBoard().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
       else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
       else if (ev.kind === 'settings_updated') {
@@ -237,6 +238,15 @@
   window.showNotes = showNotes;
 
   // ---------- Upload ----------
+  // Each uploaded file's own outcome (imported into the plan, read and waiting for Apply on the
+  // Requirements tab, read into the draft, skipped beside a timetable export, or why it failed), one
+  // line per file.
+  const FILE_CLS = { imported: 'good', draft: 'good', reading: '', skipped: '', error: 'error' };
+  function fileLines(files) {
+    return (files || []).map((f) => ({ cls: FILE_CLS[f.status] != null ? FILE_CLS[f.status] : '', text: `${f.name}: ${f.message}` }));
+  }
+  // a plan workbook's import note is already its file's line
+  const otherNotes = (body) => (body.notes || []).filter((n) => !(body.files && n && n.section === 'plan'));
   const drop = el('drop'), fileInput = el('files');
   async function upload(files) {
     if (!files || !files.length) return;
@@ -254,16 +264,21 @@
       const r = await fetch('/api/upload', { method: 'POST', body: fd });
       const body = await r.json().catch(() => ({}));
       const took = busy.seconds(); busy.stop();
-      if (!r.ok) { showNotes([], [], [{ cls: 'error', text: body.detail || r.statusText }]); return; }
+      if (!r.ok) {
+        showNotes([], [], Array.isArray(body.files) && body.files.length ? fileLines(body.files) : [{ cls: 'error', text: body.detail || r.statusText }]);
+        return;
+      }
       if (!body.draft) {
-        // only a plan workbook (or workbooks) was uploaded: nothing to turn into a draft
-        showNotes(body.notes, body.warnings, []);
+        // plan workbooks, readings or failed files only: nothing to turn into a draft
+        showNotes(otherNotes(body), body.warnings, fileLines(body.files));
         handleEvents(body.events);
         return;
       }
       const s = body.draft || {};
       const how = body.source === 'asc' ? 'read from the timetable export (no model needed)' : `extracted${label ? ' with ' + label : ''}`;
-      showNotes(body.notes, body.warnings, [{ cls: 'good', text: `Draft ${how} in ${took}s: ${s.persons} persons, ${s.locations} locations, ${s.events} events. Check the tables, then Build.` }]);
+      // the summary line speaks for the files read into the draft: only the others get a line
+      const others = (body.files || []).filter((f) => f.status !== 'draft');
+      showNotes(otherNotes(body), body.warnings, [{ cls: 'good', text: `Draft ${how} in ${took}s: ${s.persons} persons, ${s.locations} locations, ${s.events} events. Check the tables, then Build.` }].concat(fileLines(others)));
       await loadDraft();
       handleEvents(body.events);
     } catch (e) { busy.stop(); showNotes([], [], [{ cls: 'error', text: e.message }]); }

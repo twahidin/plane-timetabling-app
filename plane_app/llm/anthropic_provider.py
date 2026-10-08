@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import anthropic
 
@@ -73,17 +74,72 @@ class AnthropicProvider:
         return Turn("\n".join(text).strip(), calls)
 
     def extract_json(self, system: str, user: str, schema: dict) -> dict:
+        """The reply as JSON, enforced by `schema`. A schema the API refuses ("compiled grammar is too
+        large") is asked for once more without enforcement: the schema in the system prompt instead,
+        the reply parsed here (ProviderError when it is not JSON)."""
+        messages = [{"role": "user", "content": user}]
         try:
             resp = self._create(
-                model=self.model, max_tokens=16000, system=system,
-                messages=[{"role": "user", "content": user}],
+                model=self.model, max_tokens=16000, system=system, messages=messages,
                 output_config={"effort": "high", "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)}},
+            )
+        except anthropic.BadRequestError as e:
+            if not _schema_refused(e):
+                raise ProviderError(f"Anthropic: {e}")
+            return self._extract_unenforced(system, messages, schema)
+        except anthropic.APIError as e:
+            raise ProviderError(f"Anthropic: {e}")
+        self._check(resp)
+        try:
+            return json.loads(_reply_text(resp))
+        except json.JSONDecodeError as e:
+            raise ProviderError(f"model returned invalid JSON: {e}")
+
+    def _extract_unenforced(self, system: str, messages: list[dict], schema: dict) -> dict:
+        try:
+            resp = self._create(
+                model=self.model, max_tokens=16000, messages=messages, output_config={"effort": "high"},
+                system=f"{system}\n\nReply with only one JSON object matching this schema: {json.dumps(schema)}",
             )
         except anthropic.APIError as e:
             raise ProviderError(f"Anthropic: {e}")
         self._check(resp)
-        text = next((b.text for b in resp.content if b.type == "text"), "")
         try:
-            return json.loads(text)
+            data = parse_json(_reply_text(resp))
         except json.JSONDecodeError as e:
             raise ProviderError(f"model returned invalid JSON: {e}")
+        if not isinstance(data, dict):
+            raise ProviderError("model returned invalid JSON: not an object")
+        return data
+
+
+def _reply_text(resp) -> str:
+    return next((b.text for b in resp.content if b.type == "text"), "")
+
+
+def _schema_refused(e: "anthropic.BadRequestError") -> bool:
+    """A 400 that refuses the output schema for its size (its grammar, or a schema "too large", "too
+    complex" or failing to compile), not one that refuses a keyword or the request itself."""
+    body = e.body if isinstance(e.body, dict) else {}
+    detail = body.get("error") if isinstance(body.get("error"), dict) else {}
+    text = f"{e} {detail.get('message', '')}".lower()
+    return "grammar" in text or ("schema" in text and any(w in text for w in ("too large", "too complex", "compiled")))
+
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+
+
+def parse_json(text: str):
+    """JSON from a reply that may wrap it in a code fence or a sentence: the fenced part, else the
+    outermost {...}."""
+    text = text or ""
+    m = _FENCE.search(text)
+    if m:
+        return json.loads(m.group(1).strip())
+    try:
+        return json.loads(text.strip())
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        return json.loads(text[start:end + 1])

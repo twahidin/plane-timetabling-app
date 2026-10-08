@@ -114,7 +114,7 @@ def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
             issues.append(Issue("block", r["id"],
                                  f"{r['id']}: an entire-class requirement names exactly one class"))
 
-        if not r["venue"].get("kind") and not r["venue"].get("room"):
+        if not r["venue"].get("kind") and not r["venue"].get("room") and not M.home_room(plan, r):
             issues.append(Issue("warn", r["id"], f"{r['id']}: no venue kind or room set"))
 
     for b in plan["bands"]:
