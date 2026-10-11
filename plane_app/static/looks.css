@@ -1,0 +1,110 @@
+/* Looks (spec docs/superpowers/specs/2026-10-11-campus-looks-design.md §1.2). Toy town and Construction
+   redefine Nocturne's tokens (app.css :root) for a light page; Classic is app.css as it is. Every rule
+   here is scoped to one of the two looks; the font is fetched only where a look uses it. */
+@font-face {
+  font-family: "Fredoka"; font-style: normal; font-weight: 300 700; font-display: swap;
+  src: url("fonts/fredoka-latin-wght-normal.woff2") format("woff2-variations"),
+       url("fonts/fredoka-latin-wght-normal.woff2") format("woff2");
+}
+
+html[data-look="toy"] {
+  color-scheme: light;
+  --grid: var(--color-neutral-600);
+  --rest: var(--color-neutral-600);
+  --plane: var(--color-accent-400);
+  --color-bg: #eef2ff;
+  --color-surface: #fffefd;
+  --color-text: #2d2a4a;
+  --color-accent: #5f4fd6;
+  --color-divider: color-mix(in srgb, #2d2a4a 12%, transparent);
+  --color-neutral-100: #24213d; --color-neutral-200: #34304f; --color-neutral-300: #4f4a6d;
+  --color-neutral-400: #5e5980; --color-neutral-500: #6a6586; --color-neutral-600: #9893ad;
+  --color-neutral-700: #bdb8cf; --color-neutral-800: #e1ddef; --color-neutral-900: #f3f1fb;
+  --color-accent-100: #231b5c; --color-accent-200: #33288a; --color-accent-300: #4636b8;
+  --color-accent-400: #5f4fd6; --color-accent-500: #7c6cf2; --color-accent-600: #a99ef7;
+  --color-accent-700: #c8c0fa; --color-accent-800: #e2ddfd; --color-accent-900: #f2effe;
+  --font-heading: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius-sm: 8px; --radius-md: 14px; --radius-lg: 22px;
+  --shadow-sm: 0 0 0 1px #e4e0f3;
+  --shadow-md: 0 0 0 1px #e4e0f3, 0 10px 28px rgba(110, 90, 200, 0.16);
+  --shadow-lg: 0 0 0 1px #d8d2ee, 0 18px 44px rgba(110, 90, 200, 0.22);
+  --good: #0f7048;
+  --bad: #c0262f;
+  --bad-soft: #fde8ea;
+  --booking-soft: #fff1d6;
+  --good-soft: #e2f5eb;
+  --loc-1: #2f6fd0; --loc-2: #c4501f; --loc-3: #12855e; --loc-4: #9a6500; --loc-5: #c13f72;
+  --stage: #e8eeff;
+  --warn-ink: #8a5800;
+  --accent-fill: #6a5ae6;
+  --accent-fill-ink: #fffefd;
+  --page: linear-gradient(180deg, #cfe9ff 0%, #eef3ff 40%, #fff1fa 100%);
+}
+
+html[data-look="site"] {
+  color-scheme: light;
+  --grid: var(--color-neutral-600);
+  --rest: var(--color-neutral-600);
+  --plane: var(--color-accent-400);
+  --color-bg: #fbf5ea;
+  --color-surface: #fffdf8;
+  --color-text: #2b2a33;
+  --color-accent: #8a5600;
+  --color-divider: color-mix(in srgb, #2b2a33 13%, transparent);
+  --color-neutral-100: #24221f; --color-neutral-200: #36332e; --color-neutral-300: #4e4a43;
+  --color-neutral-400: #5c5750; --color-neutral-500: #6a645a; --color-neutral-600: #9a9488;
+  --color-neutral-700: #c2bcaf; --color-neutral-800: #e6dfd0; --color-neutral-900: #f6f0e3;
+  --color-accent-100: #3a2600; --color-accent-200: #5a3c00; --color-accent-300: #7a4c00;
+  --color-accent-400: #8a5600; --color-accent-500: #f5a400; --color-accent-600: #f7bd45;
+  --color-accent-700: #fad27f; --color-accent-800: #fde6b8; --color-accent-900: #fff4dc;
+  --font-heading: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Fredoka", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius-sm: 7px; --radius-md: 12px; --radius-lg: 18px;
+  --shadow-sm: 0 0 0 1px #ece3d1;
+  --shadow-md: 0 0 0 1px #ece3d1, 0 10px 26px rgba(160, 110, 20, 0.16);
+  --shadow-lg: 0 0 0 1px #e2d6bd, 0 18px 40px rgba(160, 110, 20, 0.22);
+  --good: #0f7048;
+  --bad: #c0262f;
+  --bad-soft: #fde8e6;
+  --booking-soft: #fff1d6;
+  --good-soft: #e2f5eb;
+  --loc-1: #2f6fd0; --loc-2: #c4501f; --loc-3: #12855e; --loc-4: #9a6500; --loc-5: #c13f72;
+  --stage: #f6efe1;
+  --warn-ink: #8a5800;
+  --accent-fill: #f5a400;
+  --accent-fill-ink: #2b2a33;
+  --page: linear-gradient(180deg, #d6ecff 0%, #f3f8ff 35%, #fff4df 100%);
+}
+
+/* The page behind everything: a sky, not a flat colour */
+html[data-look="toy"] body, html[data-look="site"] body { background: var(--page); background-attachment: fixed; }
+
+/* Primary buttons are filled in the light looks (Classic keeps Nocturne's outlined ones) */
+html[data-look="toy"] .btn.primary, html[data-look="site"] .btn.primary {
+  background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-fill-ink); }
+html[data-look="toy"] .btn.primary:hover:where(:not(:disabled, [aria-disabled="true"])),
+html[data-look="site"] .btn.primary:hover:where(:not(:disabled, [aria-disabled="true"])) {
+  background: color-mix(in srgb, var(--accent-fill) 86%, var(--color-text)); color: var(--accent-fill-ink); }
+
+/* Toy town: a soft lift on cards and the top bar */
+html[data-look="toy"] .appbar { background: color-mix(in srgb, var(--color-surface) 82%, transparent); }
+
+/* Construction: the hazard stripe under the top bar */
+html[data-look="site"] .appbar { position: relative; padding-bottom: 4px; background: color-mix(in srgb, var(--color-surface) 86%, transparent); }
+html[data-look="site"] .appbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; pointer-events: none;
+  background: repeating-linear-gradient(-45deg, var(--accent-fill) 0 8px, var(--color-text) 8px 16px); }
+
+/* Small text and hairlines that Nocturne draws light-on-dark */
+html[data-look="toy"] .board-tag.group, html[data-look="site"] .board-tag.group { color: color-mix(in srgb, var(--loc-1) 70%, var(--color-text)); }
+html[data-look="toy"] .board-tag.share, html[data-look="site"] .board-tag.share { color: color-mix(in srgb, var(--loc-3) 70%, var(--color-text)); }
+html[data-look="toy"] .appbar-tab .n, html[data-look="site"] .appbar-tab .n { color: var(--color-neutral-500); }
+html[data-look="toy"] .dialog::backdrop, html[data-look="site"] .dialog::backdrop { background: color-mix(in srgb, var(--color-text) 38%, transparent); }
+html[data-look="toy"] input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), html[data-look="toy"] select, html[data-look="toy"] textarea,
+html[data-look="site"] input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), html[data-look="site"] select, html[data-look="site"] textarea { border-color: var(--color-neutral-600); }
+html[data-look="toy"] input:focus-visible, html[data-look="toy"] select:focus-visible, html[data-look="toy"] textarea:focus-visible,
+html[data-look="site"] input:focus-visible, html[data-look="site"] select:focus-visible, html[data-look="site"] textarea:focus-visible { border-color: var(--color-accent); }
+html[data-look="toy"] #assistant, html[data-look="site"] #assistant { box-shadow: -1px 0 0 var(--color-neutral-800); }
+html[data-look="site"] .btn.primary { border-color: color-mix(in srgb, var(--accent-fill) 70%, var(--color-text)); }

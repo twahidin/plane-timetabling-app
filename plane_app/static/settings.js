@@ -85,6 +85,8 @@
     el('solve_preset').value = sv.preset || 'balanced';
     el('solve_time_limit').value = sv.time_limit ?? 300;
     RULES.forEach((r) => { el('w_' + r).value = w[r] ?? PRESETS.balanced[r]; });
+    const lk = (s.look || {}).default || 'classic';
+    document.querySelectorAll('input[name=look]').forEach((r) => { r.checked = r.value === lk; });
     labelsEdited = false;
   }
 
@@ -107,6 +109,7 @@
       provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: chosenModel() },
       engine: { url: el('engine_url').value.trim(), key: el('engine_key').value },
       solve: { preset: el('solve_preset').value, time_limit: solveLimit(), weights: Object.fromEntries(RULES.map((r) => [r, weight(r)])) },
+      look: { default: (document.querySelector('input[name=look]:checked') || { value: 'classic' }).value },
       calendar: {
         term_start: el('term-start').value,
         first_week: el('first-week').value,
@@ -152,6 +155,8 @@
     try {
       const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
       fill(saved);
+      document.documentElement.dataset.schoolLook = (saved.look || {}).default || 'classic';
+      if (window.planeLook) window.planeLook.refresh();
       msg('Saved.', 'ok');
     } catch (e) { msg(e.message, 'bad'); }
     finally { el('save').disabled = false; }

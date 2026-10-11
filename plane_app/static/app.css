@@ -44,6 +44,12 @@
     --rest: var(--color-neutral-700);
     --sans: var(--font-body);
     --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+
+    /* Tokens the light looks (looks.css) redefine; Classic's values */
+    --warn-ink: #e8a93a;
+    --accent-fill: var(--color-accent);
+    --accent-fill-ink: var(--color-bg);
+    --page: var(--color-bg);
   }
 
   * { box-sizing: border-box; }
@@ -354,7 +360,7 @@
     font-size: 12.5px; display: flex; flex-direction: column; gap: 8px;
   }
   .plan-issues-summary { display: flex; gap: 8px; }
-  .chip.warn { background: color-mix(in srgb, var(--loc-4) 20%, transparent); color: #e8a93a; }
+  .chip.warn { background: color-mix(in srgb, var(--loc-4) 20%, transparent); color: var(--warn-ink); }
   .plan-issue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
   .plan-issue-list li { border-radius: 4px; padding: 5px 8px; border-left: 3px solid var(--muted); background: var(--surface-2); }
   .plan-issue-list li.block { border-left-color: var(--bad); background: var(--bad-soft); }
@@ -673,6 +679,18 @@
   .appbar-end { display: flex; align-items: center; gap: var(--space-2); flex: none; }
   .appbar-end .tag { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .appbar-end .tag[hidden] { display: none; }
+  .look-pick { font-size: 12px; padding: 4px 6px; width: 118px; }
+  .look-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--space-4); }
+  .form .look-card { display: grid; grid-template-columns: auto 1fr; gap: 4px var(--space-3); align-items: center; padding: var(--space-4);
+               border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
+  .form .look-card:has(input:checked) { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); }
+  .form .look-card .look-swatch, .form .look-card .help { grid-column: 1 / -1; }
+  .form .look-cards, .form p.wide { grid-column: 1 / -1; }
+  .form .look-card input { width: auto; padding: 0; border: 0; margin: 0; }
+  .look-swatch { height: 46px; border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); }
+  .look-swatch[data-swatch="classic"] { background: linear-gradient(135deg, #161826 0 55%, #9184d9 55%); }
+  .look-swatch[data-swatch="toy"] { background: linear-gradient(135deg, #cfe9ff 0 45%, #7c6cf2 45% 72%, #ff8c7a 72%); }
+  .look-swatch[data-swatch="site"] { background: repeating-linear-gradient(-45deg, #f5a400 0 9px, #2b2a33 9px 18px); }
   .appbar-end form { margin: 0; }
   .btn.icon { padding: 5px 7px; }
 

@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-look="{{ school_look() }}" data-school-look="{{ school_look() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ dept }} &middot; Plane Timetabling</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "partials/look_head.html" %}
 </head>
 {#- A head of department's page (spec docs/superpowers/specs/2026-09-27-department-accounts-design.md §5):
     their department's board and the live timetable, read-only. Its scripts call only the routes a
@@ -20,6 +21,7 @@
   <span class="tag accent" id="dept-name">{{ name }} &middot; {{ dept }}</span>
   <span class="dept-timetable" id="dept-timetable">Timetable: {{ timetable }}</span>
   <div class="appbar-end">
+    {% include "partials/look_menu.html" %}
     {% if not must_change %}
     <button class="btn ghost" id="dept-password" type="button">Change password</button>
     {% endif %}
@@ -46,6 +48,7 @@
 <main class="password-first dialog" id="password-first">
   {{ password_form(true) }}
 </main>
+<script src="{{ asset('look.js') }}"></script>
 <script src="{{ asset('department.js') }}"></script>
 {% else %}
 
@@ -96,6 +99,7 @@
 <script src="{{ asset('board-status.js') }}"></script>
 <script src="{{ asset('board.js') }}"></script>
 <script src="{{ asset('grid.js') }}"></script>
+<script src="{{ asset('look.js') }}"></script>
 <script src="{{ asset('department.js') }}"></script>
 {% endif %}
 </body>

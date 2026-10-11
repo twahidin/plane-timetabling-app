@@ -181,6 +181,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             return app.state.solve_locks.setdefault(db.current_timetable(), threading.Lock())
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.globals["asset"] = make_asset_url(HERE / "static")   # versioned /static URLs (assets.py)
+    templates.env.globals["school_look"] = db.school_look           # <html data-look>: the school's look
     app.include_router(print_router(db, templates))
     app.include_router(plan_router(db))
     app.include_router(grid_router(db))

@@ -1,0 +1,4 @@
+{#- The look (spec 2026-10-11-campus-looks-design.md §1.1): the server renders the school's look into
+    <html data-look>; this applies the browser's own choice before first paint. look.js does the rest. -#}
+<link rel="stylesheet" href="{{ asset('looks.css') }}">
+<script>(function(){try{var v=localStorage.getItem('plane.look');if(v === 'classic' || v === 'toy' || v === 'site'){document.documentElement.setAttribute('data-look',v);}}catch(e){}})();</script>

@@ -39,7 +39,9 @@ DEFAULT_SETTINGS = {
     "provider": {"kind": "anthropic", "base_url": "", "api_key": "", "model": "claude-opus-5-5"},
     "engine": {"url": "", "key": ""},
     "calendar": {"term_start": "", "first_week": "odd", "non_teaching_dates": []},
+    "look": {"default": "classic"},
 }
+LOOKS = ("classic", "toy", "site")       # spec 2026-10-11-campus-looks-design.md §1.1; "classic" is Nocturne
 PER_TIMETABLE_SETTINGS = ("time", "rules", "solve", "calendar")      # the rest (provider, engine) is global
 
 SCHEMA = """
@@ -322,6 +324,19 @@ class Db:
             # holds the truly global provider/engine groups); writing for another tid must not disturb it.
             self._set("settings", settings)
 
+    def _clean_look(self, given: dict, current: dict) -> dict:
+        """The school's look: one of LOOKS, else whatever was stored (a save that leaves it out keeps it)."""
+        current = current if isinstance(current, dict) else {}
+        stored = current.get("default") if current.get("default") in LOOKS else "classic"
+        v = given.get("default", stored)
+        return {"default": v if isinstance(v, str) and v in LOOKS else stored}
+
+    def school_look(self) -> str:
+        """The look every page starts in (`<html data-look>`): the stored default when it is a known look."""
+        look = (self._get("settings") or {}).get("look")
+        v = look.get("default") if isinstance(look, dict) else None
+        return v if isinstance(v, str) and v in LOOKS else "classic"
+
     def _clean_solve(self, given: dict, current: dict) -> dict:
         """Keep the solve group well-formed whatever the caller sent: a known preset, a time limit
         within the engine's cap, and integer weights for the six rules (anything else falls back to
@@ -345,16 +360,17 @@ class Db:
 
     def store_settings(self, given: dict) -> dict:
         """Clean and merge a settings body the same way `PUT /api/settings` does, store it and return
-        the merged (unmasked) settings. A caller may send only some of the six groups (the wizard sends
+        the merged (unmasked) settings. A caller may send only some of the seven groups (the wizard sends
         just `time` and `rules`); every group it leaves out keeps its current value untouched. Shared
         by the settings route and the start wizard, which must never disturb the solver, provider,
         engine or calendar groups it did not ask to change."""
         current = self.get_settings()
         if not isinstance(given, dict):
             given = {}
-        groups = {k: (dict(g) if isinstance(g := given.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine", "calendar")}
+        groups = {k: (dict(g) if isinstance(g := given.get(k), dict) else {}) for k in ("time", "rules", "solve", "provider", "engine", "calendar", "look")}
         groups["solve"] = self._clean_solve(groups["solve"], current.get("solve", {}))
         groups["calendar"] = cal_mod.clean(groups["calendar"], current.get("calendar", {}))
+        groups["look"] = self._clean_look(groups["look"], current.get("look", {}))
         for group, field in (("provider", "api_key"), ("engine", "key")):
             v = groups[group].get(field, "")
             if not isinstance(v, str):
@@ -367,7 +383,7 @@ class Db:
             submitted = given.get("provider", {}).get("api_key", "") if isinstance(given.get("provider"), dict) else ""
             if not isinstance(submitted, str) or not submitted or submitted.startswith("***"):
                 groups["provider"]["api_key"] = ""
-        merged = {k: {**current.get(k, {}), **groups[k]} for k in groups}
+        merged = {k: {**(current.get(k) if isinstance(current.get(k), dict) else {}), **groups[k]} for k in groups}
         self.set_settings(merged)
         return merged
 

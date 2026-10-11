@@ -562,7 +562,7 @@
 
   new ResizeObserver(resize).observe(viewEl);
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refresh);
-  new MutationObserver(refresh).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  new MutationObserver(refresh).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-look'] });
 
   function frame() {
     if (needsRender) { needsRender = false; renderer.render(scene, activeCam()); }

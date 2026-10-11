@@ -260,6 +260,16 @@ MATH teacher 1" to name later with its **Edit** button (allowance, reductions su
 and **Undo** takes back the last board change. The Issues panel and Generate draft stay above the
 board and follow every change.
 
+## Appearance
+
+The app has three looks: **Classic** (the dark Nocturne look and its 3D planes view), **Toy town**
+(bright, rounded and playful) and **Construction** (Toy town's style as a building site, with a
+hazard stripe under the top bar). Settings → **Appearance** sets the school's look, which everyone sees,
+the login and department pages included. Anyone can pick another look for themselves from the menu in
+the top bar; it is remembered in their browser, and "School default" goes back. The looks only change
+colours, the font (Fredoka, shipped with the app under `static/fonts/` with its OFL licence) and shapes;
+printouts stay plain. Toy town and Construction are defined in `static/looks.css`.
+
 ## Department accounts
 
 The timetabler logs in with the admin password, leaving Username blank. Heads of department log in

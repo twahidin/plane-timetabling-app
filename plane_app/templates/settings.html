@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-look="{{ school_look() }}" data-school-look="{{ school_look() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Settings &middot; Plane Timetabling</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "partials/look_head.html" %}
 </head>
 <body data-page="settings">
 {% set appbar_page = "settings" %}
@@ -58,6 +59,16 @@
 </dialog>
 
 <form id="settings-form" class="form" autocomplete="off">
+  <fieldset id="appearance">
+    <legend>Appearance</legend>
+    <p class="help wide">The school's look. Everyone sees it, unless they pick another look for themselves from the menu in the top bar.</p>
+    <div class="look-cards wide" role="radiogroup" aria-label="School look">
+      <label class="look-card"><input type="radio" name="look" value="classic"><span class="look-swatch" data-swatch="classic" aria-hidden="true"></span><b>Classic</b><span class="help">Dark Nocturne, with the planes view</span></label>
+      <label class="look-card"><input type="radio" name="look" value="toy"><span class="look-swatch" data-swatch="toy" aria-hidden="true"></span><b>Toy town</b><span class="help">Bright, rounded and playful</span></label>
+      <label class="look-card"><input type="radio" name="look" value="site"><span class="look-swatch" data-swatch="site" aria-hidden="true"></span><b>Construction</b><span class="help">A building site that becomes your school</span></label>
+    </div>
+  </fieldset>
+
   <fieldset>
     <legend>Time grid</legend>
     <label>Slot length (minutes)<input type="number" id="slot_minutes" min="1" step="1"></label>
@@ -131,6 +142,7 @@
   </div>
 </main>
 
+<script src="{{ asset('look.js') }}"></script>
 <script src="{{ asset('settings.js') }}"></script>
 <script src="{{ asset('accounts.js') }}"></script>
 <script src="{{ asset('learning-settings.js') }}"></script>

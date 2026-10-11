@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-look="{{ school_look() }}" data-school-look="{{ school_look() }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Plane Timetabling</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
+{% include "partials/look_head.html" %}
 </head>
 <body data-page="index">
 {% set appbar_page = "index" %}
@@ -457,6 +458,7 @@
   </form>
 </dialog>
 
+<script src="{{ asset('look.js') }}"></script>
 <script src="{{ asset('three.min.js') }}"></script>
 <script src="{{ asset('words.js') }}"></script>
 <script src="{{ asset('model.js') }}"></script>
