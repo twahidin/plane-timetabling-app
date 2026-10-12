@@ -28,4 +28,4 @@ packages = ["plane_app", "plane_app.llm", "plane_app.learning", "plane_app.print
 [tool.setuptools.package-data]
 # `**` needs setuptools >= 62.3; the build requires >= 68 above. templates/print/grid.html
 # lives one level down, so the flat glob alone would leave it out of the wheel.
-plane_app = ["templates/*.html", "templates/**/*.html", "static/*", "static/fonts/*", "wizard/library/*.json"]
+plane_app = ["templates/*.html", "templates/**/*.html", "static/*", "static/fonts/*", "static/vendor/three-0.160.0/*", "static/vendor/three-0.160.0/addons/*/*", "static/campus/*", "wizard/library/*.json"]

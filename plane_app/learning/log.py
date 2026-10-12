@@ -46,18 +46,24 @@ def rows(db, since: float = 0, kinds: tuple[str, ...] | None = None, tid: str | 
     return [{"id": r["id"], "kind": r["kind"], "at": r["at"], "data": json.loads(r["data"]) if data else {}} for r in found]
 
 
-def subject_of(plan: dict | None, event: dict) -> tuple[str, str]:
-    """(subject, group) of an event. Plan-generated event ids are built from the requirement's id
-    (plan/generate.py::_fit_id: "<requirement>-<length>-<n>"), so the requirement whose id is the
-    longest whole-segment prefix of the event id names it: its subject, and its class code (grouping
-    "class") or its grouping. Otherwise the event's name is split at its last space
-    ("English Language 1A1" -> ("English Language", "1A1"))."""
+def requirement_of(plan: dict | None, event: dict) -> dict | None:
+    """The plan requirement behind an event: plan-generated event ids are built from the requirement's id
+    (plan/generate.py::_fit_id: "<requirement>-<length>-<n>"), so it is the requirement whose id is the
+    longest whole-segment prefix of the event id. None when no requirement matches (a hashed long id)."""
     eid = str(event.get("id") or "")
     best = None
     for r in (plan or {}).get("requirements") or []:
         rid = str(r.get("id") or "")
         if rid and (eid == rid or eid.startswith(rid + "-")) and (best is None or len(rid) > len(best["id"])):
             best = r
+    return best
+
+
+def subject_of(plan: dict | None, event: dict) -> tuple[str, str]:
+    """(subject, group) of an event: from the requirement behind it (`requirement_of`), its subject and its
+    class code (grouping "class") or its grouping. Otherwise the event's name is split at its last space
+    ("English Language 1A1" -> ("English Language", "1A1"))."""
+    best = requirement_of(plan, event)
     if best is not None:
         grouping = best.get("grouping")
         classes = best.get("classes") or []

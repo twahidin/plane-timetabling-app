@@ -66,9 +66,64 @@
   const scene = new THREE.Scene();
   const persp = new THREE.PerspectiveCamera(38, 1, 0.1, 4000);
   const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 4000);
-  scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const ambient = new THREE.AmbientLight(0xffffff, 0.85); scene.add(ambient);
   const key = new THREE.DirectionalLight(0xffffff, 0.55); key.position.set(4, 8, 6); scene.add(key);
   const fill = new THREE.DirectionalLight(0xffffff, 0.25); fill.position.set(-6, 3, -4); scene.add(fill);
+
+  // ---------- Toy town and Construction (plan 2026-10-11-campus.md Task 6b): the campus's quality --------
+  // Classic keeps everything above and below exactly as it was; the light looks add soft light and
+  // shadows, rounded tiles, a floor, and their own framing of each person's plane.
+  function planeStyle() { const l = document.documentElement.dataset.look; return l === 'toy' || l === 'site' ? l : 'classic'; }
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xb9d7ff, 1.0);
+  const sun = new THREE.DirectionalLight(0xfff1dc, 1.6);
+  sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005; sun.shadow.radius = 3;
+  scene.add(sun.target);
+  let floorMesh = null;                                // the light looks' floor: only in the turning view
+  function viewDressing() { const orbitView = state.view === 'orbit'; if (floorMesh) floorMesh.visible = orbitView; sun.castShadow = orbitView; }
+  let fontReady = false;                                // labels are drawn into canvases: redraw once Fredoka is in
+  function applyStyle(S, ext) {
+    const light = S !== 'classic';
+    if (light && !fontReady && document.fonts) document.fonts.load('500 22px Fredoka').then(() => { fontReady = true; refresh(); }).catch(() => { fontReady = true; });
+    renderer.shadowMap.enabled = light; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = light ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+    renderer.outputEncoding = light ? THREE.sRGBEncoding : THREE.LinearEncoding;
+    [ambient, key, fill].forEach((l) => { l.visible = !light; });
+    if (light) {
+      hemi.groundColor.set(S === 'toy' ? 0xb9d7ff : 0xecd9b8);
+      if (!hemi.parent) scene.add(hemi); if (!sun.parent) scene.add(sun);
+      const R = Math.max(ext.w, ext.h, ext.d) * 0.75 + 4;
+      sun.position.set(-R * 0.6, R * 1.4, R * 0.9);
+      Object.assign(sun.shadow.camera, { left: -R, right: R, top: R, bottom: -R, near: 0.5, far: R * 5 });
+      sun.shadow.camera.updateProjectionMatrix();
+    } else { scene.remove(hemi); scene.remove(sun); }
+  }
+  const tileGeos = new Map();
+  function roundedTile(w, h, d) {       // a chunky tile: an extruded rounded rectangle, cached by size
+    const k = [w, h, d].map((x) => x.toFixed(3)).join('x');
+    if (tileGeos.has(k)) return tileGeos.get(k);
+    const r = Math.min(0.12, w / 3, h / 3), x = -w / 2 + r, y = -h / 2 + r, iw = w - 2 * r, ih = h - 2 * r;
+    const sh = new THREE.Shape();
+    sh.moveTo(x, y - r); sh.lineTo(x + iw, y - r); sh.quadraticCurveTo(x + iw + r, y - r, x + iw + r, y);
+    sh.lineTo(x + iw + r, y + ih); sh.quadraticCurveTo(x + iw + r, y + ih + r, x + iw, y + ih + r);
+    sh.lineTo(x, y + ih + r); sh.quadraticCurveTo(x - r, y + ih + r, x - r, y + ih); sh.lineTo(x - r, y); sh.quadraticCurveTo(x - r, y - r, x, y - r);
+    const bevel = Math.min(0.05, d / 3);
+    const g = new THREE.ExtrudeGeometry(sh, { depth: d - 2 * bevel, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 4 });
+    g.translate(0, 0, -(d - 2 * bevel) / 2);
+    tileGeos.set(k, g); return g;
+  }
+  function canvasTex(draw, w, h) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'));
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+  }
+  const floorTex = (S) => canvasTex((g) => {
+    g.fillStyle = S === 'toy' ? '#bfe6a8' : '#ead1a4'; g.fillRect(0, 0, 512, 512);
+    g.strokeStyle = S === 'toy' ? 'rgba(255,255,255,.55)' : 'rgba(150,110,60,.25)'; g.lineWidth = 3;
+    for (let i = 0; i <= 16; i++) { g.beginPath(); g.moveTo(i * 32, 0); g.lineTo(i * 32, 512); g.stroke(); g.beginPath(); g.moveTo(0, i * 32); g.lineTo(512, i * 32); g.stroke(); }
+  }, 512, 512);
+  const stripeTex = () => canvasTex((g) => {
+    g.fillStyle = '#f5a400'; g.fillRect(0, 0, 256, 16); g.fillStyle = '#2b2a33';
+    for (let i = -1; i < 18; i++) { g.beginPath(); g.moveTo(i * 16, 16); g.lineTo(i * 16 + 8, 16); g.lineTo(i * 16 + 16, 0); g.lineTo(i * 16 + 8, 0); g.fill(); }
+  }, 256, 16);
 
   let world = new THREE.Group(); scene.add(world);
   let tiles = [];                 // meshes with userData {eventId, p}
@@ -101,6 +156,7 @@
       if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
     });
     scene.remove(world);
+    tileGeos.clear();
     world = new THREE.Group(); scene.add(world); tiles = [];
   }
 
@@ -110,6 +166,21 @@
     const nT = T(ds), nL = ds.locations.length, nP = ds.persons.length;
     extents = { w: nT, h: nL, d: (nP - 1) * ZS };
     world.position.set(-nT / 2, -(nL - 1) / 2, -extents.d / 2);
+    const S = planeStyle(), light = S !== 'classic';
+    floorMesh = null;
+    applyStyle(S, extents);
+    const font = light ? 'Fredoka' : undefined;
+    if (light) {                                         // the floor the solid stands on
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(nT + 3, 0.4, extents.d + 3.4),
+        new THREE.MeshStandardMaterial({ map: floorTex(S), roughness: 0.9 }));
+      floor.position.set(nT / 2, -0.5 - 0.25, extents.d / 2); floor.receiveShadow = true; world.add(floor); floorMesh = floor;
+    }
+    const sheetMat = light && new THREE.MeshStandardMaterial({ color: S === 'toy' ? 0xc8c0fa : 0xfff3d6, transparent: true, opacity: S === 'toy' ? 0.28 : 0.22,
+      roughness: 0.2, metalness: 0, side: THREE.DoubleSide, depthWrite: false });
+    const rimMat = S === 'toy' && new THREE.MeshStandardMaterial({ color: 0x7c6cf2, roughness: 0.4 });
+    const railMat = S === 'site' && new THREE.MeshStandardMaterial({ map: stripeTex(), roughness: 0.6 });
+    const poleMat = S === 'site' && new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.5 });
+    const mortarMat = S === 'site' && new THREE.MeshStandardMaterial({ color: 0xfff3d6, roughness: 0.9 });
 
     const planeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(th.plane), transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false });
     const planeEdge = new THREE.LineBasicMaterial({ color: new THREE.Color(th.plane), transparent: true, opacity: 0.55 });
@@ -131,21 +202,31 @@
         const len = x1 - x0;
         per.eligible.forEach((l) => {
           const geo = new THREE.PlaneGeometry(len, 0.92);
+          if (light) { const m = new THREE.Mesh(geo, sheetMat); m.position.set(x0 + len / 2, l, z); m.renderOrder = 1; world.add(m); return; }
           const m = new THREE.Mesh(geo, planeMat); m.position.set(x0 + len / 2, l, z); m.renderOrder = 1; world.add(m);
           const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), planeEdge); e.position.copy(m.position); world.add(e);
         });
+        if (S === 'toy') {                                 // a violet rim under the window
+          const rim = new THREE.Mesh(new THREE.BoxGeometry(len, 0.12, 0.12), rimMat); rim.position.set(x0 + len / 2, -0.5, z); rim.castShadow = true; world.add(rim);
+          return;
+        }
+        if (S === 'site') {                                // scaffold: striped rails top and bottom, a pole at each end
+          for (const y of [-0.5, nL - 0.5]) { const rail = new THREE.Mesh(new THREE.BoxGeometry(len + 0.1, 0.12, 0.12), railMat); rail.position.set(x0 + len / 2, y, z); rail.castShadow = true; world.add(rail); }
+          for (const x of [x0, x1]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, nL, 8), poleMat); pole.position.set(x, (nL - 1) / 2, z); pole.castShadow = true; world.add(pole); }
+          return;
+        }
         // frame: this window's full extent across every location row, so gaps (between or outside windows) read as "not allowed here"
         const fg = new THREE.BufferGeometry();
         fg.setAttribute('position', new THREE.Float32BufferAttribute([x0, -0.5, z, x1, -0.5, z, x1, -0.5, z, x1, nL - 0.5, z, x1, nL - 0.5, z, x0, nL - 0.5, z, x0, nL - 0.5, z, x0, -0.5, z], 3));
         world.add(new THREE.LineSegments(fg, frameMat));
       });
-      const lab = makeLabel(per.name, th.ink, { anchor: [1, 0.5] }); lab.position.set(-0.35, -0.5, z); world.add(lab);
-      const role = makeLabel(per.role, th.muted, { size: 20, anchor: [1, 0.5] }); role.position.set(-0.35, -0.95, z); world.add(role);
+      const lab = makeLabel(per.name, th.ink, { anchor: [1, 0.5], font }); lab.position.set(-0.35, -0.5, z); world.add(lab);
+      const role = makeLabel(per.role, th.muted, { size: 20, anchor: [1, 0.5], font }); role.position.set(-0.35, -0.95, z); world.add(role);
     });
 
     // Location labels along L, time labels along T (on the front face)
     ds.locations.forEach((loc, l) => {
-      const lab = makeLabel(loc.name, th.ink2, { size: 22, anchor: [1, 0.5] }); lab.position.set(-0.35, l, zFront); world.add(lab);
+      const lab = makeLabel(loc.name, th.ink2, { size: 22, anchor: [1, 0.5], font }); lab.position.set(-0.35, l, zFront); world.add(lab);
     });
     const spd = ds.rules.slotsPerDay, nTot = ds.timeLabels.length;
     ds.timeLabels.forEach((tl, t) => {
@@ -168,6 +249,15 @@
       const color = new THREE.Color(ds.locations[e.loc].rest ? th.rest : th.locs[e.loc % 5]);
       const x = e.t0 + e.dur / 2, y = e.loc, w = e.dur - 0.14;
       e.members.forEach((p) => {
+        if (light) {                                       // a chunky rounded tile that casts a shadow
+          const mat = new THREE.MeshStandardMaterial({ color: color.clone(), transparent: true, opacity: 1, roughness: S === 'toy' ? 0.35 : 0.7 });
+          const m = new THREE.Mesh(roundedTile(w, 0.74, S === 'toy' ? 0.34 : 0.3), mat); m.position.set(x, y, p * ZS); m.renderOrder = 3;
+          m.castShadow = true; m.receiveShadow = true;
+          m.userData = { eventId: e.id, p, pid: ds.persons[p].id, base: color.clone() };
+          if (S === 'site') { const top = new THREE.Mesh(new THREE.BoxGeometry(w * 0.94, 0.05, 0.31), mortarMat); top.position.y = 0.36; m.add(top); }
+          world.add(m); tiles.push(m);
+          return;
+        }
         const geo = new THREE.BoxGeometry(w, 0.74, 0.16);
         const mat = new THREE.MeshLambertMaterial({ color: color.clone(), transparent: true, opacity: 1 });
         const m = new THREE.Mesh(geo, mat); m.position.set(x, y, p * ZS); m.renderOrder = 3;
@@ -176,7 +266,13 @@
         const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: new THREE.Color(th.ink), transparent: true, opacity: 0.35 }));
         edge.position.copy(m.position); world.add(edge); m.userData.edge = edge;
       });
-      if (e.members.length > 1) {
+      if (e.members.length > 1 && light) {                 // a soft bar joining the people taught together
+        const zs = e.members.map((p) => p * ZS), z0 = Math.min(...zs), z1 = Math.max(...zs);
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.2, w * 0.5), 0.16, z1 - z0),
+          new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.4, roughness: 0.4, depthWrite: false }));
+        bar.position.set(x, y - 0.3, (z0 + z1) / 2); bar.renderOrder = 2; world.add(bar);
+        e._prism = bar;
+      } else if (e.members.length > 1) {
         const zs = e.members.map((p) => p * ZS), z0 = Math.min(...zs), z1 = Math.max(...zs);
         const geo = new THREE.BoxGeometry(w, 0.74, z1 - z0);
         const prism = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.09, depthWrite: false }));
@@ -188,6 +284,7 @@
     });
 
     orbit.r = Math.max(nT, nL, extents.d) * 1.55 + 6;
+    viewDressing();
     paint();
     layoutCamera();
     invalidate();
@@ -202,11 +299,14 @@
       const k = m.userData.eventId + '@' + m.userData.pid;
       const isBad = bad.has(k), isSel = sel && sel === m.userData.eventId;
       m.material.color.copy(isBad ? new THREE.Color(th.bad) : m.userData.base);
-      m.material.emissive = isSel ? m.material.color.clone().multiplyScalar(0.45) : new THREE.Color(0x000000);
+      m.material.emissive = isSel ? m.material.color.clone().multiplyScalar(0.45)
+        : isBad && !m.userData.edge ? new THREE.Color(th.bad).multiplyScalar(0.35) : new THREE.Color(0x000000);   // a clash glows in the light looks
       m.material.opacity = sel && !isSel && !isBad ? 0.3 : 1;
       m.material.needsUpdate = true;
-      m.userData.edge.material.color.set(isBad ? th.bad : th.ink);
-      m.userData.edge.material.opacity = isBad ? 0.95 : isSel ? 0.9 : 0.35;
+      if (m.userData.edge) {
+        m.userData.edge.material.color.set(isBad ? th.bad : th.ink);
+        m.userData.edge.material.opacity = isBad ? 0.95 : isSel ? 0.9 : 0.35;
+      }
     });
     state.ds.events.forEach((e) => { if (e._prism) e._prism.material.opacity = sel === e.id ? 0.95 : 0.4; });
     invalidate();
@@ -245,6 +345,7 @@
 
   function setView(v) {
     state.view = v; orthoZoom = 1; pan.set(0, 0, 0);
+    viewDressing();
     document.querySelectorAll('[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
     const hint = document.getElementById('hint');
     hint.textContent = v === 'orbit' ? 'Drag to rotate \u00b7 scroll to zoom \u00b7 click a tile' : 'Drag to pan \u00b7 scroll to zoom \u00b7 click a tile';

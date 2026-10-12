@@ -6,6 +6,17 @@
 <title>Plane Timetabling</title>
 <link rel="stylesheet" href="{{ asset('app.css') }}">
 {% include "partials/look_head.html" %}
+<script type="importmap">
+{ "imports": {
+  "three": "{{ asset('vendor/three-0.160.0/three.module.min.js') }}",
+  "three/addons/": "/static/vendor/three-0.160.0/addons/",
+  "campus/main": "{{ asset('campus/main.js') }}",
+  "campus/data": "{{ asset('campus/data.js') }}",
+  "campus/themes": "{{ asset('campus/themes.js') }}",
+  "campus/scene": "{{ asset('campus/scene.js') }}",
+  "campus/ui": "{{ asset('campus/ui.js') }}"
+} }
+</script>
 </head>
 <body data-page="index">
 {% set appbar_page = "index" %}
@@ -197,14 +208,17 @@
       <div class="model-dock" id="dock-summary">
     <div id="model-view">
     <div class="toolbar">
-      <div class="seg" role="group" aria-label="View direction">
+      <div class="seg campus-switch" id="campus-switch" role="group" aria-label="3D view" hidden>
+        <button type="button" data-mode3d="campus">Campus</button><button type="button" data-mode3d="planes">Planes</button>
+      </div>
+      <div class="seg planes-only" role="group" aria-label="View direction">
         <button id="view-orbit" class="on" data-view="orbit">Orbit</button>
         <button id="view-P" data-view="P" title="Room timetable">Along P<small>room timetable</small></button>
         <button id="view-L" data-view="L" title="Person timetable">Along L<small>person timetable</small></button>
         <button id="view-T" data-view="T" title="Who is where">Along T<small>who is where</small></button>
       </div>
       <div class="btns">
-        <div class="seg" role="group" aria-label="Zoom">
+        <div class="seg planes-only" role="group" aria-label="Zoom">
           <button id="zoom-in" aria-label="Zoom in">+</button>
           <button id="zoom-out" aria-label="Zoom out">&minus;</button>
         </div>
@@ -216,6 +230,8 @@
       <div class="axes" id="axes">T &rarr; time<br>L &uarr; location<br>P &#10230; people</div>
       <div class="hint" id="hint">Drag to rotate &middot; scroll to zoom &middot; click a tile</div>
     </div>
+    <div class="view campus-view" id="campus-view" hidden></div>
+    <p class="campus-note" id="campus-note" hidden></p>
     <div class="legend" id="legend"></div>
     </div><!-- /model-view -->
         <section class="card" id="selected-card">
@@ -477,6 +493,7 @@
 <script src="{{ asset('grid.js') }}"></script>
 <script src="{{ asset('tabs.js') }}"></script>
 <script src="{{ asset('learning.js') }}"></script>
+<script src="{{ asset('campus-boot.js') }}"></script>
 <script src="{{ asset('shell.js') }}"></script>
 </body>
 </html>

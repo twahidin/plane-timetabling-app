@@ -108,3 +108,6 @@ html[data-look="toy"] input:focus-visible, html[data-look="toy"] select:focus-vi
 html[data-look="site"] input:focus-visible, html[data-look="site"] select:focus-visible, html[data-look="site"] textarea:focus-visible { border-color: var(--color-accent); }
 html[data-look="toy"] #assistant, html[data-look="site"] #assistant { box-shadow: -1px 0 0 var(--color-neutral-800); }
 html[data-look="site"] .btn.primary { border-color: color-mix(in srgb, var(--accent-fill) 70%, var(--color-text)); }
+
+/* The campus labels on the building site */
+html[data-look="site"] .campus-labels .blk { background: var(--accent-fill); color: var(--accent-fill-ink); }

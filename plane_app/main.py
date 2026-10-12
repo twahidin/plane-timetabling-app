@@ -28,6 +28,7 @@ from .engine_client import EngineClient, EngineError
 from .extract import UnsupportedFile, extract
 from . import asc_import
 from .grid_api import make_router as grid_router
+from .campus import make_router as campus_router
 from .learning.routes import make_router as learning_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
 from .llm import ProviderError, make_provider
@@ -185,6 +186,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.include_router(print_router(db, templates))
     app.include_router(plan_router(db))
     app.include_router(grid_router(db))
+    app.include_router(campus_router(db))
     app.include_router(learning_router(db))
     app.include_router(reader_routes.make_router(db))
     static = HERE / "static"

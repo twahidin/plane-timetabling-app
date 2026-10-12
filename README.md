@@ -270,6 +270,30 @@ the top bar; it is remembered in their browser, and "School default" goes back. 
 colours, the font (Fredoka, shipped with the app under `static/fonts/` with its OFL licence) and shapes;
 printouts stay plain. Toy town and Construction are defined in `static/looks.css`.
 
+## Campus
+
+In Toy town and Construction the 3D area (Build, Consolidation, Summary) opens on the **campus**: the
+school drawn as a small 3D model from the timetable itself. Blocks become buildings and levels become
+floors, using the blocks and levels the smart reader (or the template's Venues sheet) gave each room;
+rooms with no block go to an "Other rooms" building, halls stand on their own, fields lie on the
+grounds. With no block data the campus still draws every room and says how to add blocks.
+
+- **Periods:** pick a day and period, or press ‹ › / ← → or Play. Rooms light up in their lesson's
+  department colour (a legend shows which); teachers who are free that period walk the courtyard.
+- **Clashes** are pinned on the rooms where they happen in that period; **All clashes** shows a count on
+  every room with one.
+- **Click** a room or a teacher (or find one by name) for a card: what is on now, what is next, how
+  much the room is used, a teacher's load and free periods. "Now" selects the lesson in the timetable
+  grid, and selecting a lesson in the grid highlights its room.
+- **Construction** shows the school as a building site (scaffolding, a tower crane, a fence) until the
+  timetable is checked with no clashes; then it shows the finished school.
+- **Campus · Planes** switches to the planes view, which in these two looks gets soft light, shadows and
+  rounded tiles too. Classic shows only the planes view, as before, and loads none of the campus code.
+
+The campus is served by `GET /api/campus` (`plane_app/campus.py`, which also lays the school out) and
+drawn by `static/campus/` with Three.js r160, shipped under `static/vendor/three-0.160.0/` (MIT); nothing
+is loaded from a CDN. It renders only while visible and lowers its quality on slow devices.
+
 ## Department accounts
 
 The timetabler logs in with the admin password, leaving Username blank. Heads of department log in
