@@ -212,7 +212,14 @@ export async function mount(el, opts) {
     replay() { return active ? stages.replay() : Promise.resolve(); },
     setActive(on) {
       active = !!on; scene.setActive(active);
-      if (!active) { present(false); ui.stop(); if (stages.busy()) { stages.stop(); reload(true).catch(() => {}); } }
+      if (!active) {
+        present(false); ui.stop();
+        if (stages.busy()) {                                   // hand the unfinished steps back to be played later
+          const left = stages.stop();
+          if (opts.hold) left.forEach((d) => opts.hold(d));
+          reload(true).catch(() => {});
+        }
+      }
       if (active && stale) reload().catch(() => {});
     },
     resize() { if (presenting && !el.closest('.expanded')) present(false); scene.resize(); ui.relayout(); },   // leaving full screen or a dock change

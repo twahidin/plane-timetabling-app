@@ -270,11 +270,21 @@ def place(blds: list[dict], fields: list[dict]) -> dict:
     return {"buildings": items, "areas": areas, "grounds": {"w": round(2 * half_w + 2 * MARGIN, 2), "d": round(2 * half_d + 2 * MARGIN, 2)}}
 
 
+def source_name(plan: dict | None) -> str | None:
+    """The workbook the plan came from, without folder or extension (the replay's file chip)."""
+    src = (plan or {}).get("source") if isinstance(plan, dict) else None
+    file = src.get("file") if isinstance(src, dict) else None
+    if not isinstance(file, str) or not file.strip():
+        return None
+    stem = file.replace("\\", "/").rsplit("/", 1)[-1]
+    return stem.rsplit(".", 1)[0] or stem
+
+
 def campus(org: dict, plan: dict | None, check: dict | None, settings: dict, source: str | None) -> dict:
     rs = rooms(org, plan)
     les, legend = lessons(org, plan)
     live = source == "live"
-    return {"source": source, "rooms": rs, **place(*buildings(rs)), "time": time_of(org, settings),
+    return {"source": source, "source_name": source_name(plan), "rooms": rs, **place(*buildings(rs)), "time": time_of(org, settings),
             "lessons": les, "legend": legend, "people": people(org, plan),
             "clashes": clashes(check, org) if live else [], "checked_ok": bool(live and check and check.get("ok")),
             "hint": None if any(r["block"] for r in rs) else HINT}

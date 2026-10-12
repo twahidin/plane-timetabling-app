@@ -31,6 +31,8 @@ export function createScene(host) {
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.enablePan = false; controls.minPolarAngle = 0.45; controls.maxPolarAngle = 1.22;
   controls.addEventListener('change', () => { dirty = true; });
+  let userMoves = 0;
+  controls.addEventListener('start', () => { userMoves++; });       // a drag or a pinch
 
   let scene = null, T = null, theme = null, world = null, mats = [], tweens = [], rnd = mulberry(7);
   let active = false, dirty = true, raf = 0, last = 0, frame = 0, picker = null, fitted = false;
@@ -368,6 +370,7 @@ export function createScene(host) {
       if (rec.key === key) continue;
       rec.key = key;
       const from = rec.mat.color.clone(), to = new THREE.Color(want);
+      rec.rest = to;                                           // the colour the room settles on (flicker returns here)
       const eFrom = rec.mat.emissive.clone(), eTo = new THREE.Color(lesson ? want : '#000000');
       tween({ dur: 0.35, update: (k) => { rec.mat.color.lerpColors(from, to, k); rec.mat.emissive.lerpColors(eFrom, eTo, k); rec.mat.emissiveIntensity = T.emissive; } });
       if (lesson) tween({ dur: 0.45, ease: ease.lin, update: (k) => { const s = 1 + Math.sin(k * Math.PI) * 0.18; rec.mesh.scale.set(s, s, s); } });
@@ -480,17 +483,20 @@ export function createScene(host) {
         sheet.add(rbox(2.4, 0.12, 3.1, mat('#ffffff'), 0.05));
         const strip = rbox(2.42, 0.14, 0.7, mat(T.dept[n % T.dept.length]), 0.05); strip.position.z = -1.2; sheet.add(strip);
         const a = new THREE.Vector3(-g.w / 2 - 14, 26, g.d / 2), mid = new THREE.Vector3(-g.w / 2 - 6, 16, 0), b = to.clone().add(new THREE.Vector3(0, 0.35 + n * 0.16, 0));
-        return fxTween({ delay: n * 0.6, dur: 1.5, ease: ease.inout, update: (k) => {
+        let landed = false;
+        return new Promise((resolve) => fxTween({ delay: n * 0.6, dur: 1.5, ease: ease.inout, update: (k) => {
           sheet.position.copy(a).lerp(mid, k).lerp(new THREE.Vector3().copy(mid).lerp(b, k), k);
           sheet.rotation.set((1 - k) * 1.6, (1 - k) * 2.4 + n * 0.25, (1 - k) * 0.6);
         }, done: () => {
+          landed = true;
           const chip = label('✓ ' + name, 'campus-chip', scene, b.clone().add(new THREE.Vector3(0, 1.6 + n * 0.9, 0)));
           setTimeout(() => {                     // the chip and its sheet go together
             chip.element.remove();
             if (sheet.parent) { sheet.parent.remove(sheet); sheet.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && mats.includes(o.material)) { mats.splice(mats.indexOf(o.material), 1); o.material.dispose(); } }); }
             if (scene) scene.remove(chip);
-          }, 2500 * fxScale);
-        } });
+            resolve();                           // the step ends when its chips have gone
+          }, 1200 * fxScale);
+        } }).then(() => { if (!landed) resolve(); }));        // a rebuild mid-flight settled it: no chips to wait for
       }));
     },
     flicker(n = 4) {                             // the solver at work: rooms flash a lesson colour and settle back
@@ -498,7 +504,8 @@ export function createScene(host) {
       const recs = Object.values(world.rooms).filter((r) => !r.field);
       for (let i = 0; i < n && recs.length; i++) {
         const r = recs[Math.floor(rnd() * recs.length)], from = r.mat.color.clone(), c = new THREE.Color(T.dept[Math.floor(rnd() * T.dept.length)]);
-        fxTween({ dur: 0.4, ease: ease.lin, update: (k) => { r.mat.color.lerpColors(from, c, Math.sin(k * Math.PI)); } });
+        // back to where the room is meant to be now, even if its lesson changed mid-flicker
+        fxTween({ dur: 0.4, ease: ease.lin, update: (k) => { r.mat.color.lerpColors(r.rest || from, c, Math.sin(k * Math.PI)); } });
       }
     },
     pulse() {                                    // every lit room, once
@@ -514,8 +521,11 @@ export function createScene(host) {
       return fxTween({ dur: 1.8, update: (k) => { ring.scale.setScalar(1 + k * R); ring.material.opacity = 0.9 * (1 - k); }, done: () => { scene.remove(ring); ring.geometry.dispose(); } });
     },
     turn(seconds = 2) {                          // one turn of the camera about the school, back where it began
-      const off = camera.position.clone().sub(controls.target), sph = new THREE.Spherical().setFromVector3(off), t0 = sph.theta;
-      return fxTween({ dur: seconds, ease: ease.inout, update: (k) => { sph.theta = t0 + Math.PI * 2 * k; camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(sph)); } });
+      const off = camera.position.clone().sub(controls.target), sph = new THREE.Spherical().setFromVector3(off), t0 = sph.theta, moves = userMoves;
+      return fxTween({ dur: seconds, ease: ease.inout, update: (k) => {
+        if (userMoves !== moves) return;                       // the user took the camera: the turn gives way
+        sph.theta = t0 + Math.PI * 2 * k; camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(sph));
+      } });
     },
     confetti() {
       if (!world) return Promise.resolve();

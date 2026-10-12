@@ -738,6 +738,7 @@
   .campus-view.presenting .campus-bar { left: auto; padding: var(--space-2); background: transparent; box-shadow: none; }
   .campus-view.presenting .campus-bar > :not(.campus-present) { display: none; }
   .campus-view.presenting .campus-legend, .campus-view.presenting .campus-hint, .campus-view.presenting .campus-card { display: none; }
+  .campus-view.presenting .campus-kpis.row { top: var(--space-3) !important; }   /* the legend is hidden: no gap for it */
   .campus-bar { position: absolute; left: var(--space-4); right: var(--space-4); bottom: var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2);
                 align-items: center; padding: var(--space-3); background: color-mix(in srgb, var(--color-surface) 90%, transparent); border-radius: var(--radius-lg);
                 box-shadow: var(--shadow-md); z-index: 3; }

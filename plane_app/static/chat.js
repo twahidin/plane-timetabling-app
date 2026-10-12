@@ -117,12 +117,16 @@
 
   function handleEvents(events) {
     let reload = false;
+    const stages = new Set();
     (events || []).forEach((ev) => {
       if (ev.kind === 'build') {
-        if (ev.ok) { reload = true; showNotes([], [], [{ cls: 'good', text: `Built: ${(ev.placed || []).length} events placed. The draft is now the live timetable.` }]); }
+        if (ev.ok) {
+          reload = true; stages.add('timetable');
+          showNotes([], [], [{ cls: 'good', text: `Built: ${(ev.placed || []).length} events placed. The draft is now the live timetable.` }]);
+        }
         else showNotes([], [], [{ cls: 'error', text: `Build did not settle: ${(ev.unplaced || []).length} unplaced, ${(ev.clashes || []).length} clashes.` }]
           .concat((ev.clashes || []).map((c) => ({ cls: 'error', text: c.message || String(c) }))));
-      } else if (ev.kind === 'draft_updated') reload = true;
+      } else if (ev.kind === 'draft_updated') { reload = true; stages.add('draft'); }
       else if (ev.kind === 'proposals') { showAssistant(); appendProposals(ev.items); }
       else if (ev.kind === 'applied') {
         const clashText = (ev.clashes || []).map((c) => c.message || String(c)).join('; ');
@@ -146,6 +150,8 @@
       }
     });
     if (reload) { if (window.reloadModel) window.reloadModel().catch(() => {}); loadDraft(); }
+    // the Assistant's drafts and builds play on the campus too: once per reply, draft before timetable
+    ['draft', 'timetable'].filter((s) => stages.has(s)).forEach((stage) => document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage } })));
   }
   window.handleEvents = handleEvents;
 

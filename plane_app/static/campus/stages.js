@@ -4,19 +4,12 @@
    tweens and drops the camera turn, the confetti and the crane's hook; 'off' jumps to the end state.
    No Three.js here: the scene and the controller come in as arguments. */
 
-/* Held events for a campus that is not on screen: one per stage, the latest, in the order they last came. */
-export function queue(held, detail) {
-  const out = (held || []).filter((h) => h.stage !== detail.stage);
-  out.push(detail);
-  return out;
-}
-
 const motion = () => (typeof window !== 'undefined' && window.planeMotion ? window.planeMotion.level() : 'full');
 
 /* ctl: {doc(), look(), reload(force), popLessons(seconds, live), unfinished(), clearForReplay(), setPins(on)} from main.js.
    reload() refreshes the data (rebuilding only a changed layout); reload(true) rebuilds the true school. */
 export function createStages(scene, ctl) {
-  let chain = Promise.resolve(), running = 0, token = 0, lastFlicker = 0;
+  let chain = Promise.resolve(), running = 0, token = 0, lastFlicker = 0, unfinished = [];   // steps queued or playing, in order
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function run(detail, my, replaying) {
@@ -65,8 +58,9 @@ export function createStages(scene, ctl) {
       return chain;
     }
     const my = token;
-    running++;
-    chain = chain.then(() => run(detail, my)).catch(() => {}).then(() => { if (my === token) running--; });
+    running++; unfinished.push(detail);
+    const done = () => { if (my === token) { running--; unfinished = unfinished.filter((d) => d !== detail); } };
+    chain = chain.then(() => run(detail, my)).catch(() => {}).then(done);
     return chain;
   }
 
@@ -92,7 +86,9 @@ export function createStages(scene, ctl) {
     } finally { if (my === token) running--; }
   }
 
-  function stop() { token++; running = 0; chain = Promise.resolve(); }   // anything in flight sees its token is old and ends
+  /* Anything in flight sees its token is old and ends. Returns the steps that had not finished, so a hidden
+     campus can hold them and play them when it shows again. */
+  function stop() { token++; running = 0; chain = Promise.resolve(); const left = unfinished; unfinished = []; return left; }
 
   return { play, replay, stop, busy: () => running > 0 };
 }

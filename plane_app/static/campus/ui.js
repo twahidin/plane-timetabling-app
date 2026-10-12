@@ -67,13 +67,14 @@ export function createUI(host, h) {
   function count(k, n, of, instant) {             // counts up from the last value over 0.6 s
     const x = kpi[k]; cancelAnimationFrame(x.raf);
     const text = (v) => (of == null ? String(v) : `${v} / ${of}`);
-    const from = x.n == null || instant ? n : x.n;
+    const from = x.n == null || instant ? n : x.cur;  // from what is on screen, even mid-count
     x.n = n; x.of = of;
-    if (from === n) { x.v.textContent = text(n); return; }
+    if (from === n) { x.cur = n; x.v.textContent = text(n); return; }
     const t0 = performance.now();
     const step = (now) => {
       const k2 = Math.min(1, (now - t0) / 600);
-      x.v.textContent = text(Math.round(from + (n - from) * (1 - Math.pow(1 - k2, 3))));
+      x.cur = Math.round(from + (n - from) * (1 - Math.pow(1 - k2, 3)));
+      x.v.textContent = text(x.cur);
       if (k2 < 1) x.raf = requestAnimationFrame(step);
     };
     x.raf = requestAnimationFrame(step);
@@ -210,7 +211,7 @@ export function createUI(host, h) {
       if (!kpis.dataset.placed) { kpis.dataset.placed = '1'; this.relayout(); }
       for (const k of ['lessons', 'teachers', 'rooms']) {
         if (c[k]) count(k, c[k][0], c[k][1], instant);
-        else { cancelAnimationFrame(kpi[k].raf); kpi[k].n = null; kpi[k].v.textContent = '–'; }   // nothing known any more
+        else { cancelAnimationFrame(kpi[k].raf); kpi[k].n = kpi[k].cur = null; kpi[k].v.textContent = '–'; }   // nothing known any more
       }
       if (c.clashes != null) { count('clashes', c.clashes, null, instant); kpi.clashes.c.classList.toggle('bad', c.clashes > 0); }
     },

@@ -20,7 +20,7 @@
     if (ctl) return Promise.resolve(ctl);
     if (!loading) {
       loading = import('campus/main')
-        .then((m) => { imported = true; return m.mount($('campus-view'), { look: look(), select: (id) => window.selectEvent && window.selectEvent(id) }); })
+        .then((m) => { imported = true; return m.mount($('campus-view'), { look: look(), select: (id) => window.selectEvent && window.selectEvent(id), hold: (d) => hold(d) }); })
         .then((c) => (ctl = c));
     }
     return loading;
@@ -99,7 +99,9 @@
     if (!d.stage || look() === 'classic' || broken) return;
     if (onScreen()) { ctl.play(d); return; }
     hold(d);
-    if (d.stage !== 'solving') toast();
+    // nothing to watch with animations Off: the step is still held, so the campus refreshes when it shows
+    const off = window.planeMotion && window.planeMotion.level() === 'off';
+    if (d.stage !== 'solving' && !off) toast();
   });
   document.addEventListener('plane:tab', () => requestAnimationFrame(flush));
   let shownTimetable = null;
