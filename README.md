@@ -266,7 +266,8 @@ The app has three looks: **Classic** (the dark Nocturne look and its 3D planes v
 (bright, rounded and playful) and **Construction** (Toy town's style as a building site, with a
 hazard stripe under the top bar). Settings → **Appearance** sets the school's look, which everyone sees,
 the login and department pages included. Anyone can pick another look for themselves from the menu in
-the top bar; it is remembered in their browser, and "School default" goes back. The looks only change
+the top bar; it is remembered in their browser, and picking the one marked "(school default)" goes back
+to following the school. The looks only change
 colours, the font (Fredoka, shipped with the app under `static/fonts/` with its OFL licence) and shapes;
 printouts stay plain. Toy town and Construction are defined in `static/looks.css`.
 
