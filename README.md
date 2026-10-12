@@ -33,7 +33,7 @@ rail. The steps, left to right:
 | 02 Project | The timetable picker (New, Clone, Rename, Delete), Start wizard and the document drop zone |
 | 03 Manpower | Everyone in the plan |
 | 04 Locations | The rooms of the current timetable, read-only |
-| 05 Requirements | The plan: workbook upload and export, the Issues panel, the deployment board and its tables |
+| 05 Requirements | The plan: workbook upload and export, the Issues panel, the plan's notes, the deployment board and its tables |
 | 06 Constraints | The timetable rules (changed in Settings), the plan's rules and the five checks |
 | 07 Build | Generate draft, Quick and Best timetable, beside the 3D view |
 | 08 Consolidation | The checks and their clashes, beside the 3D view |
@@ -191,10 +191,13 @@ The **Plan** tab, beside the draft tables, holds the curriculum plan: what has t
 when it happens. One requirement per teaching group — how many periods of what length, which
 classes it draws from, who teaches it, what kind of room it needs — plus the divisions and bands
 of option groups that run against each other, the staff and their load factors, and rules such as
-edge subjects and pinned events like assembly. Fill it by dropping the staff-deployment workbook
-(with any `Teaching Group, Enrolled, Capacity` sizes CSVs beside it) on the intake dropzone or on
-the Requirements tab's **Upload workbook** — the dropzone recognises a deployment workbook by the shape of
-its sheets and routes it here — or by describing requirements in chat ("Sec 3 Science: 6 periods,
+edge subjects and pinned events like assembly. Fill it by dropping the staff-deployment workbook to the
+Assistant (📎, a drop on the chat, the Intake box or the Requirements tab's **Upload workbook**) —
+it recognises a deployment workbook by the shape of its sheets and shows it as a card to apply. A
+`Teaching Group, Enrolled, Capacity` (or `Class, Enrolled`) sizes CSV is read exactly too: give it with the
+workbook in one drop and its sizes go into the workbook's card, applied on top of it; given on its own once
+the workbook is applied, it is a card of its own that sets the sizes of the classes and groups in the plan.
+Or describe requirements in chat ("Sec 3 Science: 6 periods,
 two doubles, in a lab, Mr Tan"). The Issues panel lists what is missing or contradictory: blocking
 issues (a requirement with no teacher, periods that do not match the lesson counts) keep
 **Generate draft** disabled, warnings (a class with no size, a teacher over capacity) do not. Fix,
@@ -219,22 +222,77 @@ lesson longer than four periods, two staff with one name) is listed on its READM
 ### Any other workbook: the smart reader
 
 Schools keep rooms and manpower in their own layouts. A `.xlsx` or `.csv` the importers above do not
-recognise, dropped on the intake dropzone or on **Upload workbook**, goes to the **reader**: the
+recognise, given to the Assistant (see **Files to the Assistant** below), goes to the **reader**: the
 configured model looks at the sheets once and writes a short *reading recipe* (where the rows or the
 room codes are, which cells hold class and size, which labels give block and level); the app runs
-that recipe itself, checks the result against the plan, and shows it as a card on the Requirements
-tab — counts, a few sample rows with the cell each came from, and the things to check (a cell that
-did not match, a home room for a class the plan does not have, a room used twice). Nothing changes
-until **Apply**, which merges rooms and home rooms into the plan (adding and updating, never
-deleting); **Discard** throws the reading away. Each file in an upload is reported on its own, so
+that recipe itself, checks the result against the plan, and shows it as a card in the Assistant panel —
+counts, a few sample rows with the cell each came from, and the things to check (a cell that did not
+match, a home room for a class the plan does not have, a room used twice). Nothing changes until
+you apply the card, which merges rooms and home rooms into the plan (adding and updating, never
+deleting); **Skip file** sets the reading aside. Each file in an upload is reported on its own, so
 one file the reader cannot read never hides another's import.
 
-On Apply the recipe is saved as a **reader** for that layout (Project tab, **Saved readers**, with
-Delete). The next workbook in the same layout — next semester's copy — is read by the saved reader
-without calling the model. The workbook's text goes to the configured model provider only when no
-saved reader fits; nothing is shared with other schools. Rooms (`venues`) and home rooms become the
-draft's locations on **Generate draft**: a lesson for one class with no room kind set is placed in
-that class's home room. The template's `Venues` and `Classes` sheets remain the AI-free way in.
+When a workbook reading is applied the recipe is saved as a **reader** for that layout (Project tab,
+**Saved readers**, with Delete). The next workbook in the same layout — next semester's copy — is read
+by the saved reader without calling the model. The workbook's text goes to the configured model provider
+only when no saved reader fits; nothing is shared with other schools. Rooms (`venues`) and home rooms
+become the draft's locations on **Generate draft**: a lesson for one class with no room kind set is placed
+in that class's home room. The template's `Venues` and `Classes` sheets remain the AI-free way in.
+
+### Files to the Assistant
+
+Give the Assistant whatever the school has — staff lists, allocation or deployment workbooks, a Word or
+PDF handbook, last year's timetable export — and it reads each file into a **card** in the chat. Nothing
+read from a file changes the plan, the draft or the settings until you apply it. Four ways in all do the
+same thing: the **📎** button beside the chat box, a drop anywhere on the Assistant panel, the Project
+tab's Intake box and the Requirements tab's **Upload workbook**. Accepted: `.pdf`, `.docx`, `.xlsx`,
+`.csv`, several at once.
+
+Each file shows as a chip while it is read (a type badge, the name, then a one-line count or why it could
+not be read), then as a card: how it was read (exact, saved reader, or read by AI), and a section for each
+kind of thing found — Staff, Classes, Rooms, Requirements, Rules, Notes — each with a tick-box (ticked by
+default), a count and a few examples (**Show all** asks the Assistant to list the rest). Names matched by guess, classes not in
+the plan and rows left out are listed as things to check. An aSc timetable export (or a document that reads
+as a timetable) gets one section, **Start from this timetable**, with the options to keep the existing
+placement or start again and to check each class.
+
+- **Apply ticked** applies the ticked sections, merged into the plan as it is then. A section that needs
+  another (requirements naming staff or classes the plan lacks, classes given home rooms the plan lacks) is
+  refused with the section to tick too. The card folds to a green line saying what was applied, with
+  **Undo**, which puts back the plan (or the draft) as it was before that apply. Undo is refused once the
+  plan (or draft) has changed in content since; undoing later applies first and then earlier ones works.
+- **Skip file** marks the card skipped: it stays in the chat, and the stored file is deleted. **Clear
+  readings** (Project tab) drops every reading still waiting, failed or to try again; applied and skipped
+  cards stay.
+- Giving a file with the same name again replaces its reading, and with it that reading's Undo.
+- A file that could not be read gets a card saying why. When the model was busy or not set up, or nothing
+  usable came back from it, the card offers **Try again**, which reads the stored file again.
+- Each timetable keeps its newest 20 readings; past that the oldest applied, skipped or failed ones go
+  first. A card still waiting (or to try again) is never dropped.
+- **Or tell me what to change**: ask in the chat ("leave out the Art teachers", "that class is 3C, not
+  3G") and the Assistant edits the waiting card; it never applies a card in the same turn that read or
+  edited it. A plain **yes** (or "ok", "apply", "go ahead") applies the newest waiting card at once,
+  exactly as its Apply ticked would, when that card is newer than the Assistant's last reply; after a
+  reply, the yes goes to the Assistant. The Assistant applies a card only when your latest message, sent
+  after the card appeared, starts with a yes word and has no "?" and none of "no", "not", "don't",
+  "never", "wait", "stop", "cancel" or "but".
+- After an apply the Assistant says what is still missing and, once the plan is ready, offers **Make the
+  timetable** (generate the draft and a Quick timetable). It never builds unasked.
+
+Exact readers run with no model call: aSc exports, planning (deployment or duties) workbooks and sizes
+CSVs. Other
+workbooks use a saved reader when one fits; other workbooks and `.docx` or PDF documents otherwise go to
+the configured model, which returns structured data that is checked, never run.
+
+A rule in a document that the plan can hold (edge subjects, a pinned lesson such as assembly) is applied as
+part of the plan. Anything else ("no PE after lunch on Fridays") is kept as a **note**: the Requirements
+tab lists the plan's notes, each with the file it came from and a ✕ to remove it. Notes are for the
+timetabler to read; the solver does not use them.
+
+Limits: up to 10 files in one drop and 20 MB a file; a file that fails never stops the others. Old `.doc`
+and `.xls` files are refused with a message to save them as `.docx` or `.xlsx`; a scanned PDF (no text
+layer) is refused with a message saying so. Uploads, readings and the Assistant's file tools are for the
+admin login; department accounts cannot use them. Readings belong to the timetable they were made in.
 
 ### Deployment board
 

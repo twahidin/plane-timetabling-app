@@ -345,10 +345,6 @@
   #print-dialog .note { color: var(--ink-2); font-size: 13px; margin: 8px 0 0; }
   #print-dialog .btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
 
-  .import-options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
-  .import-options select { font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
-  .import-options .check { display: inline-flex; align-items: center; gap: 6px; }
-  .import-options .hint { position: static; color: var(--muted); }
 
   .plan { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
   .plan-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
@@ -365,6 +361,15 @@
   .plan-issue-list li { border-radius: 4px; padding: 5px 8px; border-left: 3px solid var(--muted); background: var(--surface-2); }
   .plan-issue-list li.block { border-left-color: var(--bad); background: var(--bad-soft); }
   .plan-issue-list li.warn { border-left-color: var(--loc-4); }
+  .plan-notes { margin: 0 0 var(--space-4); }
+  .plan-notes h3 { margin: 0 0 6px; font-size: 13px; font-weight: 500; }
+  .plan-notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+  .plan-notes-list li { display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 5px 8px; border-left: 3px solid var(--color-accent); background: var(--surface-2); font-size: 13px; }
+  .plan-note-body { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+  .plan-note-text { overflow-wrap: anywhere; }
+  .plan-note-source { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .plan-note-x { flex: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; }
+  .plan-note-x:hover { color: var(--bad); }
 
   #grid-view { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .grid-pick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -908,30 +913,82 @@
   .password-first { max-width: 420px; margin: 80px auto 0; background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: var(--space-8); }
   @media (max-width: 700px) { .settings-grid, .settings-grid > .form { grid-template-columns: minmax(0, 1fr); } .settings-main, .dept-main { padding: var(--space-6) 16px; } .password-first { margin-top: var(--space-8); } }
 
-  /* ---------- the smart workbook reader (spec 2026-10-08-smart-workbook-reader-design.md §4, §5) ---------- */
-  /* the Requirements tab's readings waiting for Apply: one card each, above the plan toolbar */
-  .readings { display: flex; flex-direction: column; gap: var(--space-4); margin-bottom: var(--space-4); }
-  .readings:empty { display: none; }
-  .reading-card { background: var(--surface-2); border-radius: var(--radius-md); border-left: 3px solid var(--color-accent); padding: var(--space-4) var(--space-6); display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
-  .reading-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-  .reading-file { font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
-  .reading-summary, .reading-reader, .reading-counts { margin: 0; font-size: 13px; color: var(--ink); }
-  .reading-reader { color: var(--color-accent-300); }
-  .reading-counts { color: var(--ink-2); }
-  .reading-samples { display: flex; flex-wrap: wrap; gap: var(--space-4); }
-  .reading-sample { flex: 1 1 260px; min-width: 0; }
-  .reading-sample h4 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--color-neutral-300); }
-  .reading-sample .tablewrap { max-height: 220px; overflow: auto; }
-  .reading-doubts { font-size: 12.5px; color: var(--ink-2); }
-  .reading-doubts summary { cursor: pointer; color: var(--color-accent-300); }
-  .reading-doubts ul { margin: 6px 0 0; padding-left: 18px; }
-  .reading-doubts li + li { margin-top: 2px; }
-  .reading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .reading-alt { font-size: 12px; color: var(--muted); margin-left: auto; }
-  .reading-alt a { color: var(--color-accent-300); }
-  .reading-note { margin: 0; font-size: 12.5px; color: var(--ink-2); }
-  .reading-note.error { color: var(--bad); }
-  .reading-note.good { color: var(--good); }
+  /* ---------- the smart workbook reader's saved readers (spec 2026-10-08-smart-workbook-reader-design.md §5) ---------- */
   /* the Project tab's saved readers: rows reuse .learning-item */
   #reader-list .empty { margin: 0; }
-  @media (max-width: 600px) { .reading-alt { margin-left: 0; } .reading-card { padding: var(--space-4); } }
+
+  /* ---------- the Assistant takes files (files.js): 📎, drops, chips, review cards ---------- */
+  .chat-form #chat-attach { padding: 5px 9px; font-size: 15px; line-height: 1; flex: none; }
+  #chat { position: relative; }
+  #chat.chat-drop { outline: 2px dashed var(--color-accent); outline-offset: 2px; border-radius: var(--radius-md); }
+  #chat.chat-drop::after {
+    content: "Drop files to give them to the Assistant"; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    display: grid; place-items: center; padding: 16px; text-align: center; font-size: 14px; font-weight: 500;
+    color: var(--color-accent-300); background: color-mix(in srgb, var(--surface) 94%, transparent); border-radius: var(--radius-md); }
+  html[data-look="toy"] #chat.chat-drop::after, html[data-look="site"] #chat.chat-drop::after { color: var(--color-accent); }
+
+  .file-chips { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 100%; }
+  .file-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 10px; font-size: 12.5px;
+    background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+  .file-chip .file-name { overflow-wrap: anywhere; min-width: 0; }
+  .file-chip .file-state { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; overflow-wrap: anywhere; }
+  .file-chip .file-state.ok { color: var(--good); }
+  .file-chip .file-state.warn { color: var(--warn-ink); }
+  .file-chip .file-state.bad { color: var(--bad); }
+  .file-badge { flex: none; display: inline-grid; place-items: center; min-width: 26px; height: 20px; padding: 0 4px; border-radius: var(--radius-sm);
+    font-size: 9px; font-weight: 600; letter-spacing: .04em; color: #fffefd; background: var(--color-neutral-600); }
+  .file-badge.xls { background: var(--loc-3); }
+  .file-badge.doc { background: var(--loc-1); }
+  .file-badge.pdf { background: var(--loc-2); }
+
+  .chat-log .reading-card { align-self: stretch; flex: none; display: flex; flex-direction: column; gap: 0; min-width: 0; padding: 10px 14px;
+    background: var(--surface); border: 0; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); font-size: 13px; }
+  .chat-log .reading-card.done { opacity: .78; }
+  .reading-card .rc-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .reading-card .rc-file { font-weight: 500; font-size: 14px; overflow-wrap: anywhere; min-width: 0; }
+  .reading-card .rc-via { margin-left: auto; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .reading-card .rc-summary { color: var(--ink-2); font-size: 12.5px; margin-top: 4px; }
+  .reading-card .sec { display: flex; gap: 9px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+  .reading-card .rc-head + .sec, .reading-card .rc-summary + .sec { margin-top: 6px; }
+  .reading-card .sec input[type=checkbox] { margin: 3px 0 0; flex: none; }
+  .reading-card .sec .t { min-width: 0; flex: 1; }
+  .reading-card .sec label { cursor: pointer; }
+  .reading-card .sec label b { font-weight: 600; }
+  .reading-card .ex { list-style: none; margin: 6px 0 0; padding: 6px 8px; border-radius: var(--radius-md); font-size: 12px; color: var(--ink-2);
+    background: color-mix(in srgb, var(--color-accent) 9%, transparent); }
+  .reading-card .ex li { overflow-wrap: anywhere; }
+  .reading-card .ex li + li { margin-top: 2px; }
+  .reading-card .linkish { border: 0; background: none; padding: 0; margin-top: 4px; font-size: 12.5px; color: var(--color-accent); cursor: pointer; }
+  .reading-card .linkish:hover { text-decoration: underline; }
+  .reading-card .rc-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+  .reading-card .rc-options select { font-size: 12.5px; max-width: 100%; }
+  .reading-card .rc-options .check { display: inline-flex; align-items: center; gap: 6px; }
+  .reading-card .doubt { margin-top: 6px; padding: 7px 10px; border-radius: var(--radius-md); font-size: 12.5px; color: var(--warn-ink);
+    background: color-mix(in srgb, var(--warn-ink) 13%, transparent); overflow-wrap: anywhere; }
+  .reading-card .doubt + .doubt { margin-top: 4px; }
+  .reading-card .applied { color: var(--good); font-weight: 500; margin-top: 6px; font-size: 12.5px; }
+  .reading-card .rc-skipped { color: var(--muted); margin-top: 6px; font-size: 12.5px; }
+  .reading-card .rc-error { color: var(--bad); margin-top: 6px; font-size: 12.5px; overflow-wrap: anywhere; }
+  .reading-card .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .reading-card .acts .hint { position: static; font-family: inherit; color: var(--muted); font-size: 12px; }
+  .reading-card .rc-note { margin-top: 6px; font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .reading-card .rc-note.bad { color: var(--bad); }
+  .reading-card .rc-note.warn { color: var(--warn-ink); }
+  .chat-log .plan-status { align-self: stretch; flex: none; min-width: 0; padding: 10px 14px; border-radius: var(--radius-lg);
+    background: var(--surface); box-shadow: var(--shadow-md); font-size: 13px; border-left: 3px solid var(--color-accent); }
+  .plan-status .ps-head { font-weight: 600; }
+  .plan-status .ps-blocks { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
+  .plan-status .ps-blocks li { overflow-wrap: anywhere; }
+  .plan-status .ps-blocks li + li { margin-top: 2px; }
+  .plan-status .ps-more { list-style: none; color: var(--muted); }
+  .plan-status .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .plan-status .ps-line { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .plan-status .ps-line.good { color: var(--good); }
+  .plan-status .ps-line.bad { color: var(--bad); }
+  @media (max-width: 600px) {
+    .chat-log .plan-status { padding: 10px; }
+    .chat-log .reading-card { padding: 10px; }
+    .reading-card .rc-head { flex-wrap: wrap; }
+    .reading-card .rc-via { margin-left: 0; }
+    .file-chips { align-self: stretch; align-items: stretch; }
+  }

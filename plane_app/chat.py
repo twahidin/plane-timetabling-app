@@ -10,6 +10,7 @@ from datetime import date as _date
 from urllib.parse import quote
 
 from . import bookings
+from . import chat_readings
 from . import calendar as cal_mod
 from . import names
 from . import periods
@@ -66,6 +67,7 @@ its classes, teachers and venue need), divisions and bands for option groups tha
 rules. Use plan_summary and plan_list to see it, plan_update to import from a workbook description or fix
 issues with a patch keyed by id (edits need no proposal gate, unlike the live timetable), and once no
 blocking issues remain, plan_generate to turn it into the draft — then Build or Solve as usual.
+Files the user gives come in as readings, shown to them as cards. Use readings_list and reading_show to see what was found, ask about doubts one at a time, correct with reading_edit, and never say something was applied unless reading_apply or the user's Apply did it. reading_apply only after the user says yes in a later message.
 When there is no live timetable and no plan yet (or the user wants to start over), guide them through the
 start wizard instead of building from scratch. Ask one question at a time, in plain words a non-timetabler
 understands: never mention template ids, "slots" or other engine terms, and never offer more than three
@@ -258,6 +260,7 @@ TOOLS: list[ToolSpec] = [
              {"type": "object", "properties": {"template": {"type": "string"}, "knobs": {"type": "object"}},
               "required": ["template"]}),
 ]
+TOOLS += chat_readings.TOOLS
 
 # names.find's own "person"/"group" split only tells a group (a synthesised whole-class plane) apart
 # from every other person; teacher and room still need a further filter of find's own matches.
@@ -474,6 +477,9 @@ def _plan_summary_dict(db: Db, plan: dict, issues: list[Issue] | None = None) ->
 def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
               session_id: str = "", run: str = "") -> str:
     try:
+        out = chat_readings.run(call, db, events, run, session_id)
+        if out is not None:
+            return out
         if call.name in ("where", "who") and call.args.get("date"):
             return json.dumps(_dated_query(db, engine, call.name, call.args))
         if call.name in ("where", "who") and call.args.get("slot") is None:
@@ -818,16 +824,28 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
             if left:
                 text = text.rstrip(".") + "."             # "<description>. N cover cards … waiting: …"
             text += left
-        db.add_message(session_id, "assistant", {"text": text, "tool_calls": []})
+        db.add_message(session_id, "assistant", {"text": text, "tool_calls": [], "fast": True})
         return ChatResult(text, _applied_events(first["kind"], res))
     if pend and norm in DECLINE_WORDS:
         # The mirror of the yes: the card goes, every run of it, and the model never sees the turn.
         decisions.safe_record(db, "dismissed", lambda: {"cards": [{"kind": c.get("kind"), "event": c.get("event")} for c in pend]})
         proposals.clear_pending(db, session_id)
-        db.add_message(session_id, "assistant", {"text": "Dismissed.", "tool_calls": []})
+        db.add_message(session_id, "assistant", {"text": "Dismissed.", "tool_calls": [], "fast": True})
         return ChatResult("Dismissed.", [{"kind": "dismissed"}])
     events: list[dict] = []
+    if norm in CONFIRM_WORDS:
+        # No card is pending: a yes applies the newest waiting reading (its card's ticks), again with no
+        # model turn between the user's word and the change, when that card is the last thing the user
+        # was shown. After a reply from the model the yes answers the reply: the model takes it.
+        text = chat_readings.confirm(db, events, session_id)
+        if text is not None:
+            # "fast": a reply to a yes, not a model turn; a reading's card shown before it is still the latest
+            db.add_message(session_id, "assistant", {"text": text, "tool_calls": [], "fast": True})
+            return ChatResult(text, events)
     prompt = system_prompt(vocabulary_of(db))
+    waiting = chat_readings.context_line(db)
+    if waiting:
+        prompt += "\n" + waiting
     for _ in range(MAX_ROUNDS):
         try:
             turn = provider.complete(prompt, history_for_provider(db, session_id), TOOLS)

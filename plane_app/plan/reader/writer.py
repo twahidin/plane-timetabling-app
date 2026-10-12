@@ -414,6 +414,7 @@ def _reading(summary: str, kept: list[tuple[dict, list[dict]]], doubts: list[str
         "counts": {target: len(found) for target, found in shown.items() if found},
         "samples": {target: found[:SAMPLES_MAX] for target, found in shown.items() if found},
         "doubts": doubts,
+        "records": records,
         "patch": patch,
         "recipes": [recipe for recipe, _ in kept],
         "signature": sig,

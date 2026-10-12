@@ -20,6 +20,32 @@ class Extracted:
     warning: str | None = None
 
 
+def docx_text(name: str, data: bytes) -> str:
+    """A Word file's text in reading order: headings as '## ', paragraphs, tables as '| a | b |' rows."""
+    try:
+        import docx
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        doc = docx.Document(io.BytesIO(data))
+    except Exception as e:
+        raise UnsupportedFile(f"{name} could not be read as a Word document: {e}")
+    lines = []
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            p = Paragraph(child, doc)
+            t = p.text.strip()
+            if t:
+                heading = (p.style.name or "").lower().startswith(("heading", "title")) if p.style is not None else False
+                lines.append(("## " if heading else "") + t)
+        elif tag == "tbl":
+            for row in Table(child, doc).rows:
+                cells = [" ".join(c.text.split()) for c in row.cells]
+                if any(cells):
+                    lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def extract(name: str, data: bytes) -> Extracted:
     ext = PurePosixPath(name).suffix.lower()
     if ext == ".xls":
@@ -52,6 +78,13 @@ def extract(name: str, data: bytes) -> Extracted:
         finally:
             if wb is not None:
                 wb.close()
+    if ext == ".doc":
+        raise UnsupportedFile("The old .doc format is not supported. Save it as .docx and upload again.")
+    if ext == ".docx":
+        text = docx_text(name, data)
+        if not text.strip():
+            raise UnsupportedFile(f"{name} has no text to read.")
+        return Extracted("docx", name, text)
     if ext == ".pdf":
         if not data.startswith(b"%PDF"):
             raise UnsupportedFile(f"{name} is not a PDF.")

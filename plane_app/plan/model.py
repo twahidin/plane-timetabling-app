@@ -427,6 +427,23 @@ def department_status(plan: dict, dept) -> dict:
     return {"status": entry.get("status") or "open", "by": entry.get("by"), "at": entry.get("at")}
 
 
+NOTE_MAX = 500
+NOTES_MAX = 200
+
+
+def _normalise_notes(raw) -> list[dict]:
+    """[{text, source}]: what a document said that the plan cannot hold as a rule (spec 2026-10-12 §2.3)."""
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        text = " ".join(str(item.get("text") or "").split())[:NOTE_MAX]
+        if text:
+            src = item.get("source")
+            out.append({"text": text, "source": str(src) if src else None})
+    return out[:NOTES_MAX]
+
+
 def normalise(plan: dict) -> dict:
     plan = as_dict(plan, "plan")
     venues = normalise_venues(plan.get("venues"))
@@ -451,6 +468,9 @@ def normalise(plan: dict) -> dict:
     out["divisions"].sort(key=lambda x: x["id"])
     out["requirements"].sort(key=lambda x: x["id"])
     out["bands"].sort(key=lambda x: x["id"])
+    notes = _normalise_notes(plan.get("notes"))
+    if notes:
+        out["notes"] = notes
     return out
 
 

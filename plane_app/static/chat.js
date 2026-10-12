@@ -45,6 +45,7 @@
       msgs.forEach(renderMessage);
       if (!msgs.length) appendBubble('assistant', 'Ask me where someone is, who is in a room, when two people are both free, or tell me to change or build the draft.');
     } catch (e) { appendBubble('error', e.message); }
+    if (window.planeFiles) window.planeFiles.load();      // the log was emptied: the reading cards come back after it
   }
 
   // ---------- Proposal cards ----------
@@ -141,7 +142,23 @@
       else if (ev.kind === 'bookings_updated') loadBookings();
       else if (ev.kind === 'relief') { if (window.loadRelief) window.loadRelief().catch(() => {}); }
       else if (ev.kind === 'periods') { if (window.loadPeriods) window.loadPeriods().catch(() => {}); if (window.loadTimetables) window.loadTimetables(); }
-      else if (ev.kind === 'readings') document.dispatchEvent(new CustomEvent('plane:readings'));
+      else if (ev.kind === 'readings' || ev.kind === 'reading_updated') {
+        if (window.planeFiles) window.planeFiles.load();
+        document.dispatchEvent(new CustomEvent('plane:readings'));
+      }
+      else if (ev.kind === 'reading_applied') {
+        // a yes in the chat applied a reading: the card turns to Applied, then where the plan stands
+        if (window.planeFiles) {
+          const pf = window.planeFiles;
+          Promise.resolve(pf.load()).catch(() => {}).then(() => pf.showStatus(ev.status, ev.reading_kind));
+        }
+        document.dispatchEvent(new CustomEvent('plane:readings'));
+        document.dispatchEvent(new CustomEvent('plane:plan'));
+        if (window.loadPlan) window.loadPlan().catch(() => {});
+        if (window.loadBoard) window.loadBoard().catch(() => {});
+        if (window.loadWizard) window.loadWizard().catch(() => {});
+        if (ev.reading_kind === 'timetable') loadDraft();
+      }
       else if (ev.kind === 'plan_updated') { if (window.loadPlan) window.loadPlan().catch(() => {}); if (window.loadBoard) window.loadBoard().catch(() => {}); if (window.loadWizard) window.loadWizard().catch(() => {}); }
       else if (ev.kind === 'wizard') { if (window.renderWizardEvent) window.renderWizardEvent(ev); }
       else if (ev.kind === 'settings_updated') {
@@ -158,6 +175,7 @@
   // Anything that talks to the assistant (Fix…, Move…, Book this room, Plan cover, Start wizard)
   // opens its tab first, so the reply and any cards to confirm are in view.
   const showAssistant = () => { if (window.showIntakeTab) window.showIntakeTab('assistant'); };
+  window.showAssistant = showAssistant;
   window.sendChat = (text) => { showAssistant(); el('chat-text').value = text; el('chat-form').requestSubmit(); };
   window.draftChat = (text) => { showAssistant(); const input = el('chat-text'); input.value = text; input.focus(); };
 
@@ -184,8 +202,10 @@
     const pending = appendBubble('assistant pending', '');
     pending.appendChild(node('span', 'spinner', ''));
     pending.appendChild(node('span', null, modelLabel ? `Thinking with ${modelLabel}\u2026` : 'Thinking\u2026'));
-    const btn = ev.target.querySelector('button'); btn.disabled = true;
+    const btn = ev.target.querySelector('button[type=submit]'); btn.disabled = true;
     try {
+      // a tick saved just now must reach the reading before a typed yes applies it
+      if (window.planeFiles && window.planeFiles.flush) await window.planeFiles.flush();
       const res = await api('/api/chat', { method: 'POST', body: JSON.stringify({ text }) });
       pending.remove();
       // the server stored every turn; re-render from it so tool lines appear in order
@@ -244,53 +264,12 @@
   window.showNotes = showNotes;
 
   // ---------- Upload ----------
-  // Each uploaded file's own outcome (imported into the plan, read and waiting for Apply on the
-  // Requirements tab, read into the draft, skipped beside a timetable export, or why it failed), one
-  // line per file.
-  const FILE_CLS = { imported: 'good', draft: 'good', reading: '', skipped: '', error: 'error' };
-  function fileLines(files) {
-    return (files || []).map((f) => ({ cls: FILE_CLS[f.status] != null ? FILE_CLS[f.status] : '', text: `${f.name}: ${f.message}` }));
-  }
-  // a plan workbook's import note is already its file's line
-  const otherNotes = (body) => (body.notes || []).filter((n) => !(body.files && n && n.section === 'plan'));
+  // The Intake drop is one more way to give the Assistant files: files.js reads them and shows a card for each.
   const drop = el('drop'), fileInput = el('files');
-  async function upload(files) {
-    if (!files || !files.length) return;
-    const fd = new FormData();
-    Array.from(files).forEach((f) => fd.append('files', f, f.name));
-    fd.append('mode', el('import-mode').value);
-    if (el('classes-as-planes').checked) fd.append('classes_as_planes', '1');
-    drop.classList.add('busy'); fileInput.disabled = true;
-    const label = await loadModelLabel();
-    const names = Array.from(files).map((f) => f.name).join(', ');
-    const busy = startBusy(el('notes'), label
-      ? `Reading ${names} with ${label}. Large PDFs can take a minute or two\u2026`
-      : `Reading ${names}\u2026`);
-    try {
-      const r = await fetch('/api/upload', { method: 'POST', body: fd });
-      const body = await r.json().catch(() => ({}));
-      const took = busy.seconds(); busy.stop();
-      if (!r.ok) {
-        showNotes([], [], Array.isArray(body.files) && body.files.length ? fileLines(body.files) : [{ cls: 'error', text: body.detail || r.statusText }]);
-        return;
-      }
-      if (!body.draft) {
-        // plan workbooks, readings or failed files only: nothing to turn into a draft
-        showNotes(otherNotes(body), body.warnings, fileLines(body.files));
-        handleEvents(body.events);
-        journeyFiles(body.files);
-        return;
-      }
-      const s = body.draft || {};
-      const how = body.source === 'asc' ? 'read from the timetable export (no model needed)' : `extracted${label ? ' with ' + label : ''}`;
-      // the summary line speaks for the files read into the draft: only the others get a line
-      const others = (body.files || []).filter((f) => f.status !== 'draft');
-      showNotes(otherNotes(body), body.warnings, [{ cls: 'good', text: `Draft ${how} in ${took}s: ${s.persons} persons, ${s.locations} locations, ${s.events} events. Check the tables, then Build.` }].concat(fileLines(others)));
-      await loadDraft();
-      handleEvents(body.events);
-      journeyFiles(body.files);
-    } catch (e) { busy.stop(); showNotes([], [], [{ cls: 'error', text: e.message }]); }
-    finally { drop.classList.remove('busy'); fileInput.disabled = false; fileInput.value = ''; }
+  function upload(files) {
+    const list = Array.from(files || []);
+    fileInput.value = '';
+    if (list.length && window.planeFiles) window.planeFiles.give(list);
   }
   fileInput.addEventListener('change', () => upload(fileInput.files));
   ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (ev) => { ev.preventDefault(); drop.classList.add('over'); }));
@@ -306,9 +285,10 @@
   el('clear-uploads').addEventListener('click', async () => {
     const btn = el('clear-uploads'); btn.disabled = true;
     try {
-      await api('/api/uploads/clear', { method: 'POST' });
-      const box = el('draft'); box.hidden = true; box.textContent = ''; draft = null;
-      showNotes([], [], [{ cls: '', text: 'Uploads cleared. The next files you drop start a fresh draft.' }]);
+      await api('/api/readings/clear', { method: 'POST' });
+      showNotes([], [], [{ cls: '', text: 'Readings cleared: the files waiting for Apply are gone. Nothing in the plan or the draft changed.' }]);
+      if (window.planeFiles) window.planeFiles.load();
+      document.dispatchEvent(new CustomEvent('plane:readings'));
     } catch (e) { showNotes([], [], [{ cls: 'error', text: e.message }]); }
     finally { btn.disabled = false; }
   });
@@ -495,12 +475,6 @@
   }
 
   el('build').addEventListener('click', () => runBuild(el('build')));
-
-  // the journey (spec §3.2): files that were read or imported fly into the campus
-  function journeyFiles(files) {
-    const read = (files || []).filter((f) => ['imported', 'reading', 'draft'].includes(f.status));
-    if (read.length) document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'files', files: read.map((f) => ({ name: f.name, status: f.status })) } }));
-  }
 
   async function runBuild(btn) {
     if (btn) btn.disabled = true;

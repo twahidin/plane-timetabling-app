@@ -318,6 +318,46 @@
     el('plan-generate').disabled = nBlocks > 0;
   }
 
+  // The plan's notes: statements a document made that the plan cannot hold as a rule (spec
+  // 2026-10-12-assistant-files §2.3), each kept with the file it came from. Shown on the Requirements tab;
+  // a ✕ drops one by PATCHing the list without it. Note text and source are data from a file: textContent only.
+  async function dropNote(index, btn) {
+    const left = (plan.notes || []).filter((_, i) => i !== index);
+    btn.disabled = true;
+    try {
+      const res = await api('/api/plan', { method: 'PATCH', body: JSON.stringify({ patch: { notes: left } }) });
+      plan = res.plan; issues = res.issues || []; issueCounts = null;
+      renderNotes();
+      renderIssues();
+    } catch (e) { btn.disabled = false; notify('error', e.message); }
+  }
+
+  function renderNotes() {
+    const box = el('plan-notes');
+    if (!box) return;
+    box.textContent = '';
+    const list = (plan && plan.notes) || [];
+    box.hidden = !list.length;
+    if (!list.length) return;
+    box.appendChild(node('h3', null, 'Notes'));
+    const ul = node('ul', 'plan-notes-list');
+    list.forEach((n, i) => {
+      const li = node('li');
+      const body = node('span', 'plan-note-body');
+      body.appendChild(node('span', 'plan-note-text', n.text));
+      if (n.source) body.appendChild(node('span', 'plan-note-source', n.source));
+      li.appendChild(body);
+      const x = node('button', 'plan-note-x', '✕');
+      x.type = 'button';
+      x.setAttribute('aria-label', 'Remove this note');
+      x.title = 'Remove this note';
+      x.addEventListener('click', () => dropNote(i, x));
+      li.appendChild(x);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+
   function renderSection(section) {
     if (section === 'requirements') renderKeyedTable(el('plan-requirements'), 'requirements', REQ_COLUMNS, plan.requirements, 'id');
     else if (section === 'staff') renderKeyedTable(el('plan-staff'), 'staff', STAFF_COLUMNS, plan.staff, 'id');
@@ -328,6 +368,7 @@
   function renderAll() {
     ['requirements', 'staff', 'divisions', 'rules'].forEach(renderSection);
     renderIssues();
+    renderNotes();
     // Export to Excel is a plain link (it downloads through the session cookie): with nothing in
     // the plan yet it only says so, and the template is the thing to download instead.
     const empty = !(plan.requirements || []).length && !(plan.staff || []).length;
@@ -356,47 +397,12 @@
   window.loadPlan = loadPlan;
 
   const planUpload = el('plan-upload');
-  async function uploadPlan(fileList) {
+  // A workbook given here goes to the Assistant like any other file: it is read into a card there, and the
+  // plan changes only when that card is applied (files.js reloads the plan, the board and the wizard then).
+  function uploadPlan(fileList) {
     const files = Array.from(fileList || []);
-    if (!files.length) return;
-    // A workbook with .csv files beside it: the .csv files are its class sizes. A lone .csv is sent
-    // as the file itself, and the server decides (a workbook it does not recognise goes to the
-    // reader, and comes back as a reading to check and Apply).
-    const csvs = files.filter((f) => /\.csv$/i.test(f.name));
-    const workbook = files.find((f) => !/\.csv$/i.test(f.name));
-    // Several CSVs and no workbook: none of them is sizes, and this upload reads one file. The
-    // main upload reads each file it is given.
-    if (!workbook && csvs.length > 1) {
-      notify('error', 'Upload one CSV at a time here, or drop them on the main upload.');
-      planUpload.value = '';
-      return;
-    }
-    const main = workbook || csvs[0];
-    const fd = new FormData();
-    fd.append('file', main, main.name);
-    csvs.filter((f) => f !== main).forEach((f) => fd.append('sizes', f, f.name));
-    planUpload.disabled = true;
-    try {
-      const r = await fetch('/api/plan/upload', { method: 'POST', body: fd });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) { notify('error', body.detail || r.statusText); return; }
-      if (body.reading) {
-        // read, not imported: the plan is unchanged until its card's Apply
-        if (window.loadReadings) window.loadReadings();
-        notify('', `Read ${body.reading.file || main.name}: check its card above and press Apply.`);
-        return;
-      }
-      plan = body.plan; issues = body.issues || []; issueCounts = null;
-      applyVocabulary(plan.vocabulary);
-      renderAll();
-      notify('good', body.note || 'Workbook imported.');
-      document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'files', files: [{ name: main.name, status: 'imported' }] } }));
-      if (window.loadBoard) window.loadBoard();
-      // A workbook can be the first thing that gives the plan requirements: the #wizard card
-      // (chat.js's counterpart, hidden once a plan exists) must re-check itself here too.
-      if (window.loadWizard) window.loadWizard().catch(() => {});
-    } catch (e) { notify('error', e.message); }
-    finally { planUpload.disabled = false; planUpload.value = ''; }
+    planUpload.value = '';
+    if (files.length && window.planeFiles) window.planeFiles.give(files);
   }
   planUpload.addEventListener('change', () => uploadPlan(planUpload.files));
 

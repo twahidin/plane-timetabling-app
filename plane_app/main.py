@@ -22,25 +22,22 @@ from . import calendar as cal_mod
 from . import changes
 from .bookings import draft_for_engine, live_for_engine     # re-exported: every route/tool that sends an organisation to the engine uses these
 from .chat import run_chat
-from .config import MAX_UPLOAD, Config
+from .config import Config
 from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, THREAD, Db, mask_settings
 from .engine_client import EngineClient, EngineError
-from .extract import UnsupportedFile, extract
-from . import asc_import
 from .grid_api import make_router as grid_router
 from .campus import make_router as campus_router
 from .journey import make_router as journey_router
 from .learning.routes import make_router as learning_router
-from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, extract_organisation, summarise
+from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import periods
 from . import proposals
-from .plan import importer as plan_importer
 from .plan import model as plan_model
 from .plan.model import vocabulary_of
 from .periods_api import make_router as periods_router
-from .plan.routes import import_workbook as import_plan_workbook, make_router as plan_router
-from .plan.reader import routes as reader_routes
+from .plan.routes import make_router as plan_router
+from .plan.reader import inbox, routes as reader_routes
 from .print.routes import make_router as print_router
 from .learning import log as decisions
 from .promote import promote_build
@@ -448,143 +445,25 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 "vocabulary": vocabulary_of(db)}
 
     @app.post("/api/upload")
-    async def upload(sid: str = Depends(auth.require_session), files: list[UploadFile] = File(...),
-                     mode: str = Form("keep"), classes_as_planes: str = Form("")):
-        """Each file on its own (spec 2026-10-08-smart-workbook-reader §6): a recognised deployment or
-        duties workbook imports into the plan; any other .xlsx/.csv is read by the smart reader into a
-        reading to Apply; an aSc export or other documents make the draft. `files` lists each file's
-        {name, status: imported | reading | draft | skipped | error, message}; one file failing never hides
-        another's success, and only when every file failed is the response an error."""
-        results: dict[int, dict] = {}                 # upload position -> its result
-        statuses: dict[int, int] = {}                 # a failed file's HTTP status (400 unless said)
-        pending = []                                  # (position, name, data, extracted | None for aSc)
-        asc_pages: list[list[dict]] = []
-        plan_notes: list[dict] = []
-        plan_events: list[dict] = []
-        reading_made = False
-
-        def fail(i: int, name: str, message, status: int = 400) -> None:
-            results[i] = {"name": name, "status": "error", "message": str(message)}
-            statuses[i] = status
-
-        def read_provider():                          # called only when no saved reader reads the file
-            return app.state.provider_factory(db.get_settings())
-
-        if mode not in ("keep", "rebuild"):
-            raise HTTPException(400, "mode must be keep or rebuild")
-        tid = db.working_timetable()
+    async def upload(sid: str = Depends(auth.require_session), files: list[UploadFile] = File(...)):
+        """Every file a reading (spec 2026-10-12-assistant-files §2.1): each file read into a reading
+        that waits for Apply, nothing written to the plan or the draft. `files` lists each file's
+        {name, status: read | failed | retry, id, message}; one file failing never stops another, and
+        only when every file failed is the response an error."""
+        items = []
         for i, f in enumerate(files):
-            data = await f.read()
-            name = f.filename or "upload"
-            lower = name.lower()
-            if len(data) > MAX_UPLOAD:
-                fail(i, name, f"{name} is over 20 MB")
-                continue
-            if lower.endswith(".pdf") and asc_import.is_asc_pdf(data):
-                # a timetable-software export: read the grid geometry, no model needed
-                asc_pages.extend(asc_import.read_pdf_words(data))
-                pending.append((i, name, data, None))
-                continue
-            if lower.endswith(".xlsx") and (plan_importer.is_deployment_workbook(data)
-                                            or plan_importer.is_generic_workbook(data)):
-                # a staff-deployment or generic duties workbook: import into the curriculum plan, not the draft
-                # in a worker thread: it waits on the plan lock, which must not stall the event loop
-                try:
-                    _, _, note = await run_in_threadpool(import_plan_workbook, db, name, data)
-                except HTTPException as e:
-                    fail(i, name, e.detail, e.status_code)
-                    continue
-                plan_notes.append({"section": "plan", "source": name, "note": note})
-                if not plan_events:
-                    plan_events.append({"kind": "plan_updated"})
-                results[i] = {"name": name, "status": "imported", "message": note}
-                continue
-            if lower.endswith((".xlsx", ".csv")):
-                # any other workbook: the smart reader, never the generic organisation extraction
-                result = await run_in_threadpool(reader_routes.read_upload, db, read_provider, name, data, tid)
-                code = result.pop("code", 400)
-                results[i] = result
-                if result["status"] == "error":
-                    statuses[i] = code
-                else:
-                    reading_made = True
-                continue
-            try:
-                ex = extract(name, data)
-            except UnsupportedFile as e:
-                fail(i, name, e)
-                continue
-            pending.append((i, name, data, ex))
+            # a file past the limit is refused unread
+            items.append((f.filename or "upload", await f.read() if i < inbox.FILES_MAX else b""))
 
-        def respond(body: dict):
-            if reading_made:
-                body["events"] = body.get("events", []) + [{"kind": "readings"}]
-            body["files"] = [results[i] for i in sorted(results)]
-            if statuses and len(statuses) == len(results):
-                codes = set(statuses.values())
-                lines = [f"{r['name']}: {r['message']}" for r in body["files"]]
-                detail = body["files"][0]["message"] if len(lines) == 1 else "\n".join(lines)
-                return JSONResponse({"detail": detail, "files": body["files"]},
-                                    status_code=codes.pop() if len(codes) == 1 else 400)
-            return body
-
-        asc = [(i, name, data) for i, name, data, ex in pending if ex is None]
-        if asc:
-            org = None
-            try:
-                org, notes = asc_import.build_organisation(asc_pages, mode=mode, classes_as_planes=bool(classes_as_planes))
-                org = apply_patch(org, {})            # validates like every other draft
-            except asc_import.AscFormatError as e:
-                for i, name, _ in asc:
-                    fail(i, name, e)
-            except IntakeError as e:
-                for i, name, _ in asc:
-                    fail(i, name, f"The timetable export could not be turned into a draft: {e}")
-            if org is not None:
-                for i, name, data, ex in pending:
-                    for old_path in db.remove_upload_by_name(THREAD, name):
-                        _unlink_quietly(old_path)
-                    path = config.data_dir / "uploads" / f"{auth.new_session_id()}.pdf"
-                    path.write_bytes(data)
-                    db.add_upload(THREAD, name, str(path), "asc" if ex is None else ex.kind, "" if ex is None else ex.text)
-                    results[i] = ({"name": name, "status": "draft", "message": "Read from the timetable export (no model needed)."}
-                                  if ex is None else
-                                  {"name": name, "status": "skipped",
-                                   "message": "Ignored alongside the timetable export; upload it on its own to add to the draft by chat."})
-                others = [name for _, name, _, ex in pending if ex is not None]
-                if others:
-                    notes.append({"section": "documents", "source": ", ".join(others),
-                                  "note": "Ignored alongside the timetable export; the export already holds the timetable. Upload other documents on their own to add to the draft by chat."})
-                db.set_org("draft", org)
-                return respond({"draft": summarise(org), "notes": notes + plan_notes, "warnings": [], "source": "asc",
-                                "events": plan_events})
-            pending = [p for p in pending if p[3] is not None]
-        if not pending:
-            # nothing left to turn into a draft (plan workbooks, readings, or files that failed)
-            return respond({"notes": plan_notes, "warnings": [], "events": plan_events})
-        warnings = []
-        for i, name, data, ex in pending:
-            for old_path in db.remove_upload_by_name(THREAD, name):     # re-dropping a file replaces it
-                _unlink_quietly(old_path)
-            path = config.data_dir / "uploads" / f"{auth.new_session_id()}.{ex.kind}"
-            path.write_bytes(data)
-            db.add_upload(THREAD, name, str(path), ex.kind, ex.text)
-            if ex.warning:
-                warnings.append(f"{name}: {ex.warning}")
-        texts = [(u["name"], u["text"]) for u in db.uploads(THREAD)]
-        try:
-            org, notes = extract_organisation(app.state.provider_factory(db.get_settings()), db.get_settings(), texts)
-        except (IntakeError, ProviderError) as e:
-            for i, name, _, _ in pending:
-                fail(i, name, e)
-            return respond({"notes": plan_notes, "warnings": warnings, "events": plan_events})
-        db.set_org("draft", org)
-        for i, name, _, _ in pending:
-            results[i] = {"name": name, "status": "draft", "message": "Read into the draft."}
-        return respond({"draft": summarise(org), "notes": notes + plan_notes, "warnings": warnings, "events": plan_events})
+        def factory():                                # made only when a file needs the model
+            return app.state.provider_factory(db.get_settings())
+        # in a worker thread: readings wait on the model, the reader's child process and the plan's reads
+        return reader_routes.upload_response(await run_in_threadpool(inbox.read_files, db, factory, items))
 
     @app.post("/api/uploads/clear")
     def clear_uploads(sid: str = Depends(auth.require_session)):
+        """The old name of POST /api/readings/clear: also clears the chat's uploads of old."""
+        inbox.clear(db)
         for path in db.clear_uploads(THREAD):
             _unlink_quietly(path)
         return {"ok": True}
