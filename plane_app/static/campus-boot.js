@@ -6,7 +6,7 @@
   const KEY = 'plane.view3d';
   const root = document.documentElement;
   const $ = (id) => document.getElementById(id);
-  let ctl = null, loading = null, broken = false, imported = false, pending = null;
+  let ctl = null, loading = null, broken = false, imported = false, pending = null, held = [], toastTimer = 0;
 
   const look = () => root.dataset.look || 'classic';
   function chosen() {
@@ -42,6 +42,7 @@
         if (chosen() !== 'campus') return;                    // the user moved on while it loaded
         note(''); c.setLook(look()); c.setActive(!document.hidden); c.resize();
         if (pending) { c.highlightEvent(pending); pending = null; }
+        flush();
       }).catch((err) => {
         console.warn('campus unavailable', err);
         loading = null;
@@ -73,7 +74,42 @@
     });
     apply();
   });
-  document.addEventListener('plane:look', apply);
+  /* The journey on the campus (spec §3.2): play each step when the campus is on screen; otherwise hold the
+     latest of each step (one per stage, in the order they last came) and offer to show it. */
+  const onScreen = () => chosen() === 'campus' && ctl && $('campus-view') && $('campus-view').clientWidth > 0 && !document.hidden;
+  function hold(d) { held = held.filter((h) => h.stage !== d.stage); held.push(d); }
+  function flush() {
+    if (!held.length || !onScreen()) return;
+    const list = held; held = []; hideToast();
+    list.forEach((d) => ctl.play(d));
+  }
+  function hideToast() { const t = $('journey-toast'); if (t) t.hidden = true; clearTimeout(toastTimer); }
+  function toast() {
+    let t = $('journey-toast');
+    if (!t) {
+      t = document.createElement('div'); t.id = 'journey-toast'; t.className = 'journey-toast'; t.setAttribute('role', 'status');
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = 'Watch it on the campus ▶';
+      b.addEventListener('click', () => { hideToast(); remember('campus'); if (window.showTab) window.showTab('build'); apply(); });
+      t.appendChild(b); document.body.appendChild(t);
+    }
+    t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(hideToast, 8000);
+  }
+  document.addEventListener('plane:journey', (e) => {
+    const d = e.detail || {};
+    if (!d.stage || look() === 'classic' || broken) return;
+    if (onScreen()) { ctl.play(d); return; }
+    hold(d);
+    if (d.stage !== 'solving') toast();
+  });
+  document.addEventListener('plane:tab', () => requestAnimationFrame(flush));
+  let shownTimetable = null;
+  document.addEventListener('plane:journey-state', (e) => {      // another timetable: its held steps belong to the old one
+    const id = e.detail && e.detail.timetable;
+    if (shownTimetable && id && id !== shownTimetable) { held = []; hideToast(); }
+    if (id) shownTimetable = id;
+  });
+
+  document.addEventListener('plane:look', () => { if (look() === 'classic') { held = []; hideToast(); } apply(); });
   document.addEventListener('plane:solid', () => { if (ctl) ctl.reload().catch(() => {}); });
-  document.addEventListener('visibilitychange', () => { if (ctl) ctl.setActive(!document.hidden && chosen() === 'campus'); });
+  document.addEventListener('visibilitychange', () => { if (ctl) ctl.setActive(!document.hidden && chosen() === 'campus'); flush(); });
 })();

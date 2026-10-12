@@ -272,6 +272,7 @@
         // plan workbooks, readings or failed files only: nothing to turn into a draft
         showNotes(otherNotes(body), body.warnings, fileLines(body.files));
         handleEvents(body.events);
+        journeyFiles(body.files);
         return;
       }
       const s = body.draft || {};
@@ -281,6 +282,7 @@
       showNotes(otherNotes(body), body.warnings, [{ cls: 'good', text: `Draft ${how} in ${took}s: ${s.persons} persons, ${s.locations} locations, ${s.events} events. Check the tables, then Build.` }].concat(fileLines(others)));
       await loadDraft();
       handleEvents(body.events);
+      journeyFiles(body.files);
     } catch (e) { busy.stop(); showNotes([], [], [{ cls: 'error', text: e.message }]); }
     finally { drop.classList.remove('busy'); fileInput.disabled = false; fileInput.value = ''; }
   }
@@ -488,6 +490,12 @@
 
   el('build').addEventListener('click', () => runBuild(el('build')));
 
+  // the journey (spec §3.2): files that were read or imported fly into the campus
+  function journeyFiles(files) {
+    const read = (files || []).filter((f) => ['imported', 'reading', 'draft'].includes(f.status));
+    if (read.length) document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'files', files: read.map((f) => ({ name: f.name, status: f.status })) } }));
+  }
+
   async function runBuild(btn) {
     if (btn) btn.disabled = true;
     const busy = startBusy(el('notes'), 'Building on the engine (no model involved; this takes well under a second)\u2026');
@@ -495,6 +503,7 @@
       const res = await api('/api/build', { method: 'POST' });
       busy.stop();
       handleEvents([{ kind: 'build', ok: !!res.ok, placed: res.placed, unplaced: res.unplaced, clashes: res.clashes }]);
+      if (res.ok) document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'timetable' } }));
       if (!res.ok) loadDraft();
     } catch (e) { busy.stop(); showNotes([], [], [{ cls: 'error', text: e.message }]); }
     finally { if (btn) btn.disabled = false; }
@@ -604,6 +613,7 @@
       showNotes([], [], [{ cls: 'good', text: `${st.status === 'cancelled' ? 'Stopped early' : 'Solved'} (${PRESET_LABELS[st.preset] || st.preset}, ${fmtSec(st.elapsed || 0)}): ${(res.placed || []).length} events placed, objective ${res.objective}${res.optimal ? ', proven optimal' : ''}. The draft is now the live timetable.` }]);
       if (window.reloadModel) window.reloadModel().catch(() => {});
       loadDraft();
+      document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'timetable' } }));
     } else if (res.unplaced || res.clashes) {
       showNotes([], [], [{ cls: 'error', text: `Solve did not settle: ${(res.unplaced || []).length} unplaced, ${(res.clashes || []).length} clashes. The draft is unchanged.` }]
         .concat((res.clashes || []).slice(0, 20).map((c) => ({ cls: 'error', text: c.message || String(c) }))));
@@ -624,6 +634,7 @@
     if (gen !== solveGen) return;
     if (st.status === 'queued' || st.status === 'running') {
       renderProgress(st);
+      if (st.status === 'running') document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'solving', fraction: st.time_limit ? Math.min(1, (st.elapsed || 0) / st.time_limit) : 0, objective: st.best_objective } }));
       solvePoll = setTimeout(() => pollSolve(gen), 2000);
     } else finishSolve(st);
   }

@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Re
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .. import auth, users
+from .. import auth, journey, users
 from ..config import MAX_UPLOAD
 from ..learning import sharing
 from . import board as B
@@ -161,6 +161,7 @@ def import_workbook(db, filename: str, data: bytes, sizes_texts: tuple[str, ...]
             raise HTTPException(422, f"the plan does not read, so the workbook was not merged into it: {e}. "
                                      f"Fix it in the Tables view first")
         db.set_value("plan", plan)
+        journey.stamp(db, "files")
 
     seen: set[tuple[str, str, str]] = set()
     issues: list[Issue] = []
@@ -235,6 +236,7 @@ def make_router(db) -> APIRouter:
             return JSONResponse({"detail": f"{len(blocks)} blocking issues", "blocks": capped(blocks)}, status_code=409)
         org, summary = G.generate(plan, base_org, settings)
         db.set_org("draft", org)
+        journey.stamp(db, "draft")
         # a timetable started from another school's shared template: the first draft reports it kept (§2.2), after
         # the response has gone, so a slow engine never holds the draft
         background.add_task(sharing.report_kept, db, lambda: request.app.state.engine_factory(db.get_settings()),

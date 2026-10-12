@@ -35,4 +35,22 @@
     apply();
   });
   window.addEventListener('storage', (e) => { if (e.key === KEY || e.key === null) apply(); });
+
+  // animations (spec §3.4): Full, Reduced or Off, per browser; the default follows the device's reduce-motion setting
+  const MOTIONS = new Set(['full', 'reduced', 'off']), MKEY = 'plane.motion';
+  let motionSession = null;
+  function motion() {
+    try { const v = localStorage.getItem(MKEY); if (MOTIONS.has(v)) return v; } catch (e) { if (motionSession) return motionSession; }
+    return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'full';
+  }
+  function setMotion(v) {
+    if (!MOTIONS.has(v)) return;
+    try { localStorage.setItem(MKEY, v); } catch (e) { motionSession = v; }
+    document.querySelectorAll('select.motion-pick').forEach((s) => { s.value = v; });
+    document.dispatchEvent(new CustomEvent('plane:motion', { detail: { level: v } }));
+  }
+  window.planeMotion = { level: motion, set: setMotion };
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('select.motion-pick').forEach((s) => { s.value = motion(); s.addEventListener('change', () => setMotion(s.value)); });
+  });
 })();

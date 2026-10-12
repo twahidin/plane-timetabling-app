@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { themeFor } from 'campus/themes';
+import { themeFor, THEMES } from 'campus/themes';
 
 const ROOM_W = 2.6, H = 3.2;
 const ease = {
@@ -56,6 +56,7 @@ export function createScene(host) {
     }
   }
   function clear() {
+    tweens.forEach((w) => { if (w.settle) w.settle(); });   // effects waiting on a dropped tween still finish
     tweens = [];
     if (!scene) return;
     scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.element) o.element.remove(); if (o.isLight && o.dispose) o.dispose(); });
@@ -117,11 +118,12 @@ export function createScene(host) {
     sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.04; sun.shadow.radius = 3;
     scene.add(sun);
 
-    world = { sun, grounds: g, rooms: {}, pickables: [], walkers: [], clouds: [], pins: [], mark: null, jib: null, trolley: null, boxes: [] };
+    world = { sun, grounds: g, rooms: {}, pickables: [], walkers: [], clouds: [], pins: [], mark: null, jib: null, trolley: null, boxes: [],
+              levels: [], roofs: [], scaffolds: [], roofMats: [], fields: [], trees: [], site: null, crane: null, hook: null };
     ground(g);
     courtyardPaths(doc);
     (doc.areas || []).forEach(field);
-    const wallM = mat(T.wall), trimM = mat(T.trim);
+    const wallM = world.wallM = mat(T.wall), trimM = mat(T.trim);
     world.sillM = mat('#ffffff');
     let roofN = 0;
     for (const b of doc.buildings || []) {
@@ -133,6 +135,7 @@ export function createScene(host) {
       const rec = world.rooms[r.id];
       if (rec) { rec.home = r.home; rec.mat.color.set(r.home ? T.home : T.winOff); }
     }
+    intake(g);
     const before = scene.children.length;
     if (!theme.site) trees(g);
     if (theme.name === 'toy') clouds(g);
@@ -142,7 +145,7 @@ export function createScene(host) {
   }
 
   function ground(g) {
-    const top = rbox(g.w, 1, g.d, mat(T.grass), 0.5); top.position.y = -0.5; scene.add(top);
+    const top = rbox(g.w, 1, g.d, world.groundM = mat(T.grass), 0.5); top.position.y = -0.5; scene.add(top);
     const base = rbox(g.w - 1.4, 3.2, g.d - 1.4, mat(T.dirt), 0.9); base.position.y = -2.4; scene.add(base);
   }
 
@@ -159,10 +162,11 @@ export function createScene(host) {
     world.court = { x0: x0 - wd, x1: x1 + wd, z0: z0 - wd, z1: z1 + wd };
   }
 
-  function fieldTexture() {
+  function fieldTexture(finished) {
     const c = document.createElement('canvas'); c.width = 512; c.height = 384; const x = c.getContext('2d');
-    x.fillStyle = T.field; x.fillRect(0, 0, 512, 384);
-    if (!theme.site) for (let i = 0; i < 8; i++) { x.fillStyle = i % 2 ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.03)'; x.fillRect(i * 64, 0, 64, 384); }
+    const bare = theme.site && !finished;
+    x.fillStyle = bare ? T.field : (T.fieldFinal || T.field); x.fillRect(0, 0, 512, 384);
+    if (!bare) for (let i = 0; i < 8; i++) { x.fillStyle = i % 2 ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.03)'; x.fillRect(i * 64, 0, 64, 384); }
     else { x.strokeStyle = 'rgba(120,80,40,.18)'; x.lineWidth = 10; for (let i = -2; i < 6; i++) { x.beginPath(); x.moveTo(i * 110, 384); x.bezierCurveTo(i * 110 + 80, 250, i * 110 + 20, 120, i * 110 + 140, 0); x.stroke(); } }
     x.strokeStyle = T.fieldLine; x.lineWidth = 6; x.globalAlpha = 0.95;
     x.strokeRect(24, 24, 464, 336); x.beginPath(); x.moveTo(256, 24); x.lineTo(256, 360); x.stroke();
@@ -170,8 +174,9 @@ export function createScene(host) {
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
   }
   function field(a) {
-    const m = mat('#ffffff', { map: fieldTexture(), roughness: 0.9 });
+    const m = mat('#ffffff', { map: fieldTexture(false), roughness: 0.9 });
     const f = rbox(a.w, 0.16, a.d, m, 0.05); f.position.set(a.x, 0.08, a.z); f.castShadow = false; scene.add(f);
+    world.fields.push(m);
     if (a.room) {
       f.userData = { kind: 'room', id: a.room };
       world.pickables.push(f);
@@ -185,7 +190,7 @@ export function createScene(host) {
     const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g);
     const per = b.per_facade || 1, levels = b.levels || [];
     for (let lv = 0; lv < levels.length; lv++) {
-      const L = new THREE.Group(); L.position.y = lv * H; g.add(L);
+      const L = new THREE.Group(); L.position.y = lv * H; g.add(L); world.levels.push(L);
       const slab = rbox(b.w, H - 0.25, b.d, wallM); slab.position.y = (H - 0.25) / 2; L.add(slab);
       const band = rbox(b.w + 0.25, 0.25, b.d + 0.25, trimM, 0.05); band.position.y = H - 0.125; L.add(band);
       levels[lv].forEach((id, i) => {
@@ -202,9 +207,10 @@ export function createScene(host) {
       });
     }
     const roofY = levels.length * H;
-    const roof = rbox(b.w + 1.2, 0.7, b.d + 1.2, mat(theme.site ? T.roofs[0] : T.roofs[n % 3]), 0.3); roof.position.set(0, roofY + 0.2, 0); g.add(roof);
+    const rm = mat(theme.site ? T.roofs[0] : T.roofs[n % 3]); world.roofMats.push({ m: rm, n });
+    const roof = rbox(b.w + 1.2, 0.7, b.d + 1.2, rm, 0.3); roof.position.set(0, roofY + 0.2, 0); g.add(roof); world.roofs.push(roof);
     for (let k = 0; k < Math.min(3, Math.max(1, Math.floor(b.w / 8))); k++) {
-      const ac = rbox(1.4, 0.8, 1.1, world.sillM, 0.25); ac.position.set(-b.w / 3 + k * (b.w / 3), roofY + 0.9, -1); g.add(ac);
+      const ac = rbox(1.4, 0.8, 1.1, world.sillM, 0.25); ac.position.set(-b.w / 3 + k * (b.w / 3), roofY + 0.9, -1); g.add(ac); world.roofs.push(ac);
     }
     if (theme.site) scaffold(g, b, roofY);
     label(b.label, 'blk in', g, new THREE.Vector3(0, roofY + 2.0, 0));
@@ -212,9 +218,10 @@ export function createScene(host) {
 
   function hall(b, n) {
     const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g);
-    const body = rbox(b.w, 4.4, b.d, mat(T.wall)); body.position.y = 2.2; g.add(body);
+    const L = new THREE.Group(); g.add(L); world.levels.push(L);
+    const body = rbox(b.w, 4.4, b.d, world.wallM); body.position.y = 2.2; L.add(body);
     const dm = mat(T.winOff, { emissive: '#000000' });
-    const door = rbox(3, 2.4, 0.2, dm, 0.1); door.position.set(0, 1.2, b.d / 2 + 0.05); g.add(door);
+    const door = rbox(3, 2.4, 0.2, dm, 0.1); door.position.set(0, 1.2, b.d / 2 + 0.05); L.add(door);
     const id = (b.levels[0] || [])[0];
     if (id) {
       door.userData = { kind: 'room', id }; body.userData = { kind: 'room', id };
@@ -224,7 +231,8 @@ export function createScene(host) {
     const sh = new THREE.Shape(); sh.moveTo(-b.w / 2 - 0.6, 0); sh.lineTo(b.w / 2 + 0.6, 0); sh.lineTo(0, 2.6); sh.closePath();
     const rg = new THREE.ExtrudeGeometry(sh, { depth: b.d + 0.8, bevelEnabled: true, bevelSize: 0.18, bevelThickness: 0.18, bevelSegments: 3 });
     rg.translate(0, 0, -(b.d + 0.8) / 2);
-    const roof = new THREE.Mesh(rg, mat(theme.site ? T.roofs[0] : T.roofs[(n + 2) % 3])); roof.position.y = 4.4; roof.castShadow = true; g.add(roof);
+    const rm = mat(theme.site ? T.roofs[0] : T.roofs[(n + 2) % 3]); world.roofMats.push({ m: rm, n: n + 2 });
+    const roof = new THREE.Mesh(rg, rm); roof.position.y = 4.4; roof.castShadow = true; g.add(roof); world.roofs.push(roof);
     label(b.label, 'blk in', g, new THREE.Vector3(0, 8.2, 0));
   }
 
@@ -234,7 +242,7 @@ export function createScene(host) {
   }
   function tree(x, z, n) {
     if (!world.treeM) world.treeM = { trunk: mat(T.trunk), leaves: T.leaves.map((c) => mat(c)) };
-    const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g);
+    const g = new THREE.Group(); g.position.set(x, 0, z); scene.add(g); world.trees.push(g);
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.26, 1.6, 8), world.treeM.trunk); trunk.position.y = 0.8; trunk.castShadow = true; g.add(trunk);
     [[0, 2.5, 0, 1.25], [0.6, 3.2, 0.2, 0.9], [-0.55, 3.0, -0.3, 0.85]].forEach(([px, py, pz, r], k) => {
       const s = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), world.treeM.leaves[(n + k) % 3]); s.position.set(px, py, pz); s.castShadow = true; g.add(s);
@@ -269,27 +277,28 @@ export function createScene(host) {
   }
   function site(doc) {
     const g = world.grounds, hw = g.w / 2 - 0.6, hd = g.d / 2 - 0.6;
+    const sg = world.site = new THREE.Group(); scene.add(sg);         // fence, cones, piles: they go together at the handover
     const boardM = mat('#ffffff', { map: stripeTex('#ff7a1a', '#ffffff') }), footM = mat('#4b4f5c');
     const run = (x0, z0, x1, z1) => {
       const len = Math.hypot(x1 - x0, z1 - z0), n = Math.max(1, Math.round(len / 3.6));
       for (let i = 0; i < n; i++) {
         const k = (i + 0.5) / n, x = x0 + (x1 - x0) * k, z = z0 + (z1 - z0) * k;
         if (Math.abs(x) < 3 && z > 0) continue;                       // the gate
-        const b = rbox(3.3, 0.8, 0.14, boardM, 0.06); b.position.set(x, 0.75, z); b.rotation.y = Math.atan2(-(z1 - z0), x1 - x0); scene.add(b);
-        for (const s of [-1.4, 1.4]) { const f = rbox(0.5, 0.3, 0.6, footM, 0.08); f.position.set(x + Math.cos(b.rotation.y) * s, 0.15, z - Math.sin(b.rotation.y) * s); scene.add(f); }
+        const b = rbox(3.3, 0.8, 0.14, boardM, 0.06); b.position.set(x, 0.75, z); b.rotation.y = Math.atan2(-(z1 - z0), x1 - x0); sg.add(b);
+        for (const s of [-1.4, 1.4]) { const f = rbox(0.5, 0.3, 0.6, footM, 0.08); f.position.set(x + Math.cos(b.rotation.y) * s, 0.15, z - Math.sin(b.rotation.y) * s); sg.add(f); }
       }
     };
     run(-hw, hd, hw, hd); run(hw, hd, hw, -hd); run(hw, -hd, -hw, -hd); run(-hw, -hd, -hw, hd);
     const coneM = mat('#ff7a1a'), bandM = mat('#ffffff');
     [[-2.6, hd - 1], [2.6, hd - 1]].concat(world.court ? [[world.court.x0, world.court.z0], [world.court.x1, world.court.z1]] : []).forEach(([x, z]) => {
-      const c = new THREE.Group(); c.position.set(x, 0, z); scene.add(c);
+      const c = new THREE.Group(); c.position.set(x, 0, z); sg.add(c);
       const base = rbox(0.9, 0.12, 0.9, coneM, 0.05); base.position.y = 0.06; c.add(base);
       const cone = new THREE.Mesh(new THREE.ConeGeometry(0.34, 1.0, 18), coneM); cone.position.y = 0.6; cone.castShadow = true; c.add(cone);
       const band = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 0.16, 18), bandM); band.position.y = 0.62; c.add(band);
     });
-    for (let i = 0; i < 6; i++) { const b = rbox(1.1, 0.5, 0.6, mat(['#e07a5f', '#d96b50'][i % 2]), 0.08); b.position.set(-hw + 3 + (i % 3) * 1.15, 0.25 + Math.floor(i / 3) * 0.5, -hd + 2); scene.add(b); }
+    for (let i = 0; i < 6; i++) { const b = rbox(1.1, 0.5, 0.6, mat(['#e07a5f', '#d96b50'][i % 2]), 0.08); b.position.set(-hw + 3 + (i % 3) * 1.15, 0.25 + Math.floor(i / 3) * 0.5, -hd + 2); sg.add(b); }
     // tower crane at the north-east corner, its jib swinging over the site
-    const crane = new THREE.Group(); crane.position.set(hw - 3, 0, -hd + 3); scene.add(crane);
+    const crane = world.crane = new THREE.Group(); crane.position.set(hw - 3, 0, -hd + 3); scene.add(crane);
     const latM = (rx, ry) => mat('#ffffff', { map: latticeTex(rx, ry), transparent: true, alphaTest: 0.5, side: THREE.DoubleSide });
     const foot = rbox(3.2, 0.6, 3.2, mat('#9aa0a8'), 0.1); foot.position.y = 0.3; crane.add(foot);
     const tall = Math.max(22, Math.min(40, H * Math.max(...(doc.buildings || []).map((b) => (b.levels || []).length), 3) + 12));
@@ -301,10 +310,10 @@ export function createScene(host) {
     const peak = new THREE.Mesh(new THREE.ConeGeometry(0.9, 3.4, 4), latM(1, 3)); peak.position.y = 2.2; peak.rotation.y = Math.PI / 4; jib.add(peak);
     const trolley = new THREE.Group(); trolley.position.x = 15; jib.add(trolley); world.trolley = trolley;
     const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 12, 6), mat('#3b3f48')); cable.position.y = -6; trolley.add(cable);
-    const hook = rbox(0.9, 0.7, 0.9, mat('#ffc21a'), 0.2); hook.position.y = -12.4; trolley.add(hook);
+    const hook = rbox(0.9, 0.7, 0.9, mat('#ffc21a'), 0.2); hook.position.y = -12.4; trolley.add(hook); world.hook = { hook, cable };
   }
   function scaffold(g, b, roofY) {
-    const sc = new THREE.Group(); g.add(sc); g = sc;
+    const sc = new THREE.Group(); g.add(sc); g = sc; world.scaffolds.push(sc);
     const poleM = mat('#9aa6b2'), plankM = mat('#d9a35f'), HT = roofY + 1.6, off = 0.9;
     const hx = b.w / 2 + off, hz = b.d / 2 + off;
     const pole = (x, z) => { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, HT, 6), poleM); p.position.set(x, HT / 2, z); p.castShadow = true; g.add(p); };
@@ -414,6 +423,130 @@ export function createScene(host) {
     tween({ dur: 0.7, ease: ease.inout, update: (k) => { controls.target.lerpVectors(from, to, k); camera.position.copy(controls.target).add(off); } });
   }
 
+
+  /* ---- the intake pad, where files land ---- */
+  function intake(g) {
+    const pad = rbox(5, 0.3, 4, mat('#ffffff'), 0.1); pad.position.set(-g.w / 2 + 4.5, 0.15, -g.d / 2 + 4); scene.add(pad);
+    decor(pad); world.intake = pad.position.clone();
+    label('Intake', 'blk in', scene, new THREE.Vector3(pad.position.x, 1.2, pad.position.z));
+  }
+
+  /* ---- effects the journey plays (spec §3.2), from the mockup's timeline. Each returns a Promise. ---- */
+  let fxScale = 1;
+  const fxTween = (o) => new Promise((resolve) => {
+    const done = o.done;
+    tween(Object.assign(o, { dur: o.dur * fxScale, delay: (o.delay || 0) * fxScale, settle: resolve, done: () => { if (done) done(); resolve(); } }));
+  });
+  const all = (ps) => Promise.all(ps).then(() => {});
+  const fx = {
+    speed(k) { fxScale = k > 0 ? k : 1; },
+    flatten(site) {                              // the empty plot a replay starts from
+      if (!world) return;
+      world.levels.forEach((L) => L.scale.set(1, 0.001, 1));
+      world.roofs.forEach((r) => r.scale.setScalar(0.001));
+      if (site) world.scaffolds.forEach((sc) => sc.scale.set(1, 0.001, 1));
+      dirty = true;
+    },
+    riseAll(seconds = 3) {                       // buildings rise floor by floor; roofs pop
+      if (!world) return Promise.resolve();
+      const n = Math.max(1, world.levels.length), step = (seconds * 0.7) / n;
+      world.levels.forEach((L) => L.scale.set(1, 0.001, 1));
+      world.roofs.forEach((r) => r.scale.setScalar(0.001));
+      return all([
+        ...world.levels.map((L, i) => fxTween({ delay: i * step, dur: 0.6, ease: ease.back, update: (k) => { L.scale.y = Math.max(0.001, k); } })),
+        ...world.roofs.map((r, i) => fxTween({ delay: seconds * 0.7 + i * 0.03, dur: 0.5, ease: ease.back, update: (k) => r.scale.setScalar(Math.max(0.001, k)) })),
+      ]);
+    },
+    siteRaise(seconds = 4, hook = true) {        // scaffolding up, then each floor lowered in, the hook dipping
+      if (!world) return Promise.resolve();
+      const n = Math.max(1, world.levels.length), step = (seconds * 0.65) / n;
+      const ys = world.levels.map((L) => L.position.y);
+      world.scaffolds.forEach((sc) => sc.scale.set(1, 0.001, 1));
+      world.levels.forEach((L) => { L.visible = false; });
+      world.roofs.forEach((r) => r.scale.setScalar(0.001));
+      const ps = world.scaffolds.map((sc, i) => fxTween({ delay: i * 0.12, dur: 0.6, ease: ease.back, update: (k) => sc.scale.set(1, Math.max(0.001, k), 1) }));
+      world.levels.forEach((L, i) => {
+        ps.push(fxTween({ delay: 0.7 + i * step, dur: 0.55, ease: ease.back, update: (k) => { L.visible = true; L.position.y = ys[i] + 14 * (1 - k); } }));
+        if (hook && world.hook) ps.push(fxTween({ delay: 0.7 + i * step, dur: 0.3, update: (k) => { const d = 4 + 8 * k; world.hook.cable.scale.y = d / 12; world.hook.cable.position.y = -d / 2; world.hook.hook.position.y = -d - 0.4; } }));
+      });
+      ps.push(...world.roofs.map((r, i) => fxTween({ delay: 0.7 + seconds * 0.65 + i * 0.03, dur: 0.5, ease: ease.back, update: (k) => r.scale.setScalar(Math.max(0.001, k)) })));
+      return all(ps);
+    },
+    flyFiles(names) {                            // sheets fly into the intake pad; a chip names each file
+      if (!world || !world.intake) return Promise.resolve();
+      const g = world.grounds, to = world.intake;
+      return all((names || []).slice(0, 4).map((name, n) => {
+        const sheet = new THREE.Group(); scene.add(sheet); decor(sheet);
+        sheet.add(rbox(2.4, 0.12, 3.1, mat('#ffffff'), 0.05));
+        const strip = rbox(2.42, 0.14, 0.7, mat(T.dept[n % T.dept.length]), 0.05); strip.position.z = -1.2; sheet.add(strip);
+        const a = new THREE.Vector3(-g.w / 2 - 14, 26, g.d / 2), mid = new THREE.Vector3(-g.w / 2 - 6, 16, 0), b = to.clone().add(new THREE.Vector3(0, 0.35 + n * 0.16, 0));
+        return fxTween({ delay: n * 0.6, dur: 1.5, ease: ease.inout, update: (k) => {
+          sheet.position.copy(a).lerp(mid, k).lerp(new THREE.Vector3().copy(mid).lerp(b, k), k);
+          sheet.rotation.set((1 - k) * 1.6, (1 - k) * 2.4 + n * 0.25, (1 - k) * 0.6);
+        }, done: () => {
+          const chip = label('✓ ' + name, 'campus-chip', scene, b.clone().add(new THREE.Vector3(0, 1.6 + n * 0.9, 0)));
+          setTimeout(() => {                     // the chip and its sheet go together
+            chip.element.remove();
+            if (sheet.parent) { sheet.parent.remove(sheet); sheet.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material && mats.includes(o.material)) { mats.splice(mats.indexOf(o.material), 1); o.material.dispose(); } }); }
+            if (scene) scene.remove(chip);
+          }, 2500 * fxScale);
+        } });
+      }));
+    },
+    flicker(n = 4) {                             // the solver at work: rooms flash a lesson colour and settle back
+      if (!world) return;
+      const recs = Object.values(world.rooms).filter((r) => !r.field);
+      for (let i = 0; i < n && recs.length; i++) {
+        const r = recs[Math.floor(rnd() * recs.length)], from = r.mat.color.clone(), c = new THREE.Color(T.dept[Math.floor(rnd() * T.dept.length)]);
+        fxTween({ dur: 0.4, ease: ease.lin, update: (k) => { r.mat.color.lerpColors(from, c, Math.sin(k * Math.PI)); } });
+      }
+    },
+    pulse() {                                    // every lit room, once
+      if (!world) return Promise.resolve();
+      return all(Object.values(world.rooms).filter((r) => !r.field && r.key && r.key.length > 7).map((r, i) =>
+        fxTween({ delay: (i % 12) * 0.03, dur: 0.45, ease: ease.lin, update: (k) => { const s = 1 + Math.sin(k * Math.PI) * 0.22; r.mesh.scale.set(s, s, s); } })));
+    },
+    sweep() {                                    // the check: a green ring across the school
+      if (!world) return Promise.resolve();
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.9, 1.25, 96), new THREE.MeshBasicMaterial({ color: '#22c88a', transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+      mats.push(ring.material); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.3; scene.add(ring); decor(ring);
+      const R = 0.6 * Math.hypot(world.grounds.w, world.grounds.d);
+      return fxTween({ dur: 1.8, update: (k) => { ring.scale.setScalar(1 + k * R); ring.material.opacity = 0.9 * (1 - k); }, done: () => { scene.remove(ring); ring.geometry.dispose(); } });
+    },
+    turn(seconds = 2) {                          // one turn of the camera about the school, back where it began
+      const off = camera.position.clone().sub(controls.target), sph = new THREE.Spherical().setFromVector3(off), t0 = sph.theta;
+      return fxTween({ dur: seconds, ease: ease.inout, update: (k) => { sph.theta = t0 + Math.PI * 2 * k; camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(sph)); } });
+    },
+    confetti() {
+      if (!world) return Promise.resolve();
+      const geo = new THREE.PlaneGeometry(0.42, 0.24), cols = T.dept.concat(['#ffffff', '#ffd23f']), bits = [];
+      for (let i = 0; i < 180; i++) {
+        const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: cols[i % cols.length], side: THREE.DoubleSide }));
+        mats.push(m.material); m.position.set((rnd() - 0.5) * 10, 14 + rnd() * 6, (rnd() - 0.5) * 10); scene.add(m); decor(m);
+        bits.push({ m, v: new THREE.Vector3((rnd() - 0.5) * 18, rnd() * 10, (rnd() - 0.5) * 18), s: new THREE.Vector3(rnd() * 8, rnd() * 8, rnd() * 8) });
+      }
+      return fxTween({ dur: 4.5, ease: ease.lin, update: () => {
+        bits.forEach((b) => { b.v.y -= 0.35; b.v.multiplyScalar(0.985); b.m.position.addScaledVector(b.v, 0.016); b.m.rotation.x += b.s.x * 0.016; b.m.rotation.y += b.s.y * 0.016; });
+      }, done: () => { bits.forEach((b) => scene.remove(b.m)); geo.dispose(); } });
+    },
+    handover(seconds = 2.5) {                    // the site becomes the school
+      if (!world || !theme.site) return Promise.resolve();
+      const F = THEMES.site, ps = [];
+      world.scaffolds.forEach((sc, n) => ps.push(fxTween({ delay: n * 0.15, dur: 0.7, ease: ease.inout, update: (k) => sc.scale.set(1, Math.max(0.001, 1 - k), 1), done: () => { sc.visible = false; } })));
+      if (world.site) ps.push(fxTween({ delay: 0.3, dur: 0.8, ease: ease.inout, update: (k) => world.site.scale.set(1, Math.max(0.001, 1 - k), 1), done: () => { world.site.visible = false; } }));
+      if (world.crane) { world.jib = null; ps.push(fxTween({ delay: 0.2, dur: 1.2, ease: ease.inout, update: (k) => { world.crane.position.y = -30 * k; }, done: () => { world.crane.visible = false; } })); }
+      const C = (a, b) => [new THREE.Color(a), new THREE.Color(b)], [g0, g1] = C(F.grass, F.grassFinal), [w0, w1] = C(F.wall, F.wallFinal);
+      ps.push(fxTween({ delay: 0.6, dur: seconds * 0.5, update: (k) => {
+        world.groundM.color.lerpColors(g0, g1, k); world.wallM.color.lerpColors(w0, w1, k);
+        world.roofMats.forEach(({ m, n }) => m.color.lerpColors(new THREE.Color(F.roofs[0]), new THREE.Color(F.roofsFinal[n % 3]), k));
+      }, done: () => { world.fields.forEach((m) => { if (m.map) m.map.dispose(); m.map = fieldTexture(true); m.needsUpdate = true; }); } }));
+      const before = world.trees.length; trees(world.grounds);
+      world.trees.slice(before).forEach((t, n) => { decor(t); t.scale.setScalar(0.001); ps.push(fxTween({ delay: seconds * 0.5 + n * 0.05, dur: 0.6, ease: ease.back, update: (k) => t.scale.setScalar(Math.max(0.001, k)) })); });
+      return all(ps);
+    },
+    autoRotate(on, speed = 0.4) { controls.autoRotate = !!on; controls.autoRotateSpeed = speed; dirty = true; },
+  };
+
   /* ---- picking: a click, not a drag ---- */
   const ray = new THREE.Raycaster(), ptr = new THREE.Vector2(); let down = null;
   renderer.domElement.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
@@ -463,7 +596,7 @@ export function createScene(host) {
       if (!prev || prev.w !== g.w || prev.d !== g.d) fitted = false;     // keep the user's view when the school is the same size
       sizeTo(true);
     },
-    setOccupancy, setPins, setWalkers, highlight, focusRoom,
+    setOccupancy, setPins, setWalkers, highlight, focusRoom, fx,
     onPick(fn) { picker = fn; },
     roomAnchor(id) { return world && world.rooms[id] ? world.rooms[id].anchor : null; },
     resize() { sizeTo(true); },

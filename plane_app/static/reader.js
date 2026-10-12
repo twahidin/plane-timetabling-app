@@ -114,6 +114,7 @@
       apply.disabled = true; discard.disabled = true;
       try {
         const out = await call(`/api/readings/${slug(r.id)}/apply`, 'POST');
+        document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'files', files: [{ name: r.file, status: 'imported' }] } }));
         if (typeof window.loadPlan === 'function') Promise.resolve(window.loadPlan()).catch(() => {});
         if (typeof window.loadBoard === 'function') Promise.resolve(window.loadBoard()).catch(() => {});
         if (typeof window.loadWizard === 'function') Promise.resolve(window.loadWizard()).catch(() => {});

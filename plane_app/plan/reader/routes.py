@@ -22,7 +22,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
-from ... import auth
+from ... import auth, journey
 from ...llm import ProviderError
 from .. import model as M
 from . import readers, writer
@@ -182,6 +182,7 @@ def make_router(db) -> APIRouter:
             except M.PlanError as e:
                 raise HTTPException(409, f"the plan has changed and this reading no longer fits it: {e}")
             db.set_value("plan", new)
+            journey.stamp(db, "files")
             rev = int((db.get_value("plan") or {}).get("rev") or 0)
             remove(db, rid)
         out = {"rev": rev, "counts": reading.get("counts") or {}, "reader": None}

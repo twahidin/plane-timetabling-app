@@ -2,7 +2,9 @@
    play, ←/→), the legend, "All clashes", teacher search, the room and teacher cards (a bottom sheet when
    the view is narrow) and the hint. Plain DOM over the canvas; all text is set with textContent.
    createUI(host, h) → ui. `h` is main.js's: period(t), info.room(id), info.teacher(id), search(q),
-   allClashes(on), select(eventId), focus(roomId). */
+   allClashes(on), select(eventId), focus(roomId), replay(), present(on), pause().
+   The journey (spec §3.3): "▶ Build" plays the build; "Present" (in full screen) is presentation mode —
+   host gets .presenting, the bar, legend, hint and card hide and the counters (.campus-kpis) stay. */
 import { labelParts } from 'campus/data';
 
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -22,13 +24,23 @@ export function createUI(host, h) {
   const search = el('input'); search.type = 'search'; search.placeholder = 'Teacher or room'; search.setAttribute('aria-label', 'Find a teacher or room');
   const results = el('ul', 'campus-results'); results.hidden = true;
   find.append(search, results);
-  bar.append(prev, daySel, perSel, next, play, all, find);
+  const build = el('button', 'btn', '▶ Build'); build.type = 'button'; build.title = 'Play the build from the files to the checked timetable';
+  const present = el('button', 'btn campus-present', 'Present'); present.type = 'button'; present.title = 'Presentation mode: Space pauses, Esc leaves';
+  bar.append(prev, daySel, perSel, next, play, all, build, present, find);
+  const kpis = el('div', 'campus-kpis'); kpis.setAttribute('aria-live', 'polite');
+  const KPI = [['lessons', 'Lessons placed'], ['teachers', 'Teachers deployed'], ['rooms', 'Rooms in use now'], ['clashes', 'Clashes']];
+  const kpi = {};
+  for (const [k, name] of KPI) {
+    const c = el('div', 'campus-kpi'); const v = el('b', null, '–'); c.append(v, el('span', null, name)); kpis.append(c);
+    kpi[k] = { c, v, n: null, of: null, raf: 0 };
+  }
+  kpis.hidden = true;
   const legend = el('div', 'campus-legend');
   const hint = el('div', 'campus-hint'); hint.hidden = true;
   const hintText = el('span'); const hintClose = el('button', 'btn ghost icon', '×'); hintClose.type = 'button'; hintClose.setAttribute('aria-label', 'Dismiss');
   hint.append(hintText, hintClose);
   const card = el('aside', 'campus-card'); card.hidden = true;
-  host.append(legend, hint, card, bar);
+  host.append(legend, kpis, hint, card, bar);
 
   function go(nt) {
     const total = spd * days;
@@ -44,6 +56,28 @@ export function createUI(host, h) {
     if (playing) { clearInterval(playing); playing = 0; play.textContent = '▶ Play'; return; }
     playing = setInterval(() => { if (!document.hidden) go(t + 1); }, 2500); play.textContent = '❚❚ Pause';
   });
+  build.addEventListener('click', () => h.replay());
+  present.addEventListener('click', () => h.present(!host.classList.contains('presenting')));
+  function presentKeys(e) {                       // while presenting, from anywhere on the page
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || document.querySelector('dialog[open]')) return;
+    if (e.key === 'Escape') { e.preventDefault(); h.present(false); }
+    else if (e.key === ' ' && !e.target.closest('input,select,textarea,a,summary,[contenteditable],[role=button]')
+             && (!e.target.closest('button') || e.target === present)) { e.preventDefault(); h.pause(); }
+  }
+  function count(k, n, of, instant) {             // counts up from the last value over 0.6 s
+    const x = kpi[k]; cancelAnimationFrame(x.raf);
+    const text = (v) => (of == null ? String(v) : `${v} / ${of}`);
+    const from = x.n == null || instant ? n : x.n;
+    x.n = n; x.of = of;
+    if (from === n) { x.v.textContent = text(n); return; }
+    const t0 = performance.now();
+    const step = (now) => {
+      const k2 = Math.min(1, (now - t0) / 600);
+      x.v.textContent = text(Math.round(from + (n - from) * (1 - Math.pow(1 - k2, 3))));
+      if (k2 < 1) x.raf = requestAnimationFrame(step);
+    };
+    x.raf = requestAnimationFrame(step);
+  }
   all.addEventListener('click', () => {
     const on = all.getAttribute('aria-pressed') !== 'true';
     all.setAttribute('aria-pressed', String(on)); all.classList.toggle('on', on); h.allClashes(on);
@@ -144,7 +178,7 @@ export function createUI(host, h) {
       const none = !(doc.time && doc.time.labels && doc.time.labels.length);
       [prev, next, daySel, perSel, play].forEach((c) => { c.disabled = none; });
       all.hidden = !(doc.clashes && doc.clashes.length);
-      this.refresh();
+      this.refresh(); this.relayout();
     },
     refresh() {                                   // an open card follows the period and the data; gone → closed
       const o = open;
@@ -157,7 +191,35 @@ export function createUI(host, h) {
     showRoom, showTeacher, hideCard,
     setLegend() {},
     setHint(text) { hintText.textContent = text || ''; hint.hidden = !text || text === dismissed; },
-    relayout() { if (!card.hidden) relayout(); },
+    relayout() {                                  // counters: top right, or one row under the legend when narrow
+      let row = host.clientWidth < 700;
+      if (!row && !kpis.hidden) {                   // wide, but a long legend would sit under them: the row too
+        kpis.classList.remove('row'); kpis.style.top = '';
+        const a = legend.getBoundingClientRect(), b = kpis.getBoundingClientRect();
+        row = a.width > 0 && a.right > b.left - 8 && a.top < b.bottom;
+      }
+      kpis.classList.toggle('row', row);
+      kpis.style.top = row ? legend.offsetTop + legend.offsetHeight + 8 + 'px' : '';
+      if (!card.hidden) relayout();
+    },
     stop() { if (playing) { clearInterval(playing); playing = 0; play.textContent = '▶ Play'; } },
+    setMotion(level) { build.hidden = level === 'off'; },
+    setCounters(c, instant) {                     // {lessons: [n, total], teachers: [n, total], rooms: [n, total], clashes: n}
+      if (!c) return;
+      kpis.hidden = false;
+      if (!kpis.dataset.placed) { kpis.dataset.placed = '1'; this.relayout(); }
+      for (const k of ['lessons', 'teachers', 'rooms']) {
+        if (c[k]) count(k, c[k][0], c[k][1], instant);
+        else { cancelAnimationFrame(kpi[k].raf); kpi[k].n = null; kpi[k].v.textContent = '–'; }   // nothing known any more
+      }
+      if (c.clashes != null) { count('clashes', c.clashes, null, instant); kpi.clashes.c.classList.toggle('bad', c.clashes > 0); }
+    },
+    setPresenting(on) {
+      host.classList.toggle('presenting', !!on);
+      present.textContent = on ? 'Leave' : 'Present';
+      if (on) { this.stop(); hideCard(); present.blur(); document.addEventListener('keydown', presentKeys); }   // Space pauses, never clicks Leave
+      else document.removeEventListener('keydown', presentKeys);
+    },
+    dispose() { this.setPresenting(false); for (const k in kpi) cancelAnimationFrame(kpi[k].raf); },
   };
 }

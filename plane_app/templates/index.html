@@ -14,13 +14,15 @@
   "campus/data": "{{ asset('campus/data.js') }}",
   "campus/themes": "{{ asset('campus/themes.js') }}",
   "campus/scene": "{{ asset('campus/scene.js') }}",
-  "campus/ui": "{{ asset('campus/ui.js') }}"
+  "campus/ui": "{{ asset('campus/ui.js') }}",
+  "campus/stages": "{{ asset('campus/stages.js') }}"
 } }
 </script>
 </head>
 <body data-page="index">
 {% set appbar_page = "index" %}
 {% include "partials/appbar.html" %}
+{% include "partials/journey.html" %}
 <h1 class="sr-only">Plane Timetabling</h1>
 
 <div class="app-body">
@@ -493,6 +495,7 @@
 <script src="{{ asset('grid.js') }}"></script>
 <script src="{{ asset('tabs.js') }}"></script>
 <script src="{{ asset('learning.js') }}"></script>
+<script src="{{ asset('journey.js') }}"></script>
 <script src="{{ asset('campus-boot.js') }}"></script>
 <script src="{{ asset('shell.js') }}"></script>
 </body>

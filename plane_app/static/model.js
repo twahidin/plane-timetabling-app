@@ -649,6 +649,7 @@
       }
       await loadFromApi();
       if (window.loadDraft) window.loadDraft();
+      if (res.ok) document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'timetable' } }));
     } catch (e) { problem = e.message; }
     finally { btn.disabled = false; if (problem) statusError(problem); }
   });

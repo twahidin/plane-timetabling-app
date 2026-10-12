@@ -351,6 +351,7 @@
     plan = data.plan; issues = data.issues || []; issueCounts = null;
     applyVocabulary(plan.vocabulary);
     renderAll();
+    document.dispatchEvent(new CustomEvent('plane:plan'));        // the journey bar refetches
   }
   window.loadPlan = loadPlan;
 
@@ -389,6 +390,7 @@
       applyVocabulary(plan.vocabulary);
       renderAll();
       notify('good', body.note || 'Workbook imported.');
+      document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'files', files: [{ name: main.name, status: 'imported' }] } }));
       if (window.loadBoard) window.loadBoard();
       // A workbook can be the first thing that gives the plan requirements: the #wizard card
       // (chat.js's counterpart, hidden once a plan exists) must re-check itself here too.
@@ -421,6 +423,7 @@
       notify('good', `Generated: ${s.teachers || 0} teachers, ${s.groups || 0} groups, ${s.bands || 0} bands, ${s.events || 0} events.${warnText}`);
       if (window.showIntakeTab) window.showIntakeTab('draft');
       if (window.loadDraft) await window.loadDraft();
+      document.dispatchEvent(new CustomEvent('plane:journey', { detail: { stage: 'draft' } }));
     } catch (e) { notify('error', e.message); }
     finally { renderIssues(); if (window.loadBoard) window.loadBoard(); }
   });

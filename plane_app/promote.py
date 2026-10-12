@@ -1,6 +1,7 @@
 """The one place a build result becomes the live timetable."""
 from __future__ import annotations
 
+from . import journey
 from .db import Db
 from .learning import log as decisions
 
@@ -20,6 +21,7 @@ def promote_build(db: Db, result: dict, how: str = "quick", preset: str | None =
     if settled or all_fixed:
         before = _placements(db.get_org("live"))            # read before the live timetable is replaced
         db.promote(result["organisation"], {"ok": not clashes, "clashes": clashes})
+        journey.stamp(db, "timetable")
         _log_solve(db, how, preset, before)
         return True
     return False

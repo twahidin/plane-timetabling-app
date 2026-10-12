@@ -1,0 +1,9 @@
+{#- The timetable's journey (spec 2026-10-11-campus-looks-design.md §3.1); journey.js fills the states and times. -#}
+<nav class="journey" id="journey" aria-label="Timetable journey">
+  <ol>
+    {%- for key, label, tab in [("files", "Files read", "project"), ("plan", "Plan ready", "requirements"), ("draft", "Draft", "build"),
+                                ("timetable", "Timetable", "build"), ("checked", "Checked", "consolidation")] %}
+    <li><button type="button" class="journey-step todo" data-step="{{ key }}" data-tab="{{ tab }}"><span class="dot" aria-hidden="true"></span><span class="t">{{ label }}</span><span class="w"></span></button></li>
+    {%- endfor %}
+  </ol>
+</nav>

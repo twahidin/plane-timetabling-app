@@ -294,6 +294,30 @@ The campus is served by `GET /api/campus` (`plane_app/campus.py`, which also lay
 drawn by `static/campus/` with Three.js r160, shipped under `static/vendor/three-0.160.0/` (MIT); nothing
 is loaded from a CDN. It renders only while visible and lowers its quality on slow devices.
 
+## Journey
+
+A slim bar under the top bar shows where the school is on the way to a timetable: **Files read →
+Plan ready → Draft → Timetable → Checked**. Each step is reached (with the time it was first reached),
+the current one, or still to do; a step that was reached but is no longer true (a new clash after
+Checked, a blocking plan issue after Plan ready) turns amber rather than staying green. Clicking a step
+opens its tab. The bar comes from `GET /api/journey` (`plane_app/journey.py`); the first-reached times
+are kept per timetable and go with it when it is deleted. The full-screen 3D views hide the bar.
+
+In Toy town and Construction the campus plays each step as it happens: the files fly in to the intake
+pad, the buildings rise (in Construction the scaffolding goes up and the crane lowers each floor), the
+lessons pop into rooms, rooms flicker while the solver works, and a clean check sweeps the school (in
+Construction the site is handed over and becomes the finished school). If the campus is not on screen,
+the latest of each step waits and a "Watch it on the campus ▶" note offers to show it. Classic shows the
+bar only.
+
+- **▶ Build** replays the whole story on the current data (about 20 seconds) and ends on the true state.
+- **Present** (in full screen) is presentation mode for a meeting: the build once, then a new period
+  every 4 seconds with the camera turning slowly. Space pauses; Esc, another tab or a reload leaves.
+- **Counters** on the campus show lessons placed, teachers deployed, rooms in use this period and
+  clashes, counting up as they change.
+- **Animations: Full · Reduced · Off** (top bar, this browser only) sets how much moves. Reduced is the
+  default when the device asks for reduced motion; Off shows each end state at once and hides ▶ Build.
+
 ## Department accounts
 
 The timetabler logs in with the admin password, leaving Username blank. Heads of department log in
