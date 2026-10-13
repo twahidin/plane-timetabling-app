@@ -200,6 +200,7 @@ export function createUI(host, h) {
         row = a.width > 0 && a.right > b.left - 8 && a.top < b.bottom;
       }
       kpis.classList.toggle('row', row);
+      hint.style.bottom = bar.offsetHeight + 24 + 'px';   // the hint sits just above the period bar, clear of the legend and counters
       kpis.style.top = row ? legend.offsetTop + legend.offsetHeight + 8 + 'px' : '';
       if (!card.hidden) relayout();
     },

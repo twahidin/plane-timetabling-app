@@ -761,7 +761,7 @@
   .campus-legend:empty { display: none; }
   .campus-key { display: inline-flex; align-items: center; gap: 5px; }
   .campus-key .dot, .campus-card .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .campus-hint { position: absolute; left: 50%; top: var(--space-4); transform: translateX(-50%); display: flex; gap: var(--space-2); align-items: center; max-width: min(520px, 90%);
+  .campus-hint { position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%);   /* above the period bar (ui.js sets bottom from its height) */ display: flex; gap: var(--space-2); align-items: center; max-width: min(520px, 90%);
                  font-size: 12.5px; padding: 6px 6px 6px 12px; background: var(--color-surface); border-radius: var(--radius-md); box-shadow: var(--shadow-md); z-index: 3; }
   .campus-hint[hidden], .campus-card[hidden] { display: none; }
   .campus-card { position: absolute; right: var(--space-4); top: var(--space-4); width: 290px; max-height: calc(100% - 100px); overflow: auto; padding: var(--space-6);
@@ -804,6 +804,14 @@
   .tab-actions { display: flex; align-items: center; gap: var(--space-3); }
   .docked { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 40%); gap: var(--space-4); align-items: start; }
   #tab-summary .docked { grid-template-columns: minmax(0, 1fr) minmax(280px, 30%); }   /* the grid gets the room */
+  /* Build and Consolidation: the words on top, the 3D view across the whole pane below them */
+  #tab-build .docked, #tab-consolidation .docked { grid-template-columns: minmax(0, 1fr); }
+  #tab-build .model-dock .view, #tab-consolidation .model-dock .view { height: clamp(360px, 58vh, 640px); }
+  #tab-build .campus-view, #tab-consolidation .campus-view { min-height: clamp(360px, 58vh, 640px); }
+  /* the long lists (draft, bookings, clashes) sit below the view, so it is never pushed off screen */
+  .docked-below { min-width: 0; }
+  .docked-below:not(:has(> :not([hidden]))) { display: none; }
+  #consolidation-clashes:not(:has(li)) { display: none; }
   .model-dock { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }   /* not sticky: a sticky dock would trap the full-screen view's z-index */
   .model-dock #model-view { display: flex; flex-direction: column; gap: var(--space-2); border-radius: var(--radius-md); box-shadow: var(--shadow-sm);
                             overflow: hidden; padding: var(--space-3);
