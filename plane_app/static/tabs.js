@@ -38,6 +38,7 @@
     const body = node('tbody');
     locs.forEach((l, i) => {
       const tr = node('tr');
+      tr.dataset.id = l.id;                          // the setup campus's "Show in the table" (window.planeSetup.highlightRow)
       const sw = node('span', 'sw');
       sw.style.background = l.rest ? 'var(--rest)' : `var(--loc-${(i % 5) + 1})`;   // the 3D view's colours
       const first = node('td'); first.appendChild(sw); tr.appendChild(first);

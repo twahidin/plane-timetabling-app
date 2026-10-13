@@ -58,6 +58,7 @@ export function createScene(host) {
     }
   }
   function clear() {
+    dropOverlay();
     tweens.forEach((w) => { if (w.settle) w.settle(); });   // effects waiting on a dropped tween still finish
     tweens = [];
     if (!scene) return;
@@ -121,7 +122,8 @@ export function createScene(host) {
     scene.add(sun);
 
     world = { sun, grounds: g, rooms: {}, pickables: [], walkers: [], clouds: [], pins: [], mark: null, jib: null, trolley: null, boxes: [],
-              levels: [], roofs: [], scaffolds: [], roofMats: [], fields: [], trees: [], site: null, crane: null, hook: null };
+              levels: [], roofs: [], scaffolds: [], roofMats: [], fields: [], trees: [], site: null, crane: null, hook: null,
+              docRooms: doc.rooms || [], schoolGroups: [], schoolLabels: [], fieldMeshes: [], intakeObjs: [], schoolMode: 'full', ghosted: null };
     ground(g);
     courtyardPaths(doc);
     (doc.areas || []).forEach(field);
@@ -143,6 +145,7 @@ export function createScene(host) {
     if (theme.name === 'toy') clouds(g);
     if (theme.site) site(doc);
     scene.children.slice(before).forEach(decor);
+    showSchool('full');
     dirty = true;
   }
 
@@ -178,18 +181,18 @@ export function createScene(host) {
   function field(a) {
     const m = mat('#ffffff', { map: fieldTexture(false), roughness: 0.9 });
     const f = rbox(a.w, 0.16, a.d, m, 0.05); f.position.set(a.x, 0.08, a.z); f.castShadow = false; scene.add(f);
-    world.fields.push(m);
+    world.fields.push(m); world.fieldMeshes.push(f);
     if (a.room) {
       f.userData = { kind: 'room', id: a.room };
       world.pickables.push(f);
       const rec = { mesh: f, mat: m, anchor: new THREE.Vector3(a.x, 0.5, a.z), home: null, field: true };
       world.rooms[a.room] = rec;
-      label(a.name, 'blk in', scene, new THREE.Vector3(a.x, 1.2, a.z - a.d / 2));
+      world.schoolLabels.push(label(a.name, 'blk in', scene, new THREE.Vector3(a.x, 1.2, a.z - a.d / 2)));
     }
   }
 
   function building(b, wallM, trimM, n) {
-    const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g);
+    const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g); world.schoolGroups.push(g);
     const per = b.per_facade || 1, levels = b.levels || [];
     for (let lv = 0; lv < levels.length; lv++) {
       const L = new THREE.Group(); L.position.y = lv * H; g.add(L); world.levels.push(L);
@@ -215,11 +218,11 @@ export function createScene(host) {
       const ac = rbox(1.4, 0.8, 1.1, world.sillM, 0.25); ac.position.set(-b.w / 3 + k * (b.w / 3), roofY + 0.9, -1); g.add(ac); world.roofs.push(ac);
     }
     if (theme.site) scaffold(g, b, roofY);
-    label(b.label, 'blk in', g, new THREE.Vector3(0, roofY + 2.0, 0));
+    world.schoolLabels.push(label(b.label, 'blk in', g, new THREE.Vector3(0, roofY + 2.0, 0)));
   }
 
   function hall(b, n) {
-    const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g);
+    const g = new THREE.Group(); g.position.set(b.x, 0, b.z); scene.add(g); world.schoolGroups.push(g);
     const L = new THREE.Group(); g.add(L); world.levels.push(L);
     const body = rbox(b.w, 4.4, b.d, world.wallM); body.position.y = 2.2; L.add(body);
     const dm = mat(T.winOff, { emissive: '#000000' });
@@ -235,7 +238,7 @@ export function createScene(host) {
     rg.translate(0, 0, -(b.d + 0.8) / 2);
     const rm = mat(theme.site ? T.roofs[0] : T.roofs[(n + 2) % 3]); world.roofMats.push({ m: rm, n: n + 2 });
     const roof = new THREE.Mesh(rg, rm); roof.position.y = 4.4; roof.castShadow = true; g.add(roof); world.roofs.push(roof);
-    label(b.label, 'blk in', g, new THREE.Vector3(0, 8.2, 0));
+    world.schoolLabels.push(label(b.label, 'blk in', g, new THREE.Vector3(0, 8.2, 0)));
   }
 
   function inBox(x, z, pad) {
@@ -431,7 +434,7 @@ export function createScene(host) {
   function intake(g) {
     const pad = rbox(5, 0.3, 4, mat('#ffffff'), 0.1); pad.position.set(-g.w / 2 + 4.5, 0.15, -g.d / 2 + 4); scene.add(pad);
     decor(pad); world.intake = pad.position.clone();
-    label('Intake', 'blk in', scene, new THREE.Vector3(pad.position.x, 1.2, pad.position.z));
+    world.intakeObjs = [pad, label('Intake', 'blk in', scene, new THREE.Vector3(pad.position.x, 1.2, pad.position.z))];
   }
 
   /* ---- effects the journey plays (spec §3.2), from the mockup's timeline. Each returns a Promise. ---- */
@@ -555,18 +558,134 @@ export function createScene(host) {
       return all(ps);
     },
     autoRotate(on, speed = 0.4) { controls.autoRotate = !!on; controls.autoRotateSpeed = speed; dirty = true; },
+    motion() { return window.planeMotion ? window.planeMotion.level() : 'full'; },   // Full, Reduced or Off, for the setup builders
   };
+
+  /* ---- the school as a setting for the setup scenes (spec 2026-10-13-setup-campus §2) ----
+     "full" as on Build; "ghost" the buildings faint (25 %), unlabelled and not clickable, the intake pad
+     and pitches as they are; "none" only the grounds, paths, trees (and clouds, the site fence). */
+  function showSchool(mode) {
+    if (!world) return;
+    const m = mode === 'ghost' || mode === 'none' ? mode : 'full';
+    world.schoolMode = m;
+    const school = world.schoolGroups;
+    if (m === 'ghost' && !world.ghosted) {                   // each material and shadow once, restored by "full"
+      const mats0 = new Map(), casts = new Map();
+      school.forEach((g) => g.traverse((o) => {
+        if (!o.isMesh) return;
+        casts.set(o, o.castShadow); o.castShadow = false;
+        for (const x of [].concat(o.material)) if (!mats0.has(x)) {
+          mats0.set(x, { transparent: x.transparent, opacity: x.opacity, depthWrite: x.depthWrite });
+          Object.assign(x, { transparent: true, opacity: x.opacity * 0.25, depthWrite: false }); x.needsUpdate = true;
+        }
+      }));
+      world.ghosted = { mats0, casts };
+    } else if (m !== 'ghost' && world.ghosted) {
+      world.ghosted.mats0.forEach((v, x) => { Object.assign(x, v); x.needsUpdate = true; });
+      world.ghosted.casts.forEach((v, o) => { o.castShadow = v; });
+      world.ghosted = null;
+    }
+    school.forEach((g) => { g.visible = m !== 'none'; });
+    world.schoolLabels.forEach((o) => { o.visible = m === 'full'; });   // CSS2D labels ignore a hidden parent
+    world.fieldMeshes.forEach((o) => { o.visible = m !== 'none'; });
+    world.intakeObjs.forEach((o) => { o.visible = m !== 'none'; });
+    if (world.crane) world.crane.visible = m !== 'none' && !(world.crane.position.y < 0);   // gone after a handover
+    dirty = true;
+  }
+
+  /* each room's window painted by colourOf(room) (room as in the campus document), unlit; pitches keep their
+     paint. setOccupancy's key no longer matches, so in Build the next period repaints every room. */
+  function colourRooms(colourOf) {
+    if (!world) return;
+    const byId = new Map(world.docRooms.map((r) => [r.id, r]));
+    for (const [id, rec] of Object.entries(world.rooms)) {
+      if (rec.field) continue;
+      const want = colourOf(byId.get(id) || { id }) || (rec.home ? T.home : T.winOff);
+      rec.rest = new THREE.Color(want);
+      rec.key = 'paint:' + want;
+      rec.mat.color.copy(rec.rest); rec.mat.emissive.set('#000000'); rec.mat.emissiveIntensity = 0;
+      rec.mesh.scale.set(1, 1, 1);
+    }
+    dirty = true;
+  }
+
+  /* ---- the setup overlay: one group a scene draws into; the next overlay() or build() takes it away ---- */
+  let ov = null;                                             // {group, mats, geoms, kit}
+  function dropOverlay() {
+    const was = ov; ov = null;
+    if (!was) return;
+    tweens = tweens.filter((w) => { if (w.ov !== was) return true; if (w.settle) w.settle(); return false; });
+    was.group.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.isInstancedMesh) o.dispose();
+      if (o.element) o.element.remove();
+      for (const x of [].concat(o.material || [])) { if (x.map) x.map.dispose(); x.dispose(); }
+    });
+    was.geoms.forEach((g) => g.dispose());
+    was.mats.forEach((x) => { const k = mats.indexOf(x); if (k >= 0) mats.splice(k, 1); if (x.map) x.map.dispose(); x.dispose(); });
+    if (was.group.parent) was.group.parent.remove(was.group);
+    dirty = true;
+  }
+  function overlay() {
+    dropOverlay();
+    if (!scene || !world) return null;
+    const group = new THREE.Group(); group.name = 'setup-overlay'; scene.add(group);
+    const rec = { group, mats: [], geoms: [] };
+    const live = () => ov === rec;                           // a builder still running for an older overlay draws nothing
+    const ovMat = (color, opts) => { const m = mat(color, opts); rec.mats.push(m); return m; };
+    const v3 = (p) => (p && p.isVector3 ? p.clone() : Array.isArray(p) ? new THREE.Vector3().fromArray(p) : new THREE.Vector3(p ? p.x || 0 : 0, p ? p.y || 0 : 0, p ? p.z || 0 : 0));
+    rec.kit = {
+      THREE, group, grounds: world.grounds,
+      T: Object.assign({}, T, { site: theme.site }),         // T.site: Construction, until the clean check
+      rbox, mat: ovMat, decor,
+      label: (text, cls, pos) => label(text, cls, group, v3(pos)),
+      tween(o) {
+        if (!live()) return Promise.resolve();
+        if (typeof o.ease === 'string') o.ease = ease[o.ease];
+        o.ov = rec; return fxTween(o);
+      },
+      pickable(object3d, hit) { object3d.userData.setup = hit; return object3d; },
+      instanced(geometry, material, count) {
+        const m = new THREE.InstancedMesh(geometry, material, count);
+        m.castShadow = true; m.receiveShadow = true;
+        m.frustumCulled = false;                             // its bounds move with the tweens
+        m.userData.instances = true;                         // picks report the instance: pickable(m, [hit per instance])
+        group.add(m); return m;
+      },
+      figureParts(colour) {                                  // the walker's look, each part placed for one instance matrix at the feet
+        const geo = (g) => { rec.geoms.push(g); return g; };
+        const body = { geometry: geo(new THREE.CapsuleGeometry(0.42, 0.55, 6, 14).translate(0, 0.85, 0)), material: ovMat(theme.site ? '#ff8a1f' : colour) };
+        const head = { geometry: geo(new THREE.SphereGeometry(0.55, 22, 18).translate(0, 1.95, 0)), material: ovMat(T.skin) };
+        const hair = theme.site                              // Construction: the hard hat in the figure's colour
+          ? { geometry: geo(new THREE.SphereGeometry(0.62, 22, 16, 0, Math.PI * 2, 0, Math.PI * 0.5).translate(0, 2.08, 0)), material: ovMat(colour) }
+          : { geometry: geo(new THREE.SphereGeometry(0.58, 22, 18, 0, Math.PI * 2, 0, Math.PI * 0.55).rotateX(-0.25).translate(0, 2.0, 0)), material: ovMat(T.hair) };
+        return { body, head, hair };
+      },
+    };
+    ov = rec; dirty = true;
+    return { group, kit: rec.kit };
+  }
 
   /* ---- picking: a click, not a drag ---- */
   const ray = new THREE.Raycaster(), ptr = new THREE.Vector2(); let down = null;
+  const shown = (o) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };   // the ray ignores a hidden parent
+  const inGhost = (o) => world.schoolMode === 'ghost' && world.schoolGroups.some((g) => { for (let p = o; p; p = p.parent) if (p === g) return true; return false; });
   renderer.domElement.addEventListener('pointerdown', (e) => { down = [e.clientX, e.clientY]; });
   renderer.domElement.addEventListener('pointerup', (e) => {
     if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6 || !world || !picker) return;
     const r = renderer.domElement.getBoundingClientRect();
     ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ptr, camera);
-    const hit = ray.intersectObjects(scene.children, true).find((h) => h.object.isMesh && h.object.visible && !h.object.userData.nopick);
-    const u = hit && hit.object.userData;
+    if (ov) ov.group.traverse((o) => { if (o.isInstancedMesh) o.boundingSphere = null; });   // instances may have moved since
+    const hit = ray.intersectObjects(scene.children, true).find((h) => h.object.isMesh && !h.object.userData.nopick && shown(h.object) && !inGhost(h.object));
+    if (!hit) return;
+    for (let o = hit.object; o; o = o.parent) {                 // an overlay object, or a part of one
+      if (o.userData.setup === undefined) continue;
+      const s = o.userData.setup, one = Array.isArray(s) && o.isInstancedMesh ? s[hit.instanceId] : s;
+      if (one !== undefined && one !== null) picker({ kind: 'setup', hit: one });
+      return;
+    }
+    const u = hit.object.userData;
     if (u && u.id && (u.kind === 'room' || u.kind === 'teacher')) picker({ kind: u.kind, id: u.id });
   });
 
@@ -607,6 +726,8 @@ export function createScene(host) {
       sizeTo(true);
     },
     setOccupancy, setPins, setWalkers, highlight, focusRoom, fx,
+    overlay() { return overlay(); },
+    showSchool, colourRooms,
     onPick(fn) { picker = fn; },
     roomAnchor(id) { return world && world.rooms[id] ? world.rooms[id].anchor : null; },
     resize() { sizeTo(true); },

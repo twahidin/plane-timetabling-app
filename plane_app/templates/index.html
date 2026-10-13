@@ -15,7 +15,8 @@
   "campus/themes": "{{ asset('campus/themes.js') }}",
   "campus/scene": "{{ asset('campus/scene.js') }}",
   "campus/ui": "{{ asset('campus/ui.js') }}",
-  "campus/stages": "{{ asset('campus/stages.js') }}"
+  "campus/stages": "{{ asset('campus/stages.js') }}",
+  "campus/setup": "{{ asset('campus/setup.js') }}"
 } }
 </script>
 </head>
@@ -40,6 +41,7 @@
   <section class="tab-panel" id="tab-project" role="tabpanel" aria-labelledby="tabbtn-project" hidden>
     <div class="tab-head"><div class="eyebrow">Project</div><h2>What are you timetabling?</h2>
       <p class="lede">Open a timetable or start a new one. Upload your documents, or press Start wizard and answer a few plain questions in the assistant. <a href="#" id="why-plane">Why "Plane"?</a></p></div>
+    <div class="model-dock setup-dock" id="dock-project"></div>
     <div class="card project-card">
     <div class="timetables" id="timetables">
       <label for="timetable" class="eyebrow">Timetable</label>
@@ -68,6 +70,7 @@
   <section class="tab-panel" id="tab-manpower" role="tabpanel" aria-labelledby="tabbtn-manpower" hidden>
     <div class="tab-head"><div class="eyebrow">Manpower</div><h2><span data-word="person" data-word-plural data-word-cap>People</span></h2>
       <p class="lede">Everyone in the plan. Deploy them to <span data-word="group" data-word-plural>classes</span> on the board in Requirements.</p></div>
+    <div class="model-dock setup-dock" id="dock-manpower"></div>
     <div class="card">
         <h3>Staff</h3>
         <div class="tablewrap"><table class="grid" id="plan-staff"></table></div>
@@ -77,6 +80,7 @@
   <section class="tab-panel" id="tab-locations" role="tabpanel" aria-labelledby="tabbtn-locations" hidden>
     <div class="tab-head"><div class="eyebrow">Locations</div><h2><span data-word="venue" data-word-plural data-word-cap>Rooms</span></h2>
       <p class="lede">The <span data-word="venue" data-word-plural>rooms</span> in the current timetable. A <span data-word="venue">room</span>'s kind is set in the draft, on the Build tab.</p></div>
+    <div class="model-dock setup-dock" id="dock-locations"></div>
     <div class="card"><div class="tablewrap"><table class="grid" id="locations-table"></table></div><p class="empty" id="locations-empty" hidden></p></div>
   </section><!-- /tab-locations -->
 
@@ -92,6 +96,7 @@
         <a class="btn" id="plan-export" href="/api/plan/export.xlsx" download title="The plan as a workbook you can edit and upload again">Export to Excel</a>
         <button class="btn primary" id="plan-generate" type="button" title="Turn the plan into a draft timetable">Generate draft</button>
       </div>
+      <div class="model-dock setup-dock" id="dock-requirements"></div>
       <div id="plan-issues" class="plan-issues"></div>
       <div id="plan-notes" class="plan-notes" hidden></div>
       <div class="seg plan-views" role="tablist" aria-label="Plan view">
@@ -114,6 +119,7 @@
 
   <section class="tab-panel" id="tab-constraints" role="tabpanel" aria-labelledby="tabbtn-constraints" hidden>
     <div class="tab-head"><div class="eyebrow">Constraints</div><h2>What must not happen</h2></div>
+    <div class="model-dock setup-dock" id="dock-constraints"></div>
     <div class="constraints-grid">
       <div class="card"><h2>Timetable rules</h2><div id="constraints-rules"></div></div>
       <div class="card"><h2>Rules in the plan</h2>

@@ -353,6 +353,21 @@ The campus is served by `GET /api/campus` (`plane_app/campus.py`, which also lay
 drawn by `static/campus/` with Three.js r160, shipped under `static/vendor/three-0.160.0/` (MIT); nothing
 is loaded from a CDN. It renders only while visible and lowers its quality on slow devices.
 
+### Setup tabs
+
+In Toy town and Construction the five setup tabs also show the campus, between each tab's words and its
+tables. Each scene is drawn from that tab's own data, from `GET /api/campus/setup` (`plane_app/campus_setup.py`).
+Only admin accounts can read it. The scenes only read; they change nothing.
+
+- **Project:** each file given to the Assistant is a sheet on the intake pad, with a tick, a warning or a cross. The pad shows the latest 8 files.
+- **Manpower:** teachers stand by department in the department's colour. A teacher's height follows their load against their allowance. A red ring marks a teacher over their allowance.
+- **Locations:** rooms are windows coloured by kind. A class's home room is amber unless it is a lab, a computer room or a hall. Rooms with no block stand in "Other rooms", except halls and fields, which stand on their own.
+- **Requirements:** each class is a tower of lesson blocks, against the periods the cycle has room for. Blocks over that line glow red. A subject with no teacher yet is see-through: exactly that subject's periods in each class, whichever subject it is. Past 40 classes the towers are grouped by level, and at most 120 are drawn.
+- **Constraints:** the week is a row of period tiles a day. Rests are gaps, pinned events are flags, and edge subjects colour the first and last tile of each day.
+
+Click a teacher, class tower, room, period tile or file sheet for a card. Its link goes to the item's row in the tab's
+table, or to the file's card in the Assistant. Classic is unchanged: it shows no campus on the setup tabs.
+
 ## Journey
 
 A slim bar under the top bar shows where the school is on the way to a timetable: **Files read →

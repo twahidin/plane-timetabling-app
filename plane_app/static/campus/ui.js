@@ -2,16 +2,21 @@
    play, ←/→), the legend, "All clashes", teacher search, the room and teacher cards (a bottom sheet when
    the view is narrow) and the hint. Plain DOM over the canvas; all text is set with textContent.
    createUI(host, h) → ui. `h` is main.js's: period(t), info.room(id), info.teacher(id), search(q),
-   allClashes(on), select(eventId), focus(roomId), replay(), present(on), pause().
+   allClashes(on), select(eventId), focus(roomId), replay(), present(on), pause(), and onClose(): the user
+   closed the card (× or Escape), so a redraw must not open it again. hideCard() closes it quietly.
    The journey (spec §3.3): "▶ Build" plays the build; "Present" (in full screen) is presentation mode —
-   host gets .presenting, the bar, legend, hint and card hide and the counters (.campus-kpis) stay. */
+   host gets .presenting, the bar, legend, hint and card hide and the counters (.campus-kpis) stay.
+   The setup tabs (spec 2026-10-13-setup-campus §1): setMode(mode, {legend, counters, note}) — outside
+   'build' the period bar (and with it play, ▶ Build, Present, All clashes and the search) is hidden, the
+   legend and counters are the scene's, and its note sits above the bottom edge. showSetup(card) opens a
+   text-only card with a "Show in the table" link. */
 import { labelParts } from 'campus/data';
 
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 
 export function createUI(host, h) {
-  let doc = null, t = 0, spd = 1, days = 1, playing = 0, palette = {}, dismissed = null, open = null;
+  let doc = null, t = 0, spd = 1, days = 1, playing = 0, palette = {}, dismissed = null, open = null, mode = 'build';
 
   const bar = el('div', 'campus-bar');
   const prev = el('button', 'btn icon', '‹'); prev.type = 'button'; prev.setAttribute('aria-label', 'Previous period');
@@ -40,7 +45,10 @@ export function createUI(host, h) {
   const hintText = el('span'); const hintClose = el('button', 'btn ghost icon', '×'); hintClose.type = 'button'; hintClose.setAttribute('aria-label', 'Dismiss');
   hint.append(hintText, hintClose);
   const card = el('aside', 'campus-card'); card.hidden = true;
-  host.append(legend, kpis, hint, card, bar);
+  const skpis = el('div', 'campus-kpis'); skpis.setAttribute('aria-live', 'polite'); skpis.hidden = true;   // a setup scene's counters
+  const sceneNote = el('div', 'campus-hint campus-scene-note'); sceneNote.setAttribute('role', 'status'); sceneNote.hidden = true;
+  host.append(legend, kpis, skpis, hint, sceneNote, card, bar);
+  const shownKpis = () => (mode === 'build' ? kpis : skpis);
 
   function go(nt) {
     const total = spd * days;
@@ -84,8 +92,8 @@ export function createUI(host, h) {
     all.setAttribute('aria-pressed', String(on)); all.classList.toggle('on', on); h.allClashes(on);
   });
   host.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !card.hidden) { hideCard(); return; }
-    if (e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input,select,textarea')) return;
+    if (e.key === 'Escape' && !card.hidden) { closeCard(); return; }
+    if (mode !== 'build' || e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input,select,textarea')) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); go(t - 1); }
     if (e.key === 'ArrowRight') { e.preventDefault(); go(t + 1); }
   });
@@ -109,7 +117,7 @@ export function createUI(host, h) {
   }
   function openCard(kind, title, sub) {
     card.replaceChildren();
-    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.addEventListener('click', hideCard);
+    const x = el('button', 'x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.addEventListener('click', closeCard);
     card.append(x, el('div', 'kind', kind), el('h3', null, title), el('div', 'sub', sub));
     card.hidden = false;
     relayout();
@@ -156,6 +164,39 @@ export function createUI(host, h) {
     return true;
   }
   function hideCard() { open = null; card.hidden = true; card.replaceChildren(); }
+  function closeCard() { const was = !card.hidden; hideCard(); if (was && h.onClose) h.onClose(); }   // the user's close
+  /* a setup card: {kind, title, sub, rows: [[name, value]], lines: [text], link: {text, go}} — all text;
+     go() answers (or resolves) false when the row is not in the table, and the link says so */
+  function showSetup(c) {
+    if (!c) { hideCard(); return false; }
+    open = { kind: 'setup' };
+    openCard(c.kind || '', c.title || '', c.sub || '');
+    if (c.rows && c.rows.length) card.append(rows(c.rows));
+    if (c.lines && c.lines.length) {
+      const ul = el('ul', 'campus-lines');
+      for (const x of c.lines) ul.append(el('li', null, x));
+      card.append(ul);
+    }
+    if (c.link) {
+      const b = el('button', 'btn campus-show', c.link.text || 'Show in the table'); b.type = 'button';
+      b.addEventListener('click', () => {
+        Promise.resolve().then(() => c.link.go()).then((ok) => {
+          if (ok === false) { b.textContent = 'Not in the table yet'; b.disabled = true; }
+        }).catch(() => { b.textContent = 'Not in the table yet'; b.disabled = true; });
+      });
+      card.append(b);
+    }
+    return true;
+  }
+  function drawLegend(items) {                    // [[name, colour]]
+    legend.replaceChildren();
+    for (const [name, colour] of items) {
+      if (colour === null) { legend.append(el('span', 'campus-key more', String(name))); continue; }   // "and N more": no dot
+      const item = el('span', 'campus-key'); const dot = el('span', 'dot'); dot.style.background = colour || 'var(--muted)';
+      item.append(dot, el('span', null, String(name))); legend.append(item);
+    }
+  }
+  const buildLegend = () => Object.entries((doc && doc.legend) || {}).map(([key, name]) => [name, palette[key]]);
 
   function fillSelects() {
     daySel.replaceChildren(); perSel.replaceChildren();
@@ -170,12 +211,7 @@ export function createUI(host, h) {
       spd = Math.max(1, (doc.time && doc.time.slots_per_day) || 1);
       days = Math.max(1, (doc.time && doc.time.days) || 1);
       fillSelects();
-      legend.replaceChildren();
-      for (const [key, name] of Object.entries(doc.legend || {})) {
-        const item = el('span', 'campus-key'); const dot = el('span', 'dot'); dot.style.background = palette[key] || 'var(--muted)';
-        item.append(dot, el('span', null, name)); legend.append(item);
-      }
-      this.setHint(doc.hint);
+      if (mode === 'build') { drawLegend(buildLegend()); this.setHint(doc.hint); }
       const none = !(doc.time && doc.time.labels && doc.time.labels.length);
       [prev, next, daySel, perSel, play].forEach((c) => { c.disabled = none; });
       all.hidden = !(doc.clashes && doc.clashes.length);
@@ -183,32 +219,62 @@ export function createUI(host, h) {
     },
     refresh() {                                   // an open card follows the period and the data; gone → closed
       const o = open;
-      if (o && !(o.kind === 'room' ? showRoom(o.id, true) : showTeacher(o.id, true))) hideCard();
+      if (o && o.kind !== 'setup' && !(o.kind === 'room' ? showRoom(o.id, true) : showTeacher(o.id, true))) hideCard();
     },
     setPeriod(nt) {
       t = nt;
       daySel.value = String(Math.floor(t / spd)); perSel.value = String(t % spd);
     },
-    showRoom, showTeacher, hideCard,
+    showRoom, showTeacher, hideCard, closeCard, showSetup,
     setLegend() {},
-    setHint(text) { hintText.textContent = text || ''; hint.hidden = !text || text === dismissed; },
+    setHint(text) { hintText.textContent = text || ''; hint.hidden = mode !== 'build' || !text || text === dismissed; },
+    /* 'build' (the period bar, Build's legend, counters and hint) or a setup tab's scene */
+    setMode(next, out) {
+      const was = mode;
+      mode = next && next !== 'build' ? String(next) : 'build';
+      const setup = mode !== 'build';
+      host.classList.toggle('setup-mode', setup);
+      bar.hidden = setup;
+      results.hidden = true;
+      if (was !== mode && open) hideCard();
+      if (setup) {
+        this.stop();
+        const o = out || {};
+        hint.hidden = true; kpis.hidden = true;
+        drawLegend(o.legend || []);
+        skpis.replaceChildren();
+        for (const [value, name, bad] of o.counters || []) {
+          const c = el('div', 'campus-kpi' + (bad ? ' bad' : '')); c.append(el('b', null, String(value)), el('span', null, String(name))); skpis.append(c);
+        }
+        skpis.hidden = !skpis.childElementCount;
+        sceneNote.textContent = o.note || ''; sceneNote.hidden = !o.note;
+      } else {
+        skpis.hidden = true; sceneNote.hidden = true;
+        kpis.hidden = !kpis.dataset.placed;
+        drawLegend(buildLegend());
+        this.setHint(doc && doc.hint);
+      }
+      this.relayout();
+    },
     relayout() {                                  // counters: top right, or one row under the legend when narrow
+      const K = shownKpis(), other = K === kpis ? skpis : kpis;
+      other.classList.remove('row'); other.style.top = '';
       let row = host.clientWidth < 700;
-      if (!row && !kpis.hidden) {                   // wide, but a long legend would sit under them: the row too
-        kpis.classList.remove('row'); kpis.style.top = '';
-        const a = legend.getBoundingClientRect(), b = kpis.getBoundingClientRect();
+      if (!row && !K.hidden) {                      // wide, but a long legend would sit under them: the row too
+        K.classList.remove('row'); K.style.top = '';
+        const a = legend.getBoundingClientRect(), b = K.getBoundingClientRect();
         row = a.width > 0 && a.right > b.left - 8 && a.top < b.bottom;
       }
-      kpis.classList.toggle('row', row);
+      K.classList.toggle('row', row);
       hint.style.bottom = bar.offsetHeight + 24 + 'px';   // the hint sits just above the period bar, clear of the legend and counters
-      kpis.style.top = row ? legend.offsetTop + legend.offsetHeight + 8 + 'px' : '';
+      K.style.top = row ? legend.offsetTop + legend.offsetHeight + 8 + 'px' : '';
       if (!card.hidden) relayout();
     },
     stop() { if (playing) { clearInterval(playing); playing = 0; play.textContent = '▶ Play'; } },
     setMotion(level) { build.hidden = level === 'off'; },
     setCounters(c, instant) {                     // {lessons: [n, total], teachers: [n, total], rooms: [n, total], clashes: n}
       if (!c) return;
-      kpis.hidden = false;
+      kpis.hidden = mode !== 'build';               // a setup scene shows its own; Build's come back with Build
       if (!kpis.dataset.placed) { kpis.dataset.placed = '1'; this.relayout(); }
       for (const k of ['lessons', 'teachers', 'rooms']) {
         if (c[k]) count(k, c[k][0], c[k][1], instant);

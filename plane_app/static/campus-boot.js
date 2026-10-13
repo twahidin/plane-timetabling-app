@@ -1,16 +1,22 @@
 /* The campus loader (spec 2026-10-11-campus-looks-design.md §2.1, §2.5). Classic: the planes view only,
    and nothing of the campus is fetched. Toy town / Construction: a Campus · Planes switch (this browser's
    choice in localStorage 'plane.view3d'), the campus modules imported on first use, kept in step with the
-   page (resize, selection, new data, look). If the campus cannot run here, back to planes with a note. */
+   page (resize, selection, new data, look). If the campus cannot run here, back to planes with a note.
+   The setup tabs (spec 2026-10-13-setup-campus §4): outside Classic the campus always shows there (no
+   switch: the planes need a timetable), in that tab's mode — ctl.setMode(tab), or 'build' elsewhere. */
 (function () {
   const KEY = 'plane.view3d';
   const root = document.documentElement;
   const $ = (id) => document.getElementById(id);
-  let ctl = null, loading = null, broken = false, imported = false, pending = null, held = [], toastTimer = 0;
+  let ctl = null, loading = null, broken = false, imported = false, pending = null, held = [], toastTimer = 0, tab = null;
+  const SETUP = new Set(['project', 'manpower', 'locations', 'requirements', 'constraints']);
+  const onSetup = () => SETUP.has(tab);
+  const modeNow = () => (onSetup() ? tab : 'build');
 
   const look = () => root.dataset.look || 'classic';
   function chosen() {
     if (look() === 'classic' || broken) return 'planes';
+    if (onSetup()) return 'campus';
     try { return localStorage.getItem(KEY) === 'planes' ? 'planes' : 'campus'; } catch (e) { return 'campus'; }
   }
   function remember(mode) { try { localStorage.setItem(KEY, mode); } catch (e) { /* this page only */ } }
@@ -20,7 +26,7 @@
     if (ctl) return Promise.resolve(ctl);
     if (!loading) {
       loading = import('campus/main')
-        .then((m) => { imported = true; return m.mount($('campus-view'), { look: look(), select: (id) => window.selectEvent && window.selectEvent(id), hold: (d) => hold(d) }); })
+        .then((m) => { imported = true; return m.mount($('campus-view'), { look: look(), mode: modeNow(), select: (id) => window.selectEvent && window.selectEvent(id), hold: (d) => hold(d) }); })
         .then((c) => (ctl = c));
     }
     return loading;
@@ -30,7 +36,8 @@
     const mv = $('model-view'), sw = $('campus-switch'), cv = $('campus-view');
     if (!mv || !sw || !cv) return;
     const mode = chosen();
-    sw.hidden = look() === 'classic' || broken;
+    sw.hidden = look() === 'classic' || broken || onSetup();
+    mv.classList.toggle('setup-on', onSetup() && look() !== 'classic');
     sw.querySelectorAll('button').forEach((b) => {
       b.classList.toggle('on', b.dataset.mode3d === mode);
       b.setAttribute('aria-pressed', String(b.dataset.mode3d === mode));
@@ -40,7 +47,7 @@
     if (mode === 'campus') {
       ensure().then((c) => {
         if (chosen() !== 'campus') return;                    // the user moved on while it loaded
-        note(''); c.setLook(look()); c.setActive(!document.hidden); c.resize();
+        note(''); c.setLook(look()); c.setActive(!document.hidden); c.setMode(modeNow()); c.resize();
         if (pending) { c.highlightEvent(pending); pending = null; }
         flush();
       }).catch((err) => {
@@ -56,7 +63,7 @@
         if (broken) apply();
         else if (window.resizeModel) requestAnimationFrame(() => window.resizeModel());
       });
-    } else if (ctl) ctl.setActive(false);
+    } else if (ctl) { ctl.setMode(modeNow()); ctl.setActive(false); }
     if (window.resizeModel) requestAnimationFrame(() => window.resizeModel());
   }
 
@@ -65,7 +72,9 @@
   const g0 = window.gridHighlight;
   window.gridHighlight = function (id) { if (g0) g0(id); if (ctl) ctl.highlightEvent(id || null); else pending = id || null; };
 
+  let ready = false;                                            // the look is final only once the page has loaded
   document.addEventListener('DOMContentLoaded', () => {
+    ready = true;
     const sw = $('campus-switch');
     if (sw) sw.addEventListener('click', (e) => {
       const b = e.target.closest('button[data-mode3d]');
@@ -76,7 +85,7 @@
   });
   /* The journey on the campus (spec §3.2): play each step when the campus is on screen; otherwise hold the
      latest of each step (one per stage, in the order they last came) and offer to show it. */
-  const onScreen = () => chosen() === 'campus' && ctl && $('campus-view') && $('campus-view').clientWidth > 0 && !document.hidden;
+  const onScreen = () => !onSetup() && chosen() === 'campus' && ctl && $('campus-view') && $('campus-view').clientWidth > 0 && !document.hidden;
   function hold(d) { held = held.filter((h) => h.stage !== d.stage); held.push(d); }
   function flush() {
     if (!held.length || !onScreen()) return;
@@ -103,7 +112,13 @@
     const off = window.planeMotion && window.planeMotion.level() === 'off';
     if (d.stage !== 'solving' && !off) toast();
   });
-  document.addEventListener('plane:tab', () => requestAnimationFrame(flush));
+  document.addEventListener('plane:tab', (e) => {
+    const was = modeNow();
+    tab = (e.detail && e.detail.key) || null;
+    if (!ready || look() === 'classic') return;                // Classic: nothing of the campus, on any tab
+    if (was !== modeNow() || onSetup()) apply();               // campus on a setup tab, or the user's choice back
+    requestAnimationFrame(flush);
+  });
   let shownTimetable = null;
   document.addEventListener('plane:journey-state', (e) => {      // another timetable: its held steps belong to the old one
     const id = e.detail && e.detail.timetable;

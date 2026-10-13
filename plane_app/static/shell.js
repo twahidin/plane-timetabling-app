@@ -12,6 +12,11 @@
     'summary', 'relief', 'custom'];
   const SETUP = TABS.slice(0, 7);                                   // tabs 02–08
   const DOCKS = { build: 'dock-build', consolidation: 'dock-consolidation', summary: 'dock-summary' };
+  // The setup tabs' campus (spec 2026-10-13-setup-campus §4): the view moves here only in Toy town and
+  // Construction; in Classic the setup tabs stay tables, as before. The selected-lesson card stays behind.
+  const SETUP_DOCKS = { project: 'dock-project', manpower: 'dock-manpower', locations: 'dock-locations',
+    requirements: 'dock-requirements', constraints: 'dock-constraints' };
+  const classic = () => (document.documentElement.dataset.look || 'classic') === 'classic';
   let current = null;
   let userMoved = false;                                            // a tab chosen before the first load settles
 
@@ -33,17 +38,29 @@
     });
     store.set('plane.tab', key);
     if (location.hash.slice(1) !== key) history.replaceState(null, '', '#' + key);
-    const dock = DOCKS[key] && el(DOCKS[key]);
-    const view = el('model-view'), card = el('selected-card');
-    if (dock && view && view.parentElement !== dock) {
-      dock.appendChild(view);
-      if (card) dock.appendChild(card);
-    }
-    if (dock) resize();
+    placeView(key);
     const ctx = el('assistant-context'), btn = el('tabbtn-' + key);
     if (ctx) ctx.textContent = btn ? btn.dataset.label || '' : '';
     document.dispatchEvent(new CustomEvent('plane:tab', { detail: { key } }));
   }
+  // The 3D view goes to the tab's dock: Build, Consolidation and Summary always (with the selected-lesson
+  // card), a setup tab's outside Classic. In Classic it never stays on a setup tab: back to Build's dock.
+  function placeView(key) {
+    const view = el('model-view'), card = el('selected-card');
+    if (!view) return;
+    let dock = DOCKS[key] && el(DOCKS[key]);
+    const setup = !dock && !classic() && SETUP_DOCKS[key] && el(SETUP_DOCKS[key]);
+    if (!dock && !setup && view.parentElement && view.parentElement.classList.contains('setup-dock')) dock = el(DOCKS.build);
+    const to = dock || setup;
+    if (to && view.parentElement !== to) {
+      if (view.classList.contains('expanded')) expand(view.id, false);
+      to.appendChild(view);
+      if (dock && card) dock.appendChild(card);
+    }
+    if (to) resize();
+  }
+  document.addEventListener('plane:look', () => { if (current) placeView(current); });
+
   function go(key) {                                                // a user's choice: one history entry per tab
     userMoved = true;
     if (location.hash.slice(1) === key) showTab(key); else location.hash = key;

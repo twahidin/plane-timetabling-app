@@ -195,6 +195,7 @@
       applyVocabulary(plan.vocabulary);
       td.dataset.orig = text;
       renderIssues();
+      document.dispatchEvent(new CustomEvent('plane:plan'));      // the campus and the journey bar refetch; nothing here reloads the tables
       // The server normalises what it stored (periods recomputed from lessons, a sorted list, a
       // dropped item), so the edited table is re-read from the plan it returned rather than left
       // showing what was typed — unless the user has already clicked into another cell of the same
@@ -253,6 +254,7 @@
     const tbody = node('tbody');
     (rows || []).forEach((row) => {
       const tr = node('tr');
+      tr.dataset.id = row[idField];                 // the setup campus's "Show in the table" finds it (highlightRow)
       tr.appendChild(node('td', 'id', row[idField]));
       columns.forEach((c) => {
         const text = c.show(getPath(row, c.key));
@@ -287,6 +289,7 @@
     ['edge_subjects', 'pinned'].forEach((h) => htr.appendChild(node('th', null, h)));
     thead.appendChild(htr); table.appendChild(thead);
     const tbody = node('tbody'), tr = node('tr');
+    tr.dataset.id = 'rules';
     tr.appendChild(editableTd('rules', null, 'edge_subjects', showList((rules || {}).edge_subjects), parseList));
     tr.appendChild(editableTd('rules', null, 'pinned', showJSON((rules || {}).pinned), parseJSON));
     tbody.appendChild(tr);
@@ -329,6 +332,7 @@
       plan = res.plan; issues = res.issues || []; issueCounts = null;
       renderNotes();
       renderIssues();
+      document.dispatchEvent(new CustomEvent('plane:plan'));
     } catch (e) { btn.disabled = false; notify('error', e.message); }
   }
 
@@ -395,6 +399,34 @@
     document.dispatchEvent(new CustomEvent('plane:plan'));        // the journey bar refetches
   }
   window.loadPlan = loadPlan;
+
+  // ---------- the setup campus's links (spec 2026-10-13-setup-campus §1) ----------
+  // highlightRow(tableId, id): the row whose data-id is id scrolled into view and flashed for 1.5 s (on
+  // Requirements the Tables view is shown first); false when there is no such row. showReading(id): the
+  // Assistant opened and scrolled to that file's card. plan(): the plan as last loaded (read only).
+  function flash(x) {
+    const still = window.planeMotion && window.planeMotion.level() !== 'full';
+    x.scrollIntoView({ block: 'center', behavior: still ? 'auto' : 'smooth' });
+    x.classList.remove('row-flash'); void x.offsetWidth; x.classList.add('row-flash');
+    clearTimeout(x.flashTimer); x.flashTimer = setTimeout(() => x.classList.remove('row-flash'), 1500);
+  }
+  function highlightRow(tableId, id) {
+    if ((tableId === 'plan-requirements' || tableId === 'plan-divisions') && planView !== 'tables') showPlanView('tables');
+    const table = el(tableId);
+    if (!table || id == null) return false;
+    const tr = Array.from(table.querySelectorAll('tr[data-id]')).find((r) => r.dataset.id === String(id));
+    if (!tr) return false;
+    flash(tr);
+    return true;
+  }
+  function showReading(id) {
+    if (el('assistant') && el('assistant').hidden && window.showIntakeTab) window.showIntakeTab('assistant');
+    const card = Array.from(document.querySelectorAll('.reading-card[data-id]')).find((c) => c.dataset.id === String(id));
+    if (!card) return false;
+    flash(card);
+    return true;
+  }
+  window.planeSetup = { highlightRow, showReading, plan: () => plan };
 
   const planUpload = el('plan-upload');
   // A workbook given here goes to the Assistant like any other file: it is read into a card there, and the

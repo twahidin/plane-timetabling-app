@@ -27,6 +27,7 @@ from .db import MAX_TIME_LIMIT, MIN_TIME_LIMIT, PRESETS, THREAD, Db, mask_settin
 from .engine_client import EngineClient, EngineError
 from .grid_api import make_router as grid_router
 from .campus import make_router as campus_router
+from .campus_setup import make_router as campus_setup_router
 from .journey import make_router as journey_router
 from .learning.routes import make_router as learning_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, summarise
@@ -185,6 +186,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.include_router(plan_router(db))
     app.include_router(grid_router(db))
     app.include_router(campus_router(db))
+    app.include_router(campus_setup_router(db))
     app.include_router(journey_router(db))
     app.include_router(learning_router(db))
     app.include_router(reader_routes.make_router(db))

@@ -126,6 +126,7 @@
         cellErrors.clear();
         pending = null;
         show(res.data.board, n, opts);
+        document.dispatchEvent(new CustomEvent('plane:plan'));    // the plan changed elsewhere: the rest of the page follows
         // an undo that someone else's change is in the way of can never be made again: no "make it again"
         const message = opts.undo ? `${res.detail}. The board now shows the latest.`
           : `${res.detail}. The board now shows the latest: make your change again if you still want it.`;
@@ -141,6 +142,7 @@
       cellErrors.clear();
       pending = null;
       show(res.data, n, opts);
+      document.dispatchEvent(new CustomEvent('plane:plan'));      // the campus and the journey bar refetch
       return { ok: true };
     } finally {
       busy = false;

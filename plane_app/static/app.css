@@ -759,6 +759,8 @@
   .campus-legend { position: absolute; left: var(--space-4); top: var(--space-4); display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 60%; font-size: 12px; color: var(--ink-2);
                    padding: 6px 10px; background: color-mix(in srgb, var(--color-surface) 85%, transparent); border-radius: var(--radius-md); z-index: 2; }
   .campus-legend:empty { display: none; }
+  .campus-key.more { color: var(--muted); }
+  @media (max-width: 700px) { .campus-legend { max-width: calc(100% - 2 * var(--space-4)); max-height: 6.2em; overflow: hidden; } }   /* a backstop: never over the scene */
   .campus-key { display: inline-flex; align-items: center; gap: 5px; }
   .campus-key .dot, .campus-card .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
   .campus-hint { position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%);   /* above the period bar (ui.js sets bottom from its height) */ display: flex; gap: var(--space-2); align-items: center; max-width: min(520px, 90%);
@@ -1000,3 +1002,26 @@
     .reading-card .rc-via { margin-left: 0; }
     .file-chips { align-self: stretch; align-items: stretch; }
   }
+
+  /* ---------- the campus on the setup tabs (spec 2026-10-13-setup-campus §1) ---------- */
+  .setup-dock { width: 100%; }
+  .setup-dock:empty { display: none; }                         /* Classic, or the view is on another tab */
+  .setup-dock .campus-view { min-height: clamp(320px, 50vh, 560px); height: clamp(320px, 50vh, 560px); }
+  .setup-dock #model-view:not(.campus-on) { display: none; }    /* the campus could not start: the tables only, as in Classic */
+  #model-view.setup-on .campus-switch, #model-view.setup-on .planes-only { display: none; }
+  .campus-hint.campus-scene-note { bottom: var(--space-4); max-width: calc(100% - 2 * var(--space-4)); text-align: center; }
+  .campus-view.setup-mode .campus-card.sheet { bottom: 64px !important; }   /* clear of the scene's note */
+  .campus-card .campus-lines { margin: var(--space-3) 0 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-2); }
+  .campus-card .campus-lines li { overflow-wrap: anywhere; }
+  .campus-card .campus-lines li + li { margin-top: 2px; }
+  .campus-card .campus-show { margin-top: var(--space-4); width: 100%; justify-content: center; }
+  html[data-look] .campus-labels .blk.soft { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 11.5px;
+                                             background: color-mix(in srgb, var(--color-surface) 88%, transparent); color: var(--ink-2); }
+  html[data-look] .campus-labels .blk.bad { background: var(--bad); color: #fffaf7; }
+  .campus-labels .campus-chip.warn { background: color-mix(in srgb, var(--warn-ink) 16%, var(--color-surface)); color: var(--warn-ink); }
+  .campus-labels .campus-chip.skip { background: color-mix(in srgb, var(--muted) 14%, var(--color-surface)); color: var(--muted); }
+  .campus-labels .campus-chip.bad { background: color-mix(in srgb, var(--bad) 14%, var(--color-surface)); color: var(--bad); }
+  .row-flash, .row-flash > td { animation: row-flash 1.5s ease-out; }
+  .reading-card.row-flash { box-shadow: 0 0 0 2px var(--color-accent); }
+  @keyframes row-flash { from, 30% { background: color-mix(in srgb, var(--color-accent) 28%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .row-flash, .row-flash > td { animation: none; background: color-mix(in srgb, var(--color-accent) 20%, transparent); } }
