@@ -145,7 +145,7 @@ def _notes(plan: dict, week: dict) -> list[dict]:
     return out
 
 
-def setup_view(plan: dict | None, org: dict | None, settings: dict, readings: list[dict]) -> dict:
+def setup_view(plan: dict | None, org: dict | None, settings: dict, readings: list[dict], ground: str = C.DEFAULT_GROUND) -> dict:
     bad: set = set()
     legend = _legend(org, plan)
     if legend is None:
@@ -191,7 +191,7 @@ def setup_view(plan: dict | None, org: dict | None, settings: dict, readings: li
 
     classes = sorted(by_class.values(), key=lambda c: C.natural(c["code"]))
     week = _week(org, plan, settings, bad)
-    return {"campus": _campus(org, plan, bad), "staff": staff,
+    return {"campus": {**_campus(org, plan, bad), "ground": ground}, "ground": ground, "staff": staff,
             "departments": sorted(depts.values(), key=lambda d: d["name"].lower()),
             "classes": classes[:CLASSES_MAX], "classes_hidden": max(len(classes) - CLASSES_MAX, 0),
             "cycle_periods": week["days"] * week["slots_per_day"] - len(week["rests"]) * week["days"],
@@ -213,6 +213,7 @@ def make_router(db) -> APIRouter:
 
     @r.get("/api/campus/setup")
     def get_setup(sid: str = Depends(auth.require_session)):
-        return setup_view(db.get_value("plan"), db.get_org("live") or db.get_org("draft"), db.get_settings(), RR._stored(db))
+        return setup_view(db.get_value("plan"), db.get_org("live") or db.get_org("draft"), db.get_settings(), RR._stored(db),
+                          C.ground_of(db))
 
     return r

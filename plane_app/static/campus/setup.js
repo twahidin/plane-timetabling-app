@@ -32,6 +32,12 @@ const list = (v) => (Array.isArray(v) ? v : []);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const r2 = (v) => Math.round(v * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+/* Manpower's figures, at a real school's scale (dozens of teachers, many over their allowance): FIG is the figure's
+   scale per unit of height; the tallest (height 2.26) is 1.05 wide in Toy town's hair and 1.12 in Construction's
+   hard hat. SPACING is the sunflower spacing in a cluster, its nearest neighbours about 1.54 × SPACING apart, never
+   closer than SPACING_MIN however crowded the ring (1.12 apart: even the tallest do not touch); GAP the least
+   distance between two figures moved off a footprint. An over-allowance ring's outer radius stays under half that. */
+export const FIG = 0.4, SPACING = 0.74, SPACING_MIN = 0.73, GAP = 1.13;
 const byName = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
 const groundsOf = (g) => ({ w: num(obj(g).w) || 48, d: num(obj(g).d) || 34 });
 const deptName = (d) => (typeof d === 'string' && d.trim() ? d : NO_DEPARTMENT);
@@ -74,7 +80,7 @@ export function layoutTeachers(staff, departments, grounds, footprints) {
   const perimeter = Math.PI * (3 * (a0 + b0) - Math.sqrt((3 * a0 + b0) * (a0 + 3 * b0)));
   const widths = clusters.map(([, l]) => 2 * Math.sqrt(l.length) + 1.5);       // in units of the spacing
   const total = widths.reduce((s, w) => s + w, 0);
-  const sp = clusters.length === 1 ? 1.3 : clamp(perimeter / total, 0.6, 1.3);   // a crowded ring packs closer
+  const sp = clusters.length === 1 ? SPACING : clamp(perimeter / total, SPACING_MIN, SPACING);   // a crowded ring packs closer
   const rMax = Math.max(...clusters.map(([, l]) => sp * Math.sqrt(l.length)));
   const A = Math.max(0, Math.min(a0, g.w / 2 - 2 - rMax)), B = Math.max(0, Math.min(b0, g.d / 2 - 2 - rMax));
   let cum = 0;
@@ -111,7 +117,7 @@ export function layoutTeachers(staff, departments, grounds, footprints) {
   }
   const out = [], taken = [];
   const ok = (x, z) => Math.abs(x) <= hx && Math.abs(z) <= hz && (!fps.length || clear(x, z) > 0)
-    && taken.every((t) => Math.hypot(x - t[0], z - t[1]) >= 0.9);
+    && taken.every((t) => Math.hypot(x - t[0], z - t[1]) >= GAP);
   plan.forEach(({ name, people, x: cx, z: cz }) => {
     const ranked = people.map((s) => ({ s, h: figureHeight(s.load, s.allowance) }))
       .sort((p, q) => q.h - p.h || byName(p.s.id, q.s.id));
@@ -325,7 +331,6 @@ function manpowerScene(doc, c) {
   const people = layoutTeachers(staff, doc.departments, c.g, footprints);
   const byId = new Map(staff.map((s) => [s.id, s]));
   const cols = palette(list(doc.departments).map((d) => deptName(obj(d).name)).concat(people.map((p) => p.dept)), c.T, doc.legend, 'd:');
-  const FIG = 0.8;                                         // figure scale per unit of height
   const groups = new Map();                                // one instanced set per department, solid or provisional
   people.forEach((p) => { const k = p.dept + (p.provisional ? '\u0000p' : ''); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); });
   const order = [...cols.keys()];
@@ -345,21 +350,23 @@ function manpowerScene(doc, c) {
   });
   const overs = people.filter((p) => p.over);
   if (overs.length) {                                      // a red ring at the feet of each teacher over their allowance
-    const ring = kit.instanced(new THREE.TorusGeometry(1, 0.16, 8, 28).rotateX(Math.PI / 2), kit.mat(RED, { emissive: RED, emissiveIntensity: 0.4 }), overs.length);
+    const ring = kit.instanced(new THREE.TorusGeometry(1, 0.12, 8, 28).rotateX(Math.PI / 2), kit.mat(RED, { emissive: RED, emissiveIntensity: 0.4 }), overs.length);
     kit.pickable(ring, overs.map((p) => ({ type: 'teacher', id: p.id })));
-    c.stagger([ring], overs.length, (i, k) => { const p = overs[i], r = (0.42 * p.height * FIG + 0.5) * k; c.place(ring, i, p.x, 0.14, p.z, r, r, r); },
+    c.stagger([ring], overs.length, (i, k) => { const p = overs[i], r = (0.42 * p.height * FIG + 0.07) * k; c.place(ring, i, p.x, 0.14, p.z, r, r, r); },
       { delay: 0.8, delayOf: (i) => i * Math.min(0.05, 1 / overs.length) });
   }
   const top = (p) => 2.5 * p.height * FIG;
+  let worst = null;
+  for (const p of overs) { const s = byId.get(p.id), by = num(s.load) - num(s.allowance); if (!worst || by > worst.by) worst = { p, s, by }; }
   for (const name of order) {                              // a label over each department
     const ps = people.filter((p) => p.dept === name); if (!ps.length) continue;
     const x = ps.reduce((s, p) => s + p.x, 0) / ps.length, z = ps.reduce((s, p) => s + p.z, 0) / ps.length;
-    kit.label(name, 'blk in soft', [x, Math.max(...ps.map(top)) + 1.4, z]);
+    const crowded = worst && worst.p.dept === name;        // the worst teacher's label below: raised, its pill wholly above its point
+    const o = kit.label(name, 'blk in soft', [x, Math.max(...ps.map(top)) + 0.9 + (crowded ? 1.3 : 0), z]);
+    if (crowded && o && o.center) o.center.set(0.5, 1.6);
   }
-  let worst = null;
-  for (const p of overs) { const s = byId.get(p.id), by = num(s.load) - num(s.allowance); if (!worst || by > worst.by) worst = { p, s, by }; }
   if (worst) kit.label(`${String(worst.s.name || worst.s.id)} · ${num(worst.s.load)} of ${num(worst.s.allowance)}`, 'blk in bad',
-    [worst.p.x, top(worst.p) + 0.6, worst.p.z]);
+    [worst.p.x, top(worst.p) + 0.4, worst.p.z]);
   const provisional = people.some((p) => p.provisional);
   return {
     legend: capLegend(order.filter((n) => people.some((p) => p.dept === n)).map((n) => [n, cols.get(n)])),
@@ -371,6 +378,7 @@ function manpowerScene(doc, c) {
 }
 
 /* ---- 04 Locations: the school as the plan has it, each window coloured by its room's kind ---- */
+const GROUNDS = { education: ['field', null], health: ['garden', 'lawn'], business: ['plaza', 'paving'], sports: ['track', 'track'] };
 function roomKind(r) {
   const text = `${obj(r).kind || ''} ${obj(r).name || ''}`.toLowerCase();
   if (/\b(computer|ict|it)\b|\bcomp(uter)?\s*lab/.test(text)) return 'computer';
@@ -382,8 +390,11 @@ function roomKind(r) {
 function locationsScene(doc, c) {
   const { kit, T, school } = c;
   c.show('full');
+  // halls share their chip with the courtyard's ground: the field, or the timetable type's garden, plaza or track
+  const ground = GROUNDS[obj(doc.campus).ground] ? obj(doc.campus).ground : GROUNDS[doc.ground] ? doc.ground : 'education';
+  const [outside, role] = GROUNDS[ground], toy = obj(obj(kit.groundColours).toy);
   const K = { classroom: T.winOff, lab: list(T.dept)[3] || '#ff6b9a', computer: list(T.dept)[0] || '#8b7cf6',
-              hall: T.fieldFinal || T.field, home: AMBER };
+              hall: (role && toy[role]) || T.fieldFinal || T.field, home: AMBER };
   if (school.colourRooms) school.colourRooms((r) => K[roomKind(r)]);
   if (!c.still && school.fx && school.fx.riseAll) school.fx.riseAll(2);   // on arrival only: the school rises (halved when Reduced)
   const campus = obj(doc.campus), rooms = list(campus.rooms).filter((r) => r && typeof r === 'object');
@@ -395,7 +406,7 @@ function locationsScene(doc, c) {
   }
   const blocks = new Set(rooms.filter((r) => r.block).map((r) => String(r.block))).size;
   return {
-    legend: [['Classroom', K.classroom], ['Lab', K.lab], ['Computer room', K.computer], ['Hall / field', K.hall], ['Home room', K.home]],
+    legend: [['Classroom', K.classroom], ['Lab', K.lab], ['Computer room', K.computer], [`Hall / ${outside}`, K.hall], ['Home room', K.home]],
     counters: [[rooms.length, 'Rooms'], [blocks, 'Blocks'], [n, 'With no block', n > 0]],
     note: !rooms.length ? 'Give the Assistant your room list and the school will be laid out here.'
       : "Each window is a room, coloured by its kind; amber marks a class's home room." + (n ? ` ${n === 1 ? 'One room with no block waits' : `${n} rooms with no block wait`} in Other rooms.` : ''),

@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { themeFor, THEMES } from 'campus/themes';
+import { groundKind, areaLook, groundPieces, paintGround, PALETTE as GROUND } from 'campus/grounds';
 
 const ROOM_W = 2.6, H = 3.2;
 const ease = {
@@ -123,7 +124,8 @@ export function createScene(host) {
 
     world = { sun, grounds: g, rooms: {}, pickables: [], walkers: [], clouds: [], pins: [], mark: null, jib: null, trolley: null, boxes: [],
               levels: [], roofs: [], scaffolds: [], roofMats: [], fields: [], trees: [], site: null, crane: null, hook: null,
-              docRooms: doc.rooms || [], schoolGroups: [], schoolLabels: [], fieldMeshes: [], intakeObjs: [], schoolMode: 'full', ghosted: null };
+              docRooms: doc.rooms || [], schoolGroups: [], schoolLabels: [], fieldMeshes: [], intakeObjs: [], schoolMode: 'full', ghosted: null,
+              ground: groundKind(doc), groundMats: [], pieceMats: {} };
     ground(g);
     courtyardPaths(doc);
     (doc.areas || []).forEach(field);
@@ -178,17 +180,52 @@ export function createScene(host) {
     x.beginPath(); x.arc(256, 192, 52, 0, Math.PI * 2); x.stroke(); x.strokeRect(24, 120, 70, 144); x.strokeRect(418, 120, 70, 144);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
   }
+  /* the area's paint by the timetable's type (grounds.js): the field as before, else the kind's markings on a
+     canvas of the area's proportions */
+  function groundTexture(kind, a, finished) {
+    if (kind === 'education') return fieldTexture(finished);
+    const W = 512, Hc = Math.max(128, Math.min(1024, Math.round((512 * a.d) / a.w) || 352));
+    const c = document.createElement('canvas'); c.width = W; c.height = Hc;
+    const bare = theme.site && !finished;
+    paintGround(c.getContext('2d'), kind, W, Hc, bare ? GROUND.site : GROUND.toy, bare);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+  }
+  /* one material per role (and opacity) in a build: in Construction the site's colour, which the handover
+     turns into Toy town's */
+  function pieceMat(role, opacity) {
+    const key = role + '|' + (opacity || 1);
+    if (world.pieceMats[key]) return world.pieceMats[key];
+    const m = mat((theme.site ? GROUND.site : GROUND.toy)[role], opacity ? { transparent: true, opacity } : {});
+    if (role === 'water') { m.emissive.set(m.color); m.emissiveIntensity = 0.15; }
+    world.groundMats.push({ m, role });
+    return (world.pieceMats[key] = m);
+  }
+  function piece(p) {
+    const m = pieceMat(p.role, p.opacity);
+    const o = p.shape === 'box' ? rbox(p.w, p.h, p.d, m, Math.min(0.12, p.w / 3, p.d / 3))
+      : new THREE.Mesh(p.shape === 'cyl' ? new THREE.CylinderGeometry(p.rt, p.r, p.h, 32)
+        : p.shape === 'ico' ? new THREE.IcosahedronGeometry(p.r, 1) : new THREE.SphereGeometry(p.r, 12, 10), m);
+    o.position.set(p.x, p.y, p.z); o.castShadow = !p.opacity && p.role !== 'water'; o.receiveShadow = true;
+    return o;
+  }
   function field(a) {
-    const m = mat('#ffffff', { map: fieldTexture(false), roughness: 0.9 });
+    const look = areaLook(world.ground, a), kind = look.draw;
+    const m = mat('#ffffff', { map: groundTexture(kind, a, false), roughness: 0.9 }); m.userData.area = a; m.userData.draw = kind;
     const f = rbox(a.w, 0.16, a.d, m, 0.05); f.position.set(a.x, 0.08, a.z); f.castShadow = false; scene.add(f);
     world.fields.push(m); world.fieldMeshes.push(f);
+    const ps = groundPieces(kind, a);
+    if (ps.length) {                                        // the kind's furniture: decor, hidden with the field
+      const grp = new THREE.Group(); grp.position.set(a.x, 0, a.z); scene.add(grp);
+      ps.forEach((p) => grp.add(piece(p)));
+      decor(grp); world.fieldMeshes.push(grp);
+    }
     if (a.room) {
       f.userData = { kind: 'room', id: a.room };
       world.pickables.push(f);
       const rec = { mesh: f, mat: m, anchor: new THREE.Vector3(a.x, 0.5, a.z), home: null, field: true };
       world.rooms[a.room] = rec;
-      world.schoolLabels.push(label(a.name, 'blk in', scene, new THREE.Vector3(a.x, 1.2, a.z - a.d / 2)));
     }
+    if (look.label) world.schoolLabels.push(label(look.label, 'blk in', scene, new THREE.Vector3(a.x, 1.2, a.z - a.d / 2)));
   }
 
   function building(b, wallM, trimM, n) {
@@ -549,10 +586,12 @@ export function createScene(host) {
       if (world.site) ps.push(fxTween({ delay: 0.3, dur: 0.8, ease: ease.inout, update: (k) => world.site.scale.set(1, Math.max(0.001, 1 - k), 1), done: () => { world.site.visible = false; } }));
       if (world.crane) { world.jib = null; ps.push(fxTween({ delay: 0.2, dur: 1.2, ease: ease.inout, update: (k) => { world.crane.position.y = -30 * k; }, done: () => { world.crane.visible = false; } })); }
       const C = (a, b) => [new THREE.Color(a), new THREE.Color(b)], [g0, g1] = C(F.grass, F.grassFinal), [w0, w1] = C(F.wall, F.wallFinal);
+      const pieces = world.groundMats.map(({ m, role }) => [m, ...C(GROUND.site[role], GROUND.toy[role]), role === 'water']);   // the ground's furniture too
       ps.push(fxTween({ delay: 0.6, dur: seconds * 0.5, update: (k) => {
         world.groundM.color.lerpColors(g0, g1, k); world.wallM.color.lerpColors(w0, w1, k);
         world.roofMats.forEach(({ m, n }) => m.color.lerpColors(new THREE.Color(F.roofs[0]), new THREE.Color(F.roofsFinal[n % 3]), k));
-      }, done: () => { world.fields.forEach((m) => { if (m.map) m.map.dispose(); m.map = fieldTexture(true); m.needsUpdate = true; }); } }));
+        pieces.forEach(([m, a, b, glow]) => { m.color.lerpColors(a, b, k); if (glow) m.emissive.copy(m.color); });
+      }, done: () => { world.fields.forEach((m) => { if (m.map) m.map.dispose(); m.map = groundTexture(m.userData.draw, m.userData.area, true); m.needsUpdate = true; }); } }));
       const before = world.trees.length; trees(world.grounds);
       world.trees.slice(before).forEach((t, n) => { decor(t); t.scale.setScalar(0.001); ps.push(fxTween({ delay: seconds * 0.5 + n * 0.05, dur: 0.6, ease: ease.back, update: (k) => t.scale.setScalar(Math.max(0.001, k)) })); });
       return all(ps);
@@ -637,6 +676,7 @@ export function createScene(host) {
     rec.kit = {
       THREE, group, grounds: world.grounds,
       T: Object.assign({}, T, { site: theme.site }),         // T.site: Construction, until the clean check
+      groundColours: GROUND,                                 // grounds.js's palettes, by role (the Locations chip)
       rbox, mat: ovMat, decor,
       label: (text, cls, pos) => label(text, cls, group, v3(pos)),
       tween(o) {

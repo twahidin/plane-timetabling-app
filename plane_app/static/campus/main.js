@@ -131,7 +131,7 @@ export async function mount(el, opts) {
   /* Build's school and period from the doc: a timetable change re-lights the same school; only a new layout
      (or look, or a setup scene drawn in between) is rebuilt */
   function drawBuild() {
-    const key = JSON.stringify([doc.buildings, doc.areas, doc.grounds, doc.checked_ok, doc.rooms.map((x) => x.home), look]);
+    const key = JSON.stringify([doc.buildings, doc.areas, doc.grounds, doc.ground, doc.checked_ok, doc.rooms.map((x) => x.home), look]);
     const sameLayout = key === layoutKey;
     layoutKey = key;
     if (!sameLayout) { scene.build(doc, look, !!doc.checked_ok); builtFinished = !!doc.checked_ok; }
@@ -169,7 +169,7 @@ export async function mount(el, opts) {
     if (!force && key === shownKey) return;
     shownKey = key;
     const c = sdoc.campus || {};
-    scene.build({ grounds: c.grounds, areas: c.areas || [], buildings: c.buildings || [], rooms: c.rooms || [] }, look, finished);
+    scene.build({ grounds: c.grounds, areas: c.areas || [], buildings: c.buildings || [], rooms: c.rooms || [], ground: c.ground }, look, finished);
     layoutKey = null; builtFinished = finished;              // Build rebuilds its own school when it shows again
     const ov = scene.overlay();
     const out = buildScene(mode, sdoc, ov ? ov.kit : null, { showSchool: scene.showSchool, colourRooms: scene.colourRooms, fx: scene.fx });

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 
 from . import auth
 from .learning import log as decisions
+from .wizard import library as wizard_library
 
 
 MAX_DUR = 64                          # a lesson longer than this is clipped (bad data must not hang a request)
@@ -280,11 +281,47 @@ def source_name(plan: dict | None) -> str | None:
     return stem.rsplit(".", 1)[0] or stem
 
 
-def campus(org: dict, plan: dict | None, check: dict | None, settings: dict, source: str | None) -> dict:
+GROUND_KINDS = tuple(d for d, _ in wizard_library.DOMAINS)       # education, health, business, sports
+DEFAULT_GROUND = "education"
+
+
+def ground_kind(record, db=None) -> str:
+    """The ground the campus draws (brief 2026-10-14-grounds §2): the domain of the template in the timetable's
+    wizard record (`db.get_value("wizard")`). A shared template's domain is read from the copy the record keeps;
+    any other is looked up in the library (with a db, the school's own too; never the engine). No record, an
+    unknown template or anything odd is "education". Never raises."""
+    try:
+        template_id = record.get("template") if isinstance(record, dict) else None
+        if not isinstance(template_id, str) or not template_id:
+            return DEFAULT_GROUND
+        if template_id.startswith(wizard_library.SHARED_PREFIX):
+            kept = record.get("shared_template")
+            domain = kept.get("domain") if isinstance(kept, dict) and kept.get("id") == template_id else None
+        else:
+            try:
+                domain = wizard_library.get(template_id, db).get("domain")
+            except Exception:                            # noqa: BLE001 - a failing db still knows the built-in ones
+                domain = wizard_library.get(template_id).get("domain") if db is not None else None
+        return domain if isinstance(domain, str) and domain in GROUND_KINDS else DEFAULT_GROUND
+    except Exception:                                    # noqa: BLE001 - an unknown id, a failing db: the field
+        return DEFAULT_GROUND
+
+
+def ground_of(db) -> str:
+    """The working timetable's ground."""
+    try:
+        return ground_kind(db.get_value("wizard"), db)
+    except Exception:                                    # noqa: BLE001 - a failing db: the field
+        return DEFAULT_GROUND
+
+
+def campus(org: dict, plan: dict | None, check: dict | None, settings: dict, source: str | None,
+           ground: str = DEFAULT_GROUND) -> dict:
     rs = rooms(org, plan)
     les, legend = lessons(org, plan)
     live = source == "live"
-    return {"source": source, "source_name": source_name(plan), "rooms": rs, **place(*buildings(rs)), "time": time_of(org, settings),
+    return {"source": source, "source_name": source_name(plan), "rooms": rs, **place(*buildings(rs)), "ground": ground,
+            "time": time_of(org, settings),
             "lessons": les, "legend": legend, "people": people(org, plan),
             "clashes": clashes(check, org) if live else [], "checked_ok": bool(live and check and check.get("ok")),
             "hint": None if any(r["block"] for r in rs) else HINT}
@@ -298,6 +335,7 @@ def make_router(db) -> APIRouter:
         live = db.get_org("live")
         org = live or db.get_org("draft")
         source = "live" if live else "draft" if org else None
-        return campus(org or {}, db.get_value("plan"), db.get_value("last_check") if live else None, db.get_settings(), source)
+        return campus(org or {}, db.get_value("plan"), db.get_value("last_check") if live else None, db.get_settings(), source,
+                      ground_of(db))
 
     return r
