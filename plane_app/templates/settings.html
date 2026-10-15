@@ -74,7 +74,7 @@
     <label>Slot length (minutes)<input type="number" id="slot_minutes" min="1" step="1"></label>
     <label>Slots per day<input type="number" id="slots_per_day" min="1" max="64" step="1"></label>
     <label>Day starts at<input type="time" id="start"></label>
-    <label class="wide">Slot labels <span class="help">comma-separated; regenerated from the grid unless you edit them</span><input type="text" id="labels"></label>
+    <label class="wide">Slot labels <span class="help">comma-separated, one for each slot of each day of the cycle; regenerated from the grid unless you edit them</span><input type="text" id="labels"><span class="help" id="cycle-hint" aria-live="polite"></span></label>
   </fieldset>
 
   <fieldset>
@@ -143,6 +143,7 @@
 </main>
 
 <script src="{{ asset('look.js') }}"></script>
+<script src="{{ asset('settings-labels.js') }}"></script>
 <script src="{{ asset('settings.js') }}"></script>
 <script src="{{ asset('accounts.js') }}"></script>
 <script src="{{ asset('learning-settings.js') }}"></script>

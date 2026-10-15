@@ -76,7 +76,7 @@
     btn.disabled = true;
     try {
       await api('/api/wizard/instantiate', { method: 'POST', body: JSON.stringify({ template: candidate.template, knobs: candidate.knobs }) });
-      notify('good', 'Chosen. Fill in the workbook and drop it below.');
+      notify('good', 'Chosen. Fill in the workbook and drop it in the box above, or give it to the Assistant.');
       latestCandidates = [];
       if (window.reloadModel) window.reloadModel().catch(() => {});
       if (window.loadPlan) window.loadPlan().catch(() => {});
@@ -133,7 +133,7 @@
     guide.addEventListener('click', () => { window.open(downloads.guide, '_blank'); });
     row.appendChild(wb); row.appendChild(sample); row.appendChild(guide);
     box.appendChild(row);
-    box.appendChild(node('p', 'wizard-note', 'Fill in the workbook and drop it below'));
+    box.appendChild(node('p', 'wizard-note', 'Fill in the workbook, then drop it on the Assistant or in the Intake box'));
     box.hidden = false;
   }
 

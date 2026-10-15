@@ -54,8 +54,18 @@
     </div>
     </div>
     <section id="intake" class="card">
-    <div class="section-title">Intake <span class="eyebrow">upload, check, build</span> <button class="btn" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">Start wizard</button> <button class="btn" id="clear-uploads" type="button" title="Drop the readings still waiting for Apply">Clear readings</button></div>
-    <div id="drop" class="drop">Drop files here or <input type="file" id="files" multiple accept=".pdf,.docx,.xlsx,.csv"></div>
+    <div class="section-title">Intake <span class="eyebrow">upload, check, build</span> <button class="btn" id="clear-uploads" type="button" title="Drop the readings still waiting for Apply">Clear readings</button></div>
+    <div class="intake-choices" id="intake-choices">
+      <button class="intake-wizard" id="start-wizard" type="button" title="Answer a few plain questions and get a workbook, a sample and a guide">
+        <span class="iw-icon" aria-hidden="true">✨</span><span class="iw-title">Start wizard</span>
+        <span class="iw-sub">Answer a few questions and get a workbook made for your school</span>
+      </button>
+      <div id="drop" class="drop intake-drop">
+        <span class="id-title">I already have a filled workbook</span>
+        <span class="id-line">Drop it here or <input type="file" id="files" multiple accept=".pdf,.docx,.xlsx,.csv" aria-label="Choose files"></span>
+        <a class="id-template" href="/api/plan/template.xlsx" download>Download a blank template</a>
+      </div>
+    </div>
     <div id="notes" class="notes"></div>
     </section>
     <section class="card" id="templates-card">

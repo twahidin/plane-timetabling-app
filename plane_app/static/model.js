@@ -595,15 +595,18 @@
   async function renderStatus(data) {
     const parts = [];
     const c = data.check;
-    parts.push(!c ? 'check: none yet' : c.ok ? 'check: ok' : `check: ${c.clashes.length} clash${c.clashes.length === 1 ? '' : 'es'}`);
+    parts.push(!c ? 'Not checked yet' : c.ok ? 'Checked: no clashes' : `Checked: ${c.clashes.length} clash${c.clashes.length === 1 ? '' : 'es'}`);
     if (data.draft) parts.push(`draft: ${data.draft.persons} persons, ${data.draft.locations} locations, ${data.draft.events} events (${data.draft.placed} placed)`);
-    let err = null;
+    let err = null, why = '';
     try {
       const u = await api('/api/usage');
-      if (u.error) err = 'engine: ' + u.error;
+      // an engine that cannot be reached is said plainly; the raw reason stays in the tooltip
+      if (u.error) { err = /engine unreachable/i.test(u.error) ? 'Engine not connected' : 'Engine: ' + u.error; why = u.error; }
       else parts.push(`engine ${u.period || ''}: ${u.builds} of ${u.monthly_builds} builds, ${u.queries} queries, ${u.checks} checks`);
-    } catch (e) { err = 'engine: ' + e.message; }
+    } catch (e) { err = 'Engine: ' + e.message; }
     setStatus(parts, err);
+    const shown = el('status').querySelector('.err');
+    if (shown && why) shown.title = why;
   }
 
   // ---------- Loading from the API ----------

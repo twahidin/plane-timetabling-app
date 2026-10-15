@@ -37,6 +37,7 @@
       }
     });
     store.set('plane.tab', key);
+    document.body.dataset.tab = key;          // lets CSS drop notices a tab already says better
     if (location.hash.slice(1) !== key) history.replaceState(null, '', '#' + key);
     placeView(key);
     const ctx = el('assistant-context'), btn = el('tabbtn-' + key);

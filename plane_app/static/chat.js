@@ -279,6 +279,11 @@
   // new_draft tool ("start an empty draft"). Start wizard just asks the assistant to begin.
   // Start wizard: begin the conversation in the chat (sendChat opens the assistant tab).
   el('start-wizard').addEventListener('click', () => window.sendChat("I'd like to set up a new timetable"));
+  // A new timetable gets two big choices (wizard or a filled workbook); once it has a plan they shrink to a row.
+  document.addEventListener('plane:journey-state', (e) => {
+    const plan = ((e.detail && e.detail.steps) || []).find((s) => s.key === 'plan');
+    el('intake').classList.toggle('compact', !!plan && plan.state !== 'todo');
+  });
 
   window.reloadIntake = async () => { el('notes').textContent = ''; stopFollowing(); await loadMessages(); await loadDraft(); await resumeSolve(); };
 

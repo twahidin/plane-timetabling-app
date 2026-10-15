@@ -397,6 +397,15 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     @app.put("/api/settings")
     def put_settings(body: dict, sid: str = Depends(auth.require_session)):
+        given = body.get("time") if isinstance(body, dict) else None
+        if isinstance(given, dict):
+            # one label a slot for every day of the cycle: the count must be whole days
+            time = {**db.get_settings().get("time", {}), **given}
+            labels, per_day = time.get("labels"), time.get("slots_per_day")
+            if (isinstance(labels, list) and labels and isinstance(per_day, int) and not isinstance(per_day, bool)
+                    and per_day > 0 and len(labels) % per_day):
+                raise HTTPException(400, f"There are {len(labels)} slot labels for {per_day} slots per day. Give one label "
+                                         f"for each slot of each day of the cycle, so the count must be a multiple of {per_day}.")
         return mask_settings(db.store_settings(body))
 
     # ---- the deployment timetable (the one department accounts work on) --------

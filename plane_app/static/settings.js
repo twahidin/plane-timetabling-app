@@ -42,25 +42,27 @@
   };
 
   let labelsEdited = false;
+  let labelsPerDay = 8;                     // the slots per day the labels in the field were made for
+  const SettingsLabels = window.SettingsLabels;
   const msg = (text, cls) => { const m = el('msg'); m.textContent = text; m.className = 'msg-line ' + (cls || ''); };
 
-  function makeLabels() {
-    const mins = +el('slot_minutes').value, n = +el('slots_per_day').value, start = el('start').value || '00:00';
-    if (!(mins > 0) || !(n > 0) || n > 64) return null;
-    const [h, m] = start.split(':').map(Number);
-    let t = (h || 0) * 60 + (m || 0);
-    const out = [];
-    for (let i = 0; i < n; i++) {
-      const hh = Math.floor(t / 60) % 24, mm = t % 60;
-      out.push(String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'));
-      t += mins;
-    }
-    return out;
+  const labelList = () => el('labels').value.split(',').map((x) => x.trim()).filter(Boolean);
+  function showCycle() {                    // "5-day cycle · 40 labels" under the labels field
+    const n = +el('slots_per_day').value, labels = labelList(), hint = el('cycle-hint');
+    if (!hint) return;
+    const problem = SettingsLabels.check(labels, n);
+    hint.textContent = problem || `${SettingsLabels.cycleDays(labels, n)}-day cycle · ${labels.length} labels`;
+    hint.classList.toggle('bad', !!problem);
   }
-  function regenLabels() {
-    if (labelsEdited) return;
-    const labels = makeLabels();
-    if (labels) el('labels').value = labels.join(', ');
+  function regenLabels() {                  // every day of the cycle, keeping day names and the period style
+    if (!labelsEdited) {
+      const mins = +el('slot_minutes').value, n = +el('slots_per_day').value;
+      if (mins > 0 && n > 0 && n <= 64) {
+        el('labels').value = SettingsLabels.regenerate(labelList(), labelsPerDay, n, mins, el('start').value || '00:00').join(', ');
+        labelsPerDay = n;
+      }
+    }
+    showCycle();
   }
 
   function fill(s) {
@@ -88,6 +90,8 @@
     const lk = (s.look || {}).default || 'classic';
     document.querySelectorAll('input[name=look]').forEach((r) => { r.checked = r.value === lk; });
     labelsEdited = false;
+    labelsPerDay = t.slots_per_day ?? 8;
+    showCycle();
   }
 
   function collect() {
@@ -102,7 +106,8 @@
     if (rest.some((n) => !Number.isInteger(n) || n < 0)) throw new Error('Mandatory rest slots must be whole numbers');
     const labels = list('labels');
     const n = ints('slots_per_day');
-    if (labels.length !== n) throw new Error(`There are ${labels.length} labels for ${n} slots per day`);
+    const problem = SettingsLabels.check(labels, n);
+    if (problem) throw new Error(problem);
     return {
       time: { slot_minutes: ints('slot_minutes'), slots_per_day: n, start: el('start').value, labels },
       rules: { max_load: ints('max_load'), max_run: ints('max_run'), mandatory_rest: rest },
@@ -129,7 +134,7 @@
   }
 
   ['slot_minutes', 'slots_per_day', 'start'].forEach((id) => el(id).addEventListener('input', regenLabels));
-  el('labels').addEventListener('input', () => { labelsEdited = true; });
+  el('labels').addEventListener('input', () => { labelsEdited = true; showCycle(); });
   el('solve_preset').addEventListener('change', () => {
     const w = PRESETS[el('solve_preset').value];
     if (w) RULES.forEach((r) => { el('w_' + r).value = w[r]; });
