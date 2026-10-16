@@ -833,8 +833,15 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
 # ---------------------------------------------------------------------------
 
 def cycle_days(settings: dict) -> int:
-    time = settings["time"]
-    return len(time["labels"]) // time["slots_per_day"]
+    from .. import week as W                      # plan.model is pure; week is too
+    return W.shape(settings["time"], settings.get("rules"))["n_days"]
+
+
+def open_capacity(settings: dict) -> int:
+    """Periods a cycle one person can teach at most: max_load a day, never more than the day's periods."""
+    from .. import week as W
+    s, ml = W.shape(settings["time"], settings.get("rules")), int(settings["rules"]["max_load"])
+    return ml * s["n_days"] if s["legacy"] else sum(min(ml, n) for n in s["open_per_day"])
 
 
 def effective_allowance(staff: dict, settings: dict) -> float:
@@ -852,7 +859,7 @@ def base_allowance(staff: dict, settings: dict) -> float:
     """The allowance before reductions: the staff's own, or the derived capacity."""
     allowance = staff.get("allowance")
     if allowance is None:
-        return float(staff.get("load_factor", 1.0)) * settings["rules"]["max_load"] * cycle_days(settings)
+        return float(staff.get("load_factor", 1.0)) * open_capacity(settings)
     return allowance
 
 

@@ -6,10 +6,13 @@ from __future__ import annotations
 import secrets
 from datetime import date as _date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 
-from .. import auth, bookings, calendar as cal_mod, periods, relief
+from .. import auth, bookings, calendar as cal_mod, periods, relief, students as S
+from ..plan import model as plan_model
 from . import grid as G, html as H, pdf as P
 
 KINDS = {"teacher": G.teacher_grid, "group": G.group_grid, "class": G.class_grid, "room": G.room_grid}
@@ -24,14 +27,57 @@ def live_org(db) -> dict:
     return org
 
 
-def resolve_grid(org: dict, kind: str, id: str) -> G.Grid:
+def settings_week(db, tid: str | None = None) -> tuple[dict, dict]:
+    """(time, rules) of timetable `tid` (default: the selected one): what the grid builders need to
+    draw each day at its own length."""
+    s = db.get_settings(tid=tid) if tid else db.get_settings()
+    return s["time"], s["rules"]
+
+
+def resolve_grid(org: dict, kind: str, id: str, time: dict | None = None, rules: dict | None = None) -> G.Grid:
     """A teacher/group/class/room grid by kind and id, or a 404 — shared by the print routes and `/api/grid`."""
     if kind not in KINDS:
         raise HTTPException(404, f"unknown kind {kind}")
     try:
-        return KINDS[kind](org, id)
+        return KINDS[kind](org, id, time, rules)
     except KeyError as e:
         raise HTTPException(404, f"unknown {kind} {e.args[0]!r}")
+
+
+def student_grid_for(db, student_id: str, view: str = "cycle") -> G.Grid:
+    """One student's cycle grid of the live timetable, shared by `/print/student` and `/api/grid/student`.
+    Admin routes only (the caller holds `auth.require_session`). A 404 for an unknown student (the
+    reason names the ID, never a name), a 400 for a dated week: a student's view is the cycle only."""
+    if view != "cycle":
+        raise HTTPException(400, "a student's timetable is shown for the cycle only")
+    org = live_org(db)
+    student = next((s for s in db.get_value("students") or [] if s["id"] == student_id), None)
+    if student is None:
+        raise HTTPException(404, f"no student {student_id}")
+    return G.student_grid(org, _plan(db), student, *settings_week(db))
+
+
+def _plan(db) -> dict:
+    return plan_model.normalise(db.get_value("plan") or plan_model.empty_plan())
+
+
+def students_for(db, class_: str | None, level: str | None, all_: str | None) -> tuple[list[dict], str]:
+    """(the students to print, a file stem): a class's, a level's or everyone's, ordered by class then
+    ID. Exactly one choice (400), and someone to print (404). `all` counts as chosen only when it says
+    yes ("1", "true", "yes"): `?all=0` prints nobody's pile, never everyone's."""
+    all_ = str(all_ or "").strip().casefold() in ("1", "true", "yes")
+    if sum(bool(x) for x in (class_, level, all_)) != 1:
+        raise HTTPException(400, "choose a class, a level or all")
+    stored, plan = list(db.get_value("students") or []), _plan(db)
+    if class_:
+        found, stem = [s for s in stored if S.norm(s["class"]) == S.norm(class_)], f"students-{class_}"
+    elif level:
+        found, stem = [s for s in stored if S.level_of(plan, s["class"]) == level.strip()], f"students-level-{level}"
+    else:
+        found, stem = stored, "students-all"
+    if not found:
+        raise HTTPException(404, "no students to print")
+    return S.ordered(found, plan), re.sub(r"[^A-Za-z0-9._-]", "_", stem)
 
 
 def apply_week(db, org: dict, grids: list[G.Grid], view: str, date: str | None) -> list[G.Grid]:
@@ -69,8 +115,8 @@ def _weekdays(date: str) -> list[str]:
 
 def _week_days(db, date: str, make) -> dict[str, tuple[str | None, dict[tuple[str, str], G.Grid] | None]]:
     """For each weekday of the week of `date`: (the timetable in force that day, (kind, id) -> the grid
-    `make(org)` builds from that day's organisation, with that day's covers), the map None when that
-    timetable has nothing built."""
+    `make(org, time, rules)` builds from that day's organisation (with that day's covers) and its
+    timetable's week), the map None when that timetable has nothing built."""
     out: dict[str, tuple[str | None, dict[tuple[str, str], G.Grid] | None]] = {}
     for iso in _weekdays(date):
         try:
@@ -78,7 +124,11 @@ def _week_days(db, date: str, make) -> dict[str, tuple[str | None, dict[tuple[st
         except periods.PeriodError:
             out[iso] = (None, None)
             continue
-        out[iso] = (tid, None if org is None else {(g.kind, g.id): g for g in make(bookings.strip(org))})
+        if org is None:
+            out[iso] = (tid, None)
+            continue
+        time, rules = settings_week(db, tid)
+        out[iso] = (tid, {(g.kind, g.id): g for g in make(bookings.strip(org), time, rules)})
     return out
 
 
@@ -135,10 +185,10 @@ def _weeks(db, base: str, org: dict, grids: list[G.Grid], date: str, make) -> li
     return out
 
 
-def _built(build, org: dict, id: str) -> list[G.Grid]:
+def _built(build, org: dict, id: str, time: dict | None = None, rules: dict | None = None) -> list[G.Grid]:
     """[the grid `build(org, id)` makes], or [] when that organisation has no such teacher/class/room."""
     try:
-        return [build(org, id)]
+        return [build(org, id, time, rules)]
     except KeyError:
         return []
 
@@ -148,10 +198,11 @@ def view_in_force(db, kind: str, id: str, view: str, date: str | None) -> tuple[
     selected live timetable, or for `view == "week"` the week of `date` (default today) in the
     timetable in force on that date."""
     if view != "week":
-        return db.working_timetable(), resolve_grid(live_org(db), kind, id)
+        return db.working_timetable(), resolve_grid(live_org(db), kind, id, *settings_week(db))
     date = date or _date.today().isoformat()
     base, tid, org = _in_force(db, date)
-    [week] = _weeks(db, base, org, [resolve_grid(org, kind, id)], date, lambda o: _built(KINDS[kind], o, id))
+    [week] = _weeks(db, base, org, [resolve_grid(org, kind, id, *settings_week(db, tid))], date,
+                    lambda o, time, rules: _built(KINDS[kind], o, id, time, rules))
     return tid, week
 
 
@@ -166,10 +217,11 @@ def all_for_view(db, kind: str, view: str, date: str | None) -> tuple[str, list[
     if kind not in ALL:
         raise HTTPException(404, f"unknown kind {kind}")
     if view != "week":
-        return db.working_timetable(), G.all_grids(live_org(db), kind)
+        return db.working_timetable(), G.all_grids(live_org(db), kind, *settings_week(db))
     date = date or _date.today().isoformat()
     base, tid, org = _in_force(db, date)
-    return tid, _weeks(db, base, org, G.all_grids(org, kind), date, lambda o: G.all_grids(o, kind))
+    return tid, _weeks(db, base, org, G.all_grids(org, kind, *settings_week(db, tid)), date,
+                       lambda o, time, rules: G.all_grids(o, kind, time, rules))
 
 
 def make_router(db, templates) -> APIRouter:
@@ -188,7 +240,7 @@ def make_router(db, templates) -> APIRouter:
             spec = db.get_value(f"print_custom:{id}")
             if spec is None:
                 raise HTTPException(404, "no such custom timetable")
-            grids = [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()))]
+            grids = [G.custom_grid(org, spec["title"], spec.get("persons", ()), spec.get("events", ()), *settings_week(db))]
             return db.working_timetable(), apply_week(db, org, grids, view, date)
         return grids_for_view(db, kind, id, view, date)
 
@@ -220,6 +272,33 @@ def make_router(db, templates) -> APIRouter:
         return HTMLResponse(templates.env.get_template("print/relief.html").render(
             rows=rows, since=since_words, generated=generated, timetable=name))
 
+    # Students are the admin's alone (`require_session`, not `require_user`): registered before the generic
+    # `/print/{kind}/{id}` so a department account is refused here, and a student's name is only in these.
+    def student_grids(ids: list[dict]) -> list[G.Grid]:
+        org, (time, rules), plan = live(), settings_week(db), _plan(db)
+        return [G.student_grid(org, plan, s, time, rules) for s in ids]
+
+    @r.get("/print/student/{id}.pdf")
+    def student_pdf(id: str, view: str = "cycle", sid: str = Depends(auth.require_session)):
+        stem = re.sub(r"[^A-Za-z0-9._-]", "_", f"student-{id}")
+        return respond((db.working_timetable(), [student_grid_for(db, id, view)]), True, stem)
+
+    @r.get("/print/student/{id}")
+    def student_html(id: str, view: str = "cycle", sid: str = Depends(auth.require_session)):
+        return respond((db.working_timetable(), [student_grid_for(db, id, view)]), False, f"student-{id}")
+
+    @r.get("/print/students.pdf")
+    def students_pdf(class_: str | None = Query(None, alias="class"), level: str | None = None, all_: str | None = Query(None, alias="all"),
+                     sid: str = Depends(auth.require_session)):
+        found, stem = students_for(db, class_, level, all_)
+        return respond((db.working_timetable(), student_grids(found)), True, stem)
+
+    @r.get("/print/students")
+    def students_html(class_: str | None = Query(None, alias="class"), level: str | None = None, all_: str | None = Query(None, alias="all"),
+                      sid: str = Depends(auth.require_session)):
+        found, stem = students_for(db, class_, level, all_)
+        return respond((db.working_timetable(), student_grids(found)), False, stem)
+
     @r.get("/print/all/{kind}.pdf")
     def all_pdf(kind: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         return respond(all_for_view(db, kind, view, date), True, f"all-{kind}")
@@ -240,10 +319,15 @@ def make_router(db, templates) -> APIRouter:
     def targets(who: auth.Principal = Depends(auth.require_user)):
         org = live()
         groups = org.get("groups", [])
-        return {"teachers": [{"id": p["id"], "name": p["name"]} for p in sorted(org["persons"], key=lambda p: p["name"]) if str(p.get("role", "")).startswith("Teacher")],
+        out = {"teachers": [{"id": p["id"], "name": p["name"]} for p in sorted(org["persons"], key=lambda p: p["name"]) if str(p.get("role", "")).startswith("Teacher")],
                 "groups": [{"id": g["id"], "name": g["name"]} for g in sorted(groups, key=lambda g: g["name"])],
                 "classes": sorted({c for g in groups if g.get("band") is None for c in g["classes"]}),
                 "rooms": [{"id": l["id"], "name": l["name"]} for l in sorted(org["locations"], key=lambda l: l["name"]) if not l.get("rest")]}
+        if who.is_admin:                                # a department account never sees a student, not even a count
+            plan = _plan(db)
+            out["students"] = [{"id": s["id"], "name": s["name"], "class": s["class"], "level": S.level_of(plan, s["class"])}
+                               for s in S.ordered(list(db.get_value("students") or []), plan)]
+        return out
 
     @r.post("/api/print/custom")
     def custom(body: dict, sid: str = Depends(auth.require_session)):

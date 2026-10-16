@@ -137,6 +137,67 @@
     box.hidden = false;
   }
 
+  // ---------- your week: the week editor, prefilled from what the wizard wrote (spec 2026-10-15-week-shape §5) ----------
+  // The same save as Settings: the editor's week is checked, a changed grid asks what it costs, and the
+  // server's answer (a refusal with its reason, or what the new week moved) is said in words.
+  let weekEditor = null;
+  let weekLoaded = '';                  // the stored week the editor was filled from: unchanged, an edit in progress is kept
+  let weekStored = { time: {}, rules: {} };
+  function weekToSend() {               // what the server needs to derive the week; it writes the labels itself
+    const t = weekEditor.value();
+    const time = { slot_minutes: t.slot_minutes, start: t.start, cycle: t.cycle, days: t.days, label_style: t.label_style };
+    if (t.cycle === 'rolling') time.rolling_start_day = weekStored.time.rolling_start_day || 1;
+    return time;
+  }
+
+  async function saveWeek(btn) {
+    if (!weekEditor) return;
+    const problem = weekEditor.problem();
+    if (problem) { notify('error', problem); return; }
+    const time = weekToSend();
+    btn.disabled = true;
+    try {
+      const newGrid = window.WeekEditor.gridChanged(weekStored.time, weekStored.rules, time);
+      if (newGrid) {                        // a new grid: say what it costs before saving
+        const imp = await api('/api/week/impact', { method: 'POST', body: JSON.stringify({ time }) });
+        const question = window.WeekEditor.saveQuestion(imp);
+        if (question && !window.confirm(question)) { notify('warn', 'Not saved.'); return; }
+      }
+      const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ time }) });
+      const changes = window.WeekEditor.savedText(saved.week_changes, newGrid);
+      notify('good', changes ? `Week saved. ${changes}` : 'Week saved.');
+      if (window.reloadModel) window.reloadModel().catch(() => {});
+      if (window.loadBoard) window.loadBoard().catch(() => {});
+      await showWeek(true);
+    } catch (e) { notify('error', e.message); }      // a 409 says why (period timetables, a running build)
+    finally { btn.disabled = false; }
+  }
+
+  function hideWeek() { el('wizard-week').hidden = true; weekEditor = null; }
+
+  async function showWeek(fresh) {
+    const box = el('wizard-week');
+    let settings;
+    try { settings = await api('/api/settings'); } catch (e) { box.hidden = true; return; }
+    // the card reloads whenever the plan or the chat changes: leave a week being edited alone unless asked
+    if (!fresh && weekEditor && !box.hidden && JSON.stringify(settings.time) === weekLoaded) return;
+    // a time the week cannot read (a 24-hour ward, more than 20 days) has no week step: Settings keeps its time grid
+    if (!window.WeekEditor.editable(settings.time || {}, settings.rules || {})) { box.textContent = ''; hideWeek(); return; }
+    box.textContent = '';
+    weekLoaded = JSON.stringify(settings.time);
+    weekStored = { time: settings.time || {}, rules: settings.rules || {} };
+    box.appendChild(node('h3', null, 'Your week'));
+    box.appendChild(node('p', 'wizard-note', 'Check each day\u2019s start, periods and breaks; your workbook and timetable use this week.'));
+    const host = node('div', 'week-editor');
+    box.appendChild(host);
+    weekEditor = window.WeekEditor.mount(host, weekStored.time, { rules: weekStored.rules });
+    const save = node('button', 'btn primary', 'Save the week');
+    save.type = 'button';
+    save.addEventListener('click', () => saveWeek(save));
+    box.appendChild(save);
+    box.hidden = false;
+  }
+
   // ---------- chat events: preview fills the card, done shows the downloads ----------
   // chat.js's handleEvents forwards every `{"kind": "wizard", ...}` event here.
   function renderWizardEvent(ev) {
@@ -147,11 +208,13 @@
       renderDecisions(latestCandidates);
       renderCandidates(latestCandidates);
       el('wizard-downloads').hidden = true;
+      hideWeek();
     } else if (ev.stage === 'done') {
       latestCandidates = [];
       renderCandidates([]);
       renderDecisions([]);
       renderDownloads(ev.downloads || DOWNLOADS);
+      showWeek(true);
     }
   }
   window.renderWizardEvent = renderWizardEvent;
@@ -175,7 +238,7 @@
 
     const show = !hasPlan && (solid.organisation == null || hasRecord);
     if (!show) {
-      renderCandidates([]); renderDecisions([]); el('wizard-downloads').hidden = true;
+      renderCandidates([]); renderDecisions([]); el('wizard-downloads').hidden = true; hideWeek();
       el('wizard').hidden = true;
       return;
     }
@@ -183,8 +246,9 @@
     if (hasRecord) {
       renderCandidates([]);
       renderDownloads(DOWNLOADS);
+      showWeek();
       try {
-        const facts = await api('/api/wizard/preview', { method: 'POST', body: JSON.stringify({ template: record.template, knobs: record.knobs }) });
+        const facts = await api('/api/wizard/preview', { method: 'POST', body: JSON.stringify({ template: record.template, knobs: record.knobs, saved: true }) });
         renderDecisions([{ name: '', facts, knobs: record.knobs }]);
       } catch (e) { renderDecisions([]); }
       el('wizard').hidden = false;
@@ -192,6 +256,7 @@
       renderCandidates([]);
       renderDecisions([]);
       el('wizard-downloads').hidden = true;
+      hideWeek();
       el('wizard').hidden = true;             // nothing to show until the chat offers options
     }
   }

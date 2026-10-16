@@ -188,21 +188,35 @@
   });
 
   // ---------- Add absence dialog ----------
-  // The part of the day is picked by the timetable's labels (`day` of /api/relief: every slot of the
-  // day but a break), each option's value its offset within the day, so "P5" is the right slot even
-  // with a Recess before it. A blank start is the start of the day, a blank end the end of the day.
+  // The part of the day is picked by the timetable's labels (`day` of /api/relief: the periods of the
+  // day the absence starts on, never a break or a closed slot), each option's value its offset within
+  // the day, so "P5" is the right slot even with a Recess before it. A blank start is the start of the
+  // day, a blank end the end of the day. Another first day may be a shorter day: the list is asked for
+  // again (/api/relief/day?date=) when the first day changes.
   const dlg = el('absence-dialog'), form = el('absence-form'), errBox = el('absence-error');
-  function fillSlots() {
-    const day = (data && data.day) || [];
+  let dayList = [];
+  function fillSlots(list) {
+    const day = dayList = list || (data && data.day) || [];
     ['absence-slots-from', 'absence-slots-to'].forEach((id) => {
       const sel = el(id);
+      const kept = sel.value;                      // a pick still on offer stays picked
       sel.textContent = '';
       const blank = node('option', null, id === 'absence-slots-from' ? 'the start of the day' : 'the end of the day');
       blank.value = '';
       sel.appendChild(blank);
       day.forEach((s) => { const o = node('option', null, s.label); o.value = String(s.slot); sel.appendChild(o); });
+      if (day.some((s) => String(s.slot) === kept)) sel.value = kept;
       sel.disabled = !day.length;
     });
+  }
+  let asked = 0;
+  async function loadDay() {                     // the periods of the day the absence starts on
+    const from = el('absence-from').value, mine = ++asked;
+    if (!from) return;
+    try {
+      const r = await api('/api/relief/day?date=' + encodeURIComponent(from));
+      if (mine === asked) fillSlots(r.day || []);
+    } catch (e) { /* keep the list shown */ }
   }
   el('absence-new').addEventListener('click', async () => {
     await window.loadRelief(true);
@@ -213,6 +227,7 @@
     teachers.forEach((t) => { const o = node('option', null, t.name); o.value = t.id; sel.appendChild(o); });
     el('absence-from').value = today(); el('absence-to').value = today();
     fillSlots();
+    loadDay();
     errBox.hidden = true; errBox.textContent = '';
     if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
     sel.focus();
@@ -221,6 +236,7 @@
   el('absence-cancel').addEventListener('click', close);
   el('absence-from').addEventListener('change', () => {
     if (!el('absence-to').value || el('absence-to').value < el('absence-from').value) el('absence-to').value = el('absence-from').value;
+    loadDay();
   });
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -230,7 +246,7 @@
     if (!body.person) return fail('Pick the teacher who is away.');
     if (!body.from) return fail('Pick the first day.');
     const lo = el('absence-slots-from').value, hi = el('absence-slots-to').value;
-    const day = (data && data.day) || [];
+    const day = dayList;
     if ((lo || hi) && day.length) {              // option values are offsets within the day; the API takes [first, one past last]
       const a = lo ? Number(lo) : day[0].slot, b = hi ? Number(hi) : day[day.length - 1].slot;
       if (b < a) return fail('The part of the day ends before it starts.');

@@ -363,16 +363,26 @@
   let draft = null;
   async function loadDraft() {
     const box = el('draft');
-    let d;
-    try { d = await api('/api/draft'); }
+    let d, st = null;
+    // The draft and the settings arrive together, before the box is cleared: the clear and the rebuild below
+    // then run in one go, so two loads in flight at once cannot both append their tables.
+    try { [d, st] = await Promise.all([api('/api/draft'), api('/api/settings').catch(() => null)]); }
     catch (e) { draft = null; box.hidden = true; box.textContent = ''; await showSolveBar(false); await loadBookings(); return; }
     draft = d;
     box.textContent = '';
     const head = node('div', 'head');
     head.appendChild(node('div', 'section-title', 'Draft timetable' + (d.name ? ': ' + d.name : '')));
     const placed = (d.events || []).filter((e) => e.loc != null && e.t0 != null).length;
+    // A week with its own days: the closed positions and breaks are not time to teach in, so count the open
+    // periods of the cycle. A timetable from before that counts its labels as it always did.
+    let slotsText = `${String((d.time_labels || []).length)} time slots`;
+    const wk = st && st.time && Array.isArray(st.time.days) && st.time.days.length ? window.Week.shape(st.time, st.rules) : null;
+    if (wk && !wk.legacy) {
+      const open = wk.openPerDay.reduce((a, b) => a + b, 0);
+      slotsText = `${open} period${open === 1 ? '' : 's'} a cycle`;
+    }
     const summary = node('div', 'summary');
-    summary.innerHTML = `${String((d.persons || []).length)} <span data-word="person" data-word-plural>teachers</span> \u00b7 ${String((d.locations || []).length)} <span data-word="venue" data-word-plural>rooms</span> \u00b7 ${String((d.events || []).length)} <span data-word="requirement" data-word-plural>lessons</span> (${String(placed)} fixed) \u00b7 ${String((d.time_labels || []).length)} time slots`;
+    summary.innerHTML = `${String((d.persons || []).length)} <span data-word="person" data-word-plural>teachers</span> \u00b7 ${String((d.locations || []).length)} <span data-word="venue" data-word-plural>rooms</span> \u00b7 ${String((d.events || []).length)} <span data-word="requirement" data-word-plural>lessons</span> (${String(placed)} fixed) \u00b7 ${slotsText}`;
     window.Words.apply(summary);
     head.appendChild(summary);
     const groups = d.groups || [], bands = d.bands || [];
@@ -400,14 +410,14 @@
     box.appendChild(node('h3', null, `Bookings (${items.length})`));
     const tw = node('div', 'tablewrap'), table = node('table', 'grid');
     const thead = node('thead'), htr = node('tr');
-    ['date', 'venue', 'slots', 'title', 'booked by', ''].forEach((h) => htr.appendChild(node('th', null, h)));
+    ['date', 'venue', 'periods', 'title', 'booked by', ''].forEach((h) => htr.appendChild(node('th', null, h)));
     thead.appendChild(htr); table.appendChild(thead);
     const tbody = node('tbody');
     items.forEach((b) => {
       const tr = node('tr');
       tr.appendChild(node('td', null, (data.describe || {})[b.id] || b.date));
       tr.appendChild(node('td', null, b.venue));
-      tr.appendChild(node('td', null, `${b.start}\u2013${b.start + b.dur - 1}`));
+      tr.appendChild(node('td', null, (data.periods || {})[b.id] || `${b.start + 1}\u2013${b.start + b.dur}`));
       tr.appendChild(node('td', null, b.title));
       tr.appendChild(node('td', null, b.booked_by || ''));
       const del = node('button', 'btn', 'Delete');

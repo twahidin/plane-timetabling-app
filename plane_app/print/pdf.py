@@ -11,7 +11,8 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, 
 
 from .grid import Grid
 
-FILL = {"lesson": colors.white, "booking": colors.HexColor("#fff3cd"), "rest": colors.HexColor("#eeeeee"), "free": colors.white}
+FILL = {"lesson": colors.white, "booking": colors.HexColor("#fff3cd"), "rest": colors.HexColor("#eeeeee"),
+        "break": colors.HexColor("#eeeeee"), "free": colors.white}
 _H = ParagraphStyle("h", fontName="Helvetica-Bold", fontSize=14, leading=17)
 _S = ParagraphStyle("s", fontName="Helvetica", fontSize=9, leading=11, textColor=colors.HexColor("#555555"))
 _F = ParagraphStyle("f", fontName="Helvetica", fontSize=6.5, leading=8, textColor=colors.HexColor("#555555"))
@@ -47,6 +48,8 @@ def _styles(t_size: float, u_size: float) -> tuple[ParagraphStyle, ParagraphStyl
 def _cell(c, col: float, t_st: ParagraphStyle, u_st: ParagraphStyle) -> list:
     if c.kind == "rest":
         return [Paragraph("rest", u_st)]
+    if c.kind == "break":
+        return [Paragraph(escape(c.text), u_st)] + [Paragraph(escape(m), u_st) for m in c.bad]
     if c.kind in ("lesson", "booking"):
         # The lesson name wraps (two lines at worst); only `sub` is clipped, so a cell stays ~3 lines.
         return [Paragraph(escape(c.text), t_st), Paragraph(escape(_clip(c.sub, col * max(1, c.span))), u_st)]
@@ -54,14 +57,25 @@ def _cell(c, col: float, t_st: ParagraphStyle, u_st: ParagraphStyle) -> list:
 
 
 def _table(g: Grid, width: float) -> Table:
-    n = len(g.slots)
+    uniform = g.uniform
+    n = len(g.slots) if uniform else g.columns
     day_w, col, t_size, u_size = _scale(n, width)
     t_st, u_st = _styles(t_size, u_size)
     pad = 3 if col >= 40 else 2
-    data = [[""] + [Paragraph(escape(s), t_st) for s in g.slots]]
-    style = [("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bbbbbb")), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2f2f2")),
+    head_bg = colors.HexColor("#f2f2f2")
+
+    def header(slots: list[str]) -> list:
+        return ([""] + [Paragraph(escape(x), t_st) for x in slots] + [""] * n)[:n + 1]
+
+    data = [header(g.slots)] if uniform else []
+    style = [("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bbbbbb")), ("BACKGROUND", (0, 0), (-1, 0), head_bg),
              ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), pad), ("RIGHTPADDING", (0, 0), (-1, -1), pad)]
-    for r, d in enumerate(g.days, start=1):
+    for d in g.days:
+        if not uniform:                                  # days of different lengths: each day carries its own header row
+            r = len(data)
+            data.append(header(d.slots or g.slots))
+            style.append(("BACKGROUND", (1, r), (-1, r), head_bg))
+        r = len(data)
         row = [Paragraph(escape(d.label), t_st)]
         i = 0
         while i < len(d.cells):
@@ -81,7 +95,7 @@ def _table(g: Grid, width: float) -> Table:
         while len(row) < n + 1:
             row.append("")
         data.append(row[:n + 1])
-    t = Table(data, colWidths=[day_w] + [col] * n, repeatRows=1)
+    t = Table(data, colWidths=[day_w] + [col] * n, repeatRows=1 if uniform else 0)
     t.setStyle(TableStyle(style))
     return t
 

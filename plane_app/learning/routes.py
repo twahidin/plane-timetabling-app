@@ -73,7 +73,8 @@ def make_router(db) -> APIRouter:
         was = fixes.sharing_on(db)
         fixes.set_sharing(db, body["fixes"])
         if body["fixes"] and not was:
-            fixes.publish_all_soon(db, lambda: request.app.state.engine_factory(db.get_settings()))
+            from ..main import make_engine      # lazily: main imports this module
+            fixes.publish_all_soon(db, lambda: make_engine(request.app, db))
         return {"fixes": fixes.sharing_on(db)}
 
     @r.get("/api/templates/local")
@@ -88,8 +89,9 @@ def make_router(db) -> APIRouter:
             raise HTTPException(400, str(e))
 
     def _engine(request: Request):
+        from ..main import make_engine      # lazily: main imports this module
         try:
-            return request.app.state.engine_factory(db.get_settings())
+            return make_engine(request.app, db)
         except Exception:       # noqa: BLE001 - no engine can be made from the settings
             raise HTTPException(502, SHARED_ERROR)
 

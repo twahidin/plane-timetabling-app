@@ -13,6 +13,7 @@ import copy
 import json
 from pathlib import Path
 
+from .. import week
 from ..db import PRESETS, RULES as SOLVE_RULES
 
 LIBRARY_DIR = Path(__file__).parent / "library"
@@ -156,6 +157,39 @@ def _validate_knobs(template: dict, where: str) -> None:
         raise WizardError(f"{where}: knob 'cycle_days': default must be a whole number of days")
 
 
+def _validate_days(time: dict, where: str) -> None:
+    """`time.days` (optional; spec 2026-10-15-week-shape §5): one entry for every day, or five for
+    Monday to Friday. Each is `{periods, start?, breaks?}`, its breaks read as `week.check` reads them."""
+    days = time["days"]
+    spot = f"{where}: time.days"
+    if not isinstance(days, list) or len(days) not in (1, 5):
+        raise WizardError(f"{spot}: give one entry for every day or five for Monday to Friday")
+    if len(days) == 5 and time["days_per_week"] != 5:
+        raise WizardError(f"{spot}: five entries are Monday to Friday, which needs time.days_per_week 5")
+    for i, day in enumerate(days):
+        at = f"{spot}[{i}]"
+        if not isinstance(day, dict):
+            raise WizardError(f"{at}: must be an object with periods, and optionally start and breaks")
+        if not _is_int(day.get("periods")) or not 1 <= day["periods"] <= week.MAX_POSITIONS:
+            raise WizardError(f"{at}: periods must be a whole number from 1 to {week.MAX_POSITIONS}")
+        if "start" in day and (not isinstance(day["start"], str) or week.minutes(day["start"]) is None):
+            raise WizardError(f"{at}: start {day['start']!r} must read like '07:30'")
+        breaks = day.get("breaks", [])
+        if not isinstance(breaks, list):
+            raise WizardError(f"{at}: breaks must be a list")
+        if day["periods"] + len(breaks) > week.MAX_POSITIONS:
+            raise WizardError(f"{at}: at most {week.MAX_POSITIONS} periods and breaks a day")
+        for b in breaks:
+            if not isinstance(b, dict):
+                raise WizardError(f"{at}: each break needs an after, a name and minutes")
+            if not _is_int(b.get("after")) or not 1 <= b["after"] <= day["periods"] - 1:
+                raise WizardError(f"{at}: a break must sit between two periods (after 1 to {day['periods'] - 1})")
+            if not isinstance(b.get("name"), str) or not b["name"].strip():
+                raise WizardError(f"{at}: every break needs a name")
+            if not _is_int(b.get("minutes")) or not 1 <= b["minutes"] <= 240:
+                raise WizardError(f"{at}: break {b['name']!r} needs 1 to 240 minutes")
+
+
 def _validate_time_and_rules(template: dict, where: str) -> None:
     time = _field(template, "time", dict, where)
     for key, kind in TIME_SCHEMA.items():
@@ -169,6 +203,8 @@ def _validate_time_and_rules(template: dict, where: str) -> None:
     if not (len(time["day_start"]) == 5 and time["day_start"][2] == ":"
             and time["day_start"].replace(":", "").isdigit()):
         raise WizardError(f"{where}: time.day_start {time['day_start']!r} must read like '07:30'")
+    if "days" in time:
+        _validate_days(time, where)
 
     rules = _field(template, "rules", dict, where)
     for key, kind in RULES_SCHEMA.items():

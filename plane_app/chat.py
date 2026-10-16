@@ -16,13 +16,15 @@ from . import names
 from . import periods
 from . import proposals
 from . import relief
+from . import week
 from .db import Db
 from .engine_client import EngineClient, EngineError
 from .intake import IntakeError, apply_patch, empty_organisation, summarise
 from .llm import Provider, ProviderError, ToolCall, ToolSpec
+from . import students as students_mod
 from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
-from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, vocabulary_of
+from .plan.model import DEFAULT_VOCABULARY, apply_patch as apply_plan_patch, empty_plan, normalise as normalise_plan, vocabulary_of
 from .learning import fixes as learning_fixes
 from .learning import habits as learning_habits
 from .learning import log as decisions
@@ -111,6 +113,35 @@ def system_prompt(vocabulary: dict | None = None) -> str:
 
 
 SYSTEM_PROMPT = system_prompt()
+
+
+def week_context(db: Db) -> str:
+    """The working timetable's week, a line a day, for the model: when each day starts and ends, its periods
+    and where its breaks fall. "" for a timetable from before the week table (every day the same, as it was
+    always told) so the model hears nothing new about it."""
+    settings = db.get_settings()
+    shape = week.shape(settings.get("time"), settings.get("rules"))
+    if shape["legacy"]:
+        return ""
+    return "\n".join(["The week (one line a day):", *week.describe(shape)])
+
+def students_context(db: Db) -> str:
+    """One line of counts about the timetable's students for the model: how many, how many choice
+    patterns, how many to check and of what kinds. "" with no students. Never a name or an ID."""
+    stored, plan = db.get_value("students"), db.get_value("plan")
+    if not stored or not isinstance(plan, dict):
+        return ""
+    try:            # a plan or list that no longer reads never stops a chat turn; only the kind of error is logged
+        plan = normalise_plan(plan)
+        found = students_mod.problems(stored, plan, db.get_org("live") or db.get_org("draft"))
+        counted = students_mod.summary(stored, plan, found)
+    except Exception as e:
+        _log.warning("students context skipped: %s", type(e).__name__)
+        return ""
+    line = f"Students: {counted['count']}, {counted['patterns']} choice patterns, {counted['to_check']} to check"
+    if found:
+        line += " (kinds: " + ", ".join(sorted({p["kind"] for p in found})) + ")"
+    return line
 
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
@@ -680,7 +711,7 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             if has_blocks(issues):
                 blocks = [i.text for i in issues if i.level == "block"]
                 return json.dumps({"error": f"{len(blocks)} blocking issues: " + "; ".join(capped(blocks))})
-            org, summary = plan_generate_mod.generate(p, base_org, settings)
+            org, summary = plan_generate_mod.generate(p, base_org, settings, students=db.get_value("students") or None)
             db.set_org("draft", org)
             events.append({"kind": "draft_updated"})
             if engine is not None:
@@ -846,6 +877,12 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
     waiting = chat_readings.context_line(db)
     if waiting:
         prompt += "\n" + waiting
+    days = week_context(db)
+    if days:
+        prompt += "\n" + days
+    counts = students_context(db)
+    if counts:
+        prompt += "\n" + counts
     for _ in range(MAX_ROUNDS):
         try:
             turn = provider.complete(prompt, history_for_provider(db, session_id), TOOLS)

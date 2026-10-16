@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import date as _date, timedelta
 
-from . import calendar as cal, changes, names as names_mod, periods, proposals
+from . import calendar as cal, changes, names as names_mod, periods, proposals, week
 from .db import THREAD
 from .print import grid as grid_mod
 
@@ -186,18 +186,68 @@ def add_absence(db, person, date_from, date_to=None, slots=None, reason="") -> d
     if (t - f).days + 1 > MAX_ABSENCE_DAYS:
         raise ReliefError(f"an absence can cover at most {MAX_ABSENCE_DAYS} days")
     if slots is not None:
-        spd = int(_base_settings(db)["time"].get("slots_per_day") or 0)
         try:
             a, b = (int(x) for x in slots)
         except (TypeError, ValueError):
             raise ReliefError("slots are [first, one past last] within the day") from None
-        if not (0 <= a < b and (not spd or b <= spd)):
-            raise ReliefError(f"slots {a}–{b - 1} are not within a day of {spd} slots")
+        if not 0 <= a < b:
+            raise ReliefError("the part of the day must end after it starts")
+        _check_slots(db, _base_settings(db), f, t, a, b)
         slots = [a, b]
     rec = {"id": "abs-" + secrets.token_hex(3), "person": person, "from": f.isoformat(), "to": t.isoformat(),
            "slots": slots, "reason": str(reason or "").strip(), "created": _now()}
     _mutate(db, lambda doc: doc["absences"].append(rec))
     return rec
+
+
+def _refusal(db, st: dict, shape: dict, f: _date, t: _date, a: int, b: int, d: _date | None) -> ReliefError:
+    """Why slots `a`..`b-1` cannot be marked, in periods and with the way out: the periods of `d`'s
+    cycle day (day 0, without a date, when `d` is None), the periods picked named as the range's first
+    day labels them (as one-based slots when a pick is a break, closed or past the day)."""
+    spd = shape["spd"]
+
+    def day_of(date):
+        k = 0 if date is None or shape["legacy"] else cal.cycle_day(st["calendar"], st["time"], date.isoformat())
+        return shape["positions"][(k or 0) * spd:((k or 0) + 1) * spd], k
+    row, k = day_of(d)
+    labels = day_labels(db, d.isoformat() if d else None)
+    periods = [p for p in row if p["kind"] == "period"]
+    first_row, _ = day_of(f)
+    picked = day_labels(db, f.isoformat())
+    names = [picked[i] if i < len(first_row) and i < len(picked) and first_row[i]["kind"] == "period" else None
+             for i in (a, b - 1)]
+    said = f"{names[0]}–{names[1]}" if all(names) else f"slots {a + 1}–{b}"
+    when = f"{shape['days'][k]} {d.strftime('%-d %b')}" if d else "The school day"
+    count = f"{len(periods)} period{'' if len(periods) == 1 else 's'}"
+    span = f" ({labels[periods[0]['index']]}–{labels[periods[-1]['index']]})" if periods and periods[-1]["index"] < len(labels) else ""
+    way = f" Enter {when} separately, or shorten the range." if d and f != t else " Pick periods within it."
+    return ReliefError(f"{when} has {count}{span}, so {said} can't be marked that day.{way}")
+
+
+def _check_slots(db, st: dict, f: _date, t: _date, a: int, b: int) -> None:
+    """A part-day absence stays within the school day (the shape's own length, not the stored
+    slots_per_day, which may be missing or stale). A week with its own days also has it start and end
+    in a period of every cycle day it falls on (a break between two periods is covered like any slot; a
+    closed position is not a lesson time). A ReliefError in periods, for the first date that refuses,
+    otherwise. A legacy week is every day the same: its dates are not read. Dates with no cycle day (a
+    weekend, a holiday, before the term) are only held to the longest day."""
+    shape = week.shape(st["time"], st.get("rules"))
+    spd = shape["spd"]
+    if shape["legacy"] and not (int(st["time"].get("slots_per_day") or 0) or st["time"].get("labels")):
+        return                                     # nothing to hold a legacy day to
+    if b > spd:
+        k0 = None if shape["legacy"] else cal.cycle_day(st["calendar"], st["time"], f.isoformat())
+        raise _refusal(db, st, shape, f, t, a, b, f if k0 is not None else None)
+    if shape["legacy"]:
+        return
+    for i in range((t - f).days + 1):
+        d = f + timedelta(days=i)
+        k = cal.cycle_day(st["calendar"], st["time"], d.isoformat())
+        if k is None:
+            continue
+        row = shape["positions"][k * spd:(k + 1) * spd]
+        if row[a]["kind"] != "period" or row[b - 1]["kind"] != "period":
+            raise _refusal(db, st, shape, f, t, a, b, d)
 
 
 def list_absences(db) -> list[dict]:
@@ -219,10 +269,25 @@ def remove_absence(db, aid) -> dict | None:
     return _mutate(db, change)
 
 
-def day_labels(db) -> list[str]:
+def _cycle_day_of(st: dict, date: str | None) -> int:
+    """The cycle day `date` falls on, else day 0 (no date, a weekend, a holiday, before the term)."""
+    k = cal.cycle_day(st["calendar"], st["time"], date) if date else None
+    return k if k is not None else 0
+
+
+def day_labels(db, date: str | None = None) -> list[str]:
     """The labels of one school day's slots on the base timetable, without a day prefix ("P1", …,
-    "Recess", …): an absence's part of the day is a range of offsets into this list."""
-    t = _base_settings(db)["time"]
+    "Recess", …): an absence's part of the day is a range of offsets into this list. A week with its
+    own days reads the cycle day `date` falls on (day 0 for no date or none); a legacy week is every
+    day the same, read from day 0."""
+    st = _base_settings(db)
+    t = st["time"]
+    shape = week.shape(t, st.get("rules"))
+    if not shape["legacy"]:
+        clock = t.get("label_style") == "clock"
+        spd, k = shape["spd"], _cycle_day_of(st, date)
+        return [(p["start"] if clock else f"P{p['period']}") if p["kind"] == "period"
+                else (p["name"] if p["kind"] == "break" else "—") for p in shape["positions"][k * spd:(k + 1) * spd]]
     labels = [str(x) for x in t.get("labels") or []]
     spd = int(t.get("slots_per_day") or len(labels) or 0)
     if not labels or spd <= 0:
@@ -231,20 +296,30 @@ def day_labels(db) -> list[str]:
     return first + [f"slot {i + 1}" for i in range(len(first), spd)]
 
 
-def day_slots(db) -> list[dict]:
+def day_slots(db, date: str | None = None) -> list[dict]:
     """The slots an absence's part of the day can start or end at, as {slot: offset within the day,
-    label}: every slot of the day but the live timetable's mandatory rest (a break), or every slot
-    when there is no live timetable to read."""
-    live = db.get_org("live", tid=_base(db))
-    rest = {int(t) for t in ((live or {}).get("rules") or {}).get("mandatory_rest") or []}
-    return [{"slot": i, "label": label} for i, label in enumerate(day_labels(db)) if i not in rest]
+    label}. A week with its own days offers the periods of the cycle day `date` falls on (day 0 for no
+    date, or a date with no cycle day), never a break or a closed position. A legacy week offers every
+    slot of day 0 but the live timetable's mandatory rest (a break), or every slot when there is no
+    live timetable to read."""
+    st = _base_settings(db)
+    shape = week.shape(st["time"], st.get("rules"))
+    if shape["legacy"]:
+        live = db.get_org("live", tid=_base(db))
+        rest = {int(t) for t in ((live or {}).get("rules") or {}).get("mandatory_rest") or []}
+        return [{"slot": i, "label": label} for i, label in enumerate(day_labels(db)) if i not in rest]
+    k = _cycle_day_of(st, date)
+    clock = st["time"].get("label_style") == "clock"
+    return [{"slot": p["index"], "label": p["start"] if clock else f"P{p['period']}"}
+            for p in shape["positions"] if p["day"] == k and p["kind"] == "period"]
 
 
-def slot_labels(db, slots, labels: list[str] | None = None) -> str:
-    """An absence's part of the day in the day's labels ("P5 only", "P5 to P7"); "" for the whole day."""
+def slot_labels(db, slots, labels: list[str] | None = None, date: str | None = None) -> str:
+    """An absence's part of the day in the day's labels ("P5 only", "P5 to P7"); "" for the whole day.
+    `date` (the absence's first day) picks the cycle day whose labels are read."""
     if not slots:
         return ""
-    labels = day_labels(db) if labels is None else labels
+    labels = day_labels(db, date) if labels is None else labels
     a, b = int(slots[0]), int(slots[1])
 
     def name(t):
@@ -324,8 +399,9 @@ def absence_row(db, absence: dict, doc: dict | None = None, names: dict | None =
     covered = sum(1 for c in doc["covers"] if c.get("absence") == absence["id"])
     if "pending" not in cache:
         cache["pending"] = [c for c in proposals.pending(db, THREAD) if c.get("kind") == "cover"]
-    if "labels" not in cache:
-        cache["labels"] = day_labels(db)
+    labels = cache.setdefault("labels", {})              # by the absence's first date: a day's own labels
+    if absence["from"] not in labels:
+        labels[absence["from"]] = day_labels(db, absence["from"])
     aid = absence["id"]
     pending = sum(1 for c in cache["pending"]
                   if c.get("absence") == aid or any(x.get("absence") == aid for x in c.get("also_for") or []))
@@ -335,7 +411,7 @@ def absence_row(db, absence: dict, doc: dict | None = None, names: dict | None =
                "text": cover_line(cover_parts(db, c, cache))} for c in mine]
     return {**absence, "name": names.get(absence["person"], absence["person"]), "covered": covered,
             "lessons": _lessons_count(db, absence, covered, cache), "pending": pending,
-            "slot_labels": slot_labels(db, absence.get("slots"), cache["labels"]), "covers": covers}
+            "slot_labels": slot_labels(db, absence.get("slots"), labels[absence["from"]]), "covers": covers}
 
 
 def absence_rows(db) -> list[dict]:

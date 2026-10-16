@@ -10,7 +10,9 @@
   th, td { border: 1px solid #bbb; padding: 3px 4px; vertical-align: top; overflow: hidden; }
   th { background: #f2f2f2; font-weight: 600; } th.day { text-align: left; width: 7em; }
   td.lesson .t { font-weight: 600; } td .s { color: #555; font-size: 10px; }
-  td.rest { background: #eee; color: #777; } td.booking { background: #fff3cd; } tr.off td { background: #f7f7f7; color: #999; }
+  td.rest, td.break { background: #eee; color: #777; } td.break { text-align: center; } td.pad { border: 0; background: none; }
+  tr.day-head th { background: #f2f2f2; font-weight: 600; font-size: 10px; padding: 1px 4px; } tr.day-head th.day { background: none; border-color: transparent; }
+  td.booking { background: #fff3cd; } tr.off td { background: #f7f7f7; color: #999; }
   .foot { color: #777; font-size: 10px; margin-top: 6px; }
   @media print { body { padding: 0; } }
 </style></head><body>
@@ -18,10 +20,13 @@
 <section class="grid">
   <h1>{{ g.title }}</h1><p class="sub">{{ g.subtitle }}{% if timetable %} · {{ timetable }}{% endif %}</p>
   <table>
-    <thead><tr><th class="day"></th>{% for s in g.slots %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+    {% if g.uniform %}<thead><tr><th class="day"></th>{% for s in g.slots %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+    {% else %}<colgroup><col style="width: 7em">{% for _ in range(g.columns) %}<col>{% endfor %}</colgroup>{% endif %}
     <tbody>
-    {% for d in g.days %}<tr{% if d.off %} class="off"{% endif %}><th class="day">{{ d.label }}</th>
-      {% for c in d.cells %}{% if c.kind != "continued" %}<td class="{{ c.kind }}"{% if c.span > 1 %} colspan="{{ c.span }}"{% endif %}>{% if c.kind == "rest" %}<span class="s">rest</span>{% elif c.kind in ("lesson", "booking") %}<div class="t">{{ c.text }}</div><div class="s">{{ c.sub }}</div>{% endif %}</td>{% endif %}{% endfor %}
+    {% for d in g.days %}{% if not g.uniform %}<tr class="day-head"><th class="day"></th>{% for s in (d.slots or g.slots) %}<th>{{ s }}</th>{% endfor %}{% if g.columns > (d.slots or g.slots)|length %}<td class="pad" colspan="{{ g.columns - (d.slots or g.slots)|length }}"></td>{% endif %}</tr>{% endif %}
+    <tr{% if d.off %} class="off"{% endif %}><th class="day">{{ d.label }}</th>
+      {% for c in d.cells %}{% if c.kind != "continued" %}<td class="{{ c.kind }}"{% if c.span > 1 %} colspan="{{ c.span }}"{% endif %}>{% if c.kind == "rest" %}<span class="s">rest</span>{% elif c.kind == "break" %}<span class="s">{{ c.text }}</span>{% for m in c.bad %}<div class="s">{{ m }}</div>{% endfor %}{% elif c.kind in ("lesson", "booking") %}<div class="t">{{ c.text }}</div><div class="s">{{ c.sub }}</div>{% endif %}</td>{% endif %}{% endfor %}
+      {% if not g.uniform and g.columns > d.cells|length %}<td class="pad" colspan="{{ g.columns - d.cells|length }}"></td>{% endif %}
     </tr>{% endfor %}
     </tbody>
   </table>

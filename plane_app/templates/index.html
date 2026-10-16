@@ -125,6 +125,23 @@
         <div class="tablewrap"><table class="grid" id="plan-divisions"></table></div>
       </div>
       </div>
+      <section id="students" class="card students" hidden>
+        <div class="section-title"><span>Students <span class="eyebrow" id="students-head"></span></span>
+          <span class="students-actions">
+            <button class="btn" id="students-import" type="button" title="Drop a student list on the Intake page, or ask the Assistant to read one">Import students</button>
+            <button class="btn" id="students-add" type="button">Add student</button>
+            <button class="btn ghost" id="students-clear" type="button">Remove all students</button>
+          </span></div>
+        <div class="students-filter">
+          <input type="search" id="students-search" placeholder="Search name or ID" aria-label="Search students by name or ID" autocomplete="off">
+          <select id="students-class" aria-label="Filter by class"></select>
+        </div>
+        <p class="students-msg" id="students-msg" role="status"></p>
+        <div class="students-form" id="students-form" hidden></div>
+        <div class="tablewrap"><table class="grid students-table" id="students-table"></table></div>
+        <button class="btn" id="students-more" type="button" hidden></button>
+        <div class="students-problems" id="students-problems"></div>
+      </section>
     </div>
   </section><!-- /tab-requirements -->
 
@@ -190,6 +207,7 @@
       <section class="card docked-below" id="consolidation-clashes">
       <ul class="clashes" id="clash-list"></ul>
       </section>
+      <section class="card docked-below student-clashes" id="student-clashes" hidden></section>
     </div>
   </section><!-- /tab-consolidation -->
 
@@ -329,6 +347,7 @@
         <h2>Start wizard <span class="eyebrow">options that fit what you told the assistant</span></h2>
         <div id="wizard-decisions" class="wizard-decisions" hidden></div>
         <div id="wizard-candidates" class="wizard-candidates"></div>
+        <div id="wizard-week" class="wizard-week" hidden></div>
         <div id="wizard-downloads" class="wizard-downloads" hidden></div>
       </div>
     <section id="chat" class="chat">
@@ -482,6 +501,9 @@
       <a class="btn" id="print-all-teachers" href="/print/all/teachers.pdf">All teachers PDF</a>
       <a class="btn" id="print-all-classes" href="/print/all/classes.pdf">All classes PDF</a>
       <a class="btn" id="print-all-rooms" href="/print/all/rooms.pdf">All rooms PDF</a>
+      <a class="btn" id="print-student-class" href="/print/students.pdf?all=1" hidden></a>
+      <a class="btn" id="print-student-level" href="/print/students.pdf?all=1" hidden></a>
+      <a class="btn" id="print-student-all" href="/print/students.pdf?all=1" hidden>All students PDF</a>
       <button type="button" class="btn" id="print-cancel">Close</button>
       <button type="button" class="btn" id="print-view-btn">View</button>
       <button type="button" class="btn primary" id="print-pdf-btn">PDF</button>
@@ -493,13 +515,16 @@
 <script src="{{ asset('three.min.js') }}"></script>
 <script src="{{ asset('words.js') }}"></script>
 <script src="{{ asset('model.js') }}"></script>
+<script src="{{ asset('week.js') }}"></script>
 <script src="{{ asset('chat.js') }}"></script>
 <script src="{{ asset('files.js') }}"></script>
 <script src="{{ asset('plan.js') }}"></script>
+<script src="{{ asset('students.js') }}"></script>
 <script src="{{ asset('board-tray.js') }}"></script>
 <script src="{{ asset('board-forms.js') }}"></script>
 <script src="{{ asset('board-status.js') }}"></script>
 <script src="{{ asset('board.js') }}"></script>
+<script src="{{ asset('week-editor.js') }}"></script>
 <script src="{{ asset('wizard.js') }}"></script>
 <script src="{{ asset('timetables.js') }}"></script>
 <script src="{{ asset('periods.js') }}"></script>

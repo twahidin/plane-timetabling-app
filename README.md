@@ -119,6 +119,20 @@ venue) before and after. Best-timetable time is metered against your licence key
 budget; Quick timetable is not. Timetable exports (aSc) are imported with student groups and
 bands derived from the lessons, so student-side clashes are checked as well as teachers and rooms.
 
+## The week
+
+Settings → **Week** is a table: one row a day of the cycle, each with its own start time, number of
+periods and breaks (recess, lunch, with their own minutes). Every period is the same length; a long
+lesson takes two or three periods in a row. The cycle is week-based (one to four weeks of Mon–Fri,
+two weeks named Odd and Even) or rolling (Day 1…Day N over school days, a holiday using up no day).
+Every day keeps as many positions as the longest one; a shorter day's extra positions are closed, so
+nothing is placed there and grids and printouts leave them out. Saving a week that changes the
+positions moves every lesson, availability, pinned event and room booking with its day and period
+number, asks first when lessons would end up on a closed period or a break, and clears Undo.
+A week can't change while the timetable has period timetables or a build is running. The wizard asks
+for the week after a Mon–Fri template is chosen; an aSc file with another week offers Adopt or Keep.
+Timetables saved before the week table read as "every day the same" and are untouched until saved.
+
 ## Fixing and booking
 
 The assistant in the chat panel proposes individual moves, swaps, and bookings and applies them
@@ -317,6 +331,49 @@ that run together (a blank group code is made up, e.g. 1MEP), **+ Provisional te
 MATH teacher 1" to name later with its **Edit** button (allowance, reductions such as "HOD 8"),
 and **Undo** takes back the last board change. The Issues panel and Generate draft stay above the
 board and follow every change.
+
+## Students
+
+Who takes which option group. The app keeps one record per student (ID, name, form class and the
+option groups they take) for each timetable, so it can print a student's own timetable, report a
+student who is in two places at once, and size option groups and their rooms on real head counts.
+
+**Who sees it.** Only the admin. A department account never sees a name: it gets counts, and the
+student routes answer "not available to department accounts". A student's name is never sent to the
+AI provider or to the engine, and never written to a log or an error message (those say counts and
+row numbers). The engine and the solver see only anonymous choice patterns: each distinct set of
+option groups that some student takes together becomes one anonymous member, added when the app calls
+the engine and stripped from what comes back, so a stored draft or live timetable never holds one. The
+engine must be deployed first (its `/healthz` lists `patterns`); an older engine is sent nothing, and the
+app-side clash check still reports.
+
+**Importing.** Drop an Excel or CSV list on the Assistant or the Intake drop. It is read exactly, never by
+the AI: columns Student ID, Name, Class and Subject 1, Subject 2 and on (Admission No, Student Name,
+Form Class, Option 1 and Band 1 are understood too, and a single Subjects column as a comma list). A
+subject cell is an option group code ("3SCIA") or a subject name; a subject taught in several sets is
+shared out evenly across them and marked as placed by the app. A file that looks like a student list
+but cannot be read exactly (a Word or PDF list, or columns the reader does not know) is refused with
+what to rename, and is never passed to the AI. The result is a reading card: **Apply** replaces the
+timetable's students, **Undo** puts the old ones back.
+
+**The start wizard's workbook** has a Students sheet after Control, with one example row. Fill it
+in and drop the whole workbook: you get two cards, the plan and the student list (read against the
+plan the workbook brings). A sheet left with only its example row, or only its headers, adds no students.
+The two cards apply and undo independently. Apply the student list without the workbook's plan card (or
+before it) and any student who takes an option group the stored plan does not have is listed as one to
+check. The copy of the workbook kept for Apply has the Students sheet removed, so the roster is kept
+only in the timetable's students.
+
+**Checking.** The Students section of the Requirements tab shows "1,204 students, 37 choice patterns, 3
+to check": an unknown class, a subject the class is not offered, two options of one band (they run at the
+same time), a group with more students than its room holds, a repeated ID. Add, edit and remove students
+there, or remove them all. The board shows each option group's real count beside the size you gave.
+**A partial list** (one class, say) makes the draft's option-group sizes count only the students listed,
+so give the whole school's list before you generate a draft for room sizes.
+
+**Printing.** Timetables tab, Student kind (search by name or ID): one student's grid shows the class
+lessons and only the student's own option groups. Print one student, a class, a level or everyone, as
+one PDF with a student on each page, or as a printable page.
 
 ## Appearance
 

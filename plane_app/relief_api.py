@@ -26,9 +26,15 @@ def make_router(db) -> APIRouter:
         return {"settings": relief.settings(db), "pool_names": relief.pool_names(db), "term_start": relief.term_start(db)}
 
     @r.get("/api/relief")
-    def overview(sid: str = Depends(auth.require_session)):
+    def overview(date: str | None = None, sid: str = Depends(auth.require_session)):
         # `day`: the slots a part-day absence can start or end at, by label, for the Add absence dialog
-        return {"absences": relief.absence_rows(db), "day": relief.day_slots(db), **_settings_payload()}
+        # (the periods of the cycle day `date` falls on; day 0 without one)
+        return {"absences": relief.absence_rows(db), "day": relief.day_slots(db, date), **_settings_payload()}
+
+    @r.get("/api/relief/day")
+    def day(date: str | None = None, sid: str = Depends(auth.require_session)):
+        # The Add absence dialog asks again when its first day changes: another day may be shorter
+        return {"day": relief.day_slots(db, date)}
 
     @r.post("/api/relief/absences")
     def add_absence(body: dict, sid: str = Depends(auth.require_session)):

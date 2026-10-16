@@ -12,7 +12,7 @@
 {% include "partials/appbar.html" %}
 <main class="settings-main">
   <div class="tab-head"><div class="eyebrow">Settings</div><h1>Administrator</h1>
-    <p class="lede">The time grid and rules shape every extraction; the solve weights say what a good timetable is; the model provider reads your documents and answers chat; the engine builds, solves and checks the timetable.</p></div>
+    <p class="lede">The week and rules shape every extraction; the solve weights say what a good timetable is; the model provider reads your documents and answers chat; the engine builds, solves and checks the timetable.</p></div>
   <div class="settings-grid">
 
 <section id="accounts" class="form accounts" aria-labelledby="accounts-title">
@@ -69,8 +69,15 @@
     </div>
   </fieldset>
 
-  <fieldset>
+  <fieldset id="week" class="week-fieldset">
+    <legend>Week</legend>
+    <p class="help wide">Each day of the cycle: when it starts, how many periods, and where the breaks fall. Every period is the same length; a long lesson takes two or three in a row.</p>
+    <div id="week-editor" class="week-editor"></div>
+  </fieldset>
+
+  <fieldset id="time-grid" hidden>
     <legend>Time grid</legend>
+    <p class="help wide">This timetable's days do not fit a week of school days (a day of more than 24 hours of periods, or more than 20 days), so it keeps its time grid as before.</p>
     <label>Slot length (minutes)<input type="number" id="slot_minutes" min="1" step="1"></label>
     <label>Slots per day<input type="number" id="slots_per_day" min="1" max="64" step="1"></label>
     <label>Day starts at<input type="time" id="start"></label>
@@ -81,7 +88,7 @@
     <legend>Rules</legend>
     <label>Max load (slots)<input type="number" id="max_load" min="0" step="1"></label>
     <label>Max run (slots in a row)<input type="number" id="max_run" min="0" step="1"></label>
-    <label>Mandatory rest slots <span class="help">comma-separated slot numbers from 0</span><input type="text" id="mandatory_rest"></label>
+    <label hidden>Mandatory rest slots <span class="help">comma-separated slot numbers from 0</span><input type="text" id="mandatory_rest"></label>
   </fieldset>
 
   <fieldset>
@@ -100,6 +107,7 @@
     <legend>Term calendar</legend>
     <label>Term starts (a Monday) <input id="term-start" name="calendar.term_start" type="date"></label>
     <label>First week is <select id="first-week" name="calendar.first_week"><option value="odd">Odd</option><option value="even">Even</option></select></label>
+    <label hidden>Term starts on <span class="help">the cycle day of the first day of term</span><select id="rolling-start"></select></label>
     <label>Non-teaching dates (one per line) <textarea id="non-teaching" name="calendar.non_teaching_dates" rows="3"></textarea></label>
   </fieldset>
 
@@ -143,6 +151,8 @@
 </main>
 
 <script src="{{ asset('look.js') }}"></script>
+<script src="{{ asset('week.js') }}"></script>
+<script src="{{ asset('week-editor.js') }}"></script>
 <script src="{{ asset('settings-labels.js') }}"></script>
 <script src="{{ asset('settings.js') }}"></script>
 <script src="{{ asset('accounts.js') }}"></script>

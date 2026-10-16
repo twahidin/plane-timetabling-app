@@ -17,6 +17,7 @@
   const viewSel = el('print-view'), dateLabel = el('print-date-label'), dateInput = el('print-date');
   const errBox = el('print-error'), noteBox = el('print-note');
   const allTeachers = el('print-all-teachers'), allClasses = el('print-all-classes'), allRooms = el('print-all-rooms');
+  const stuClass = el('print-student-class'), stuLevel = el('print-student-level'), stuAll = el('print-student-all');
 
   let targets = null;     // last /api/print/targets response
   let items = [];         // {id, name} list for the current kind, unfiltered
@@ -25,14 +26,14 @@
   function showError(msg) { errBox.textContent = msg || ''; errBox.hidden = !msg; }
   function showNote(msg) { noteBox.textContent = msg || ''; noteBox.hidden = !msg; }
 
-  // A PDF is rendered synchronously: "all teachers" on a large school takes tens of seconds. Say so,
+  // A PDF is rendered synchronously: "all teachers" (or every student) on a large school takes tens of seconds. Say so,
   // and block a second click until the download navigation starts. There is no job queue, so the only
   // signal that it started is the navigation itself; re-enable after 20 s in case it never does.
   let busy = false, busyTimer = null;
   function setBusy(on) {
     busy = on;
-    showNote(on ? 'Generating PDF… this can take a while for all teachers' : '');
-    [el('print-pdf-btn'), el('print-view-btn'), allTeachers, allClasses, allRooms].forEach((b) => {
+    showNote(on ? 'Generating PDF… this can take a while' : '');
+    [el('print-pdf-btn'), el('print-view-btn'), allTeachers, allClasses, allRooms, stuClass, stuLevel, stuAll].forEach((b) => {
       if (!b) return;
       if (b.tagName === 'A') b.setAttribute('aria-disabled', on ? 'true' : 'false');
       else b.disabled = on;
@@ -47,6 +48,8 @@
     if (kind === 'group') return targets.groups || [];
     if (kind === 'room') return targets.rooms || [];
     if (kind === 'class') return (targets.classes || []).map((c) => ({ id: c, name: c }));
+    // a student is found by name, ID or class: one text carries all three
+    if (kind === 'student') return (targets.students || []).map((s) => ({ id: s.id, name: `${s.name} · ${s.id} · ${s.class}` }));
     return [];
   }
 
@@ -64,6 +67,7 @@
       if (opt) opt.selected = true;
       pendingId = null;
     }
+    updateStudentLinks();
   }
 
   function onKindChange() {
@@ -72,10 +76,47 @@
     targetSel.multiple = kind === 'custom';
     titleLabel.hidden = kind !== 'custom';
     rebuildOptions();
+    onViewChange();
+  }
+
+  // A student's timetable is the cycle only (no dated week).
+  const cycleOnly = () => kindSel.value === 'student';
+
+  // The admin alone is offered students: the server lists them in the targets only for the admin, and
+  // /api/me is asked as well. The Student kind is added to the picker only then.
+  async function offerStudents() {
+    let admin = false;
+    try { admin = (await api('/api/me')).role === 'admin'; } catch (e) { admin = false; }
+    const has = Array.prototype.some.call(kindSel.options, (o) => o.value === 'student');
+    if (admin && (targets.students || []).length && !has) {
+      const o = document.createElement('option');
+      o.value = 'student'; o.textContent = 'Student';
+      kindSel.insertBefore(o, kindSel.querySelector('option[value="custom"]'));
+    } else if (!(admin && (targets.students || []).length) && has) {
+      Array.prototype.find.call(kindSel.options, (o) => o.value === 'student').remove();
+    }
+  }
+
+  // The class, level and everyone's PDFs for the chosen student: one student a page, class then ID.
+  function updateStudentLinks() {
+    const on = kindSel.value === 'student';
+    const mine = on ? (targets.students || []).find((s) => s.id === targetSel.value) : null;
+    stuClass.hidden = !mine;
+    stuLevel.hidden = !(mine && mine.level);
+    stuAll.hidden = !on;
+    if (mine) {
+      stuClass.textContent = 'Class ' + mine.class + ' PDF';
+      stuClass.href = '/print/students.pdf?class=' + encodeURIComponent(mine.class);
+      if (mine.level) {
+        stuLevel.textContent = 'Level ' + mine.level + ' PDF';
+        stuLevel.href = '/print/students.pdf?level=' + encodeURIComponent(mine.level);
+      }
+    }
+    stuAll.href = '/print/students.pdf?all=1';
   }
 
   function weekQuery() {
-    if (viewSel.value !== 'week') return '';
+    if (viewSel.value !== 'week' || cycleOnly()) return '';
     const d = dateInput.value;
     return '?view=week' + (d ? '&date=' + encodeURIComponent(d) : '');
   }
@@ -88,8 +129,10 @@
   }
 
   function onViewChange() {
-    dateLabel.hidden = viewSel.value !== 'week';
+    viewSel.disabled = cycleOnly();
+    dateLabel.hidden = viewSel.value !== 'week' || cycleOnly();
     updateAllLinks();
+    updateStudentLinks();
   }
 
   async function loadTargets() {
@@ -107,6 +150,7 @@
     showError('');
     setBusy(false);
     await loadTargets();
+    await offerStudents();
     kindSel.value = kind || 'teacher';
     pendingId = id || null;
     filterInput.value = '';
@@ -140,6 +184,7 @@
   kindSel.addEventListener('change', onKindChange);
   filterInput.addEventListener('input', rebuildOptions);
   viewSel.addEventListener('change', onViewChange);
+  targetSel.addEventListener('change', updateStudentLinks);
   el('print-cancel').addEventListener('click', closeDialog);
 
   el('print-view-btn').addEventListener('click', async () => {
@@ -158,7 +203,7 @@
       window.location = url + '.pdf' + weekQuery();
     } catch (e) { setBusy(false); showError(e.message); }
   });
-  [allTeachers, allClasses, allRooms].forEach((a) => {
+  [allTeachers, allClasses, allRooms, stuClass, stuLevel, stuAll].forEach((a) => {
     if (!a) return;
     a.addEventListener('click', (ev) => {
       if (busy) { ev.preventDefault(); return; }

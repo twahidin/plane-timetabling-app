@@ -180,13 +180,18 @@ export function layoutTowers(classes, cyclePeriods, grounds) {
 }
 
 /* The cycle as rows of period tiles, one row a day; mandatory rests are gaps; pinned events mark their
-   tiles (and plant a flag on the first); edge subjects colour each day's first and last periods. */
+   tiles (and plant a flag on the first); edge subjects colour each day's first and last periods.
+   With the week's positions (spec 2026-10-15-week-shape §1) each row is that day at its own length: tiles
+   for its periods, gaps for its own breaks, nothing for a closed position; a slot is still the position's
+   index, so the days line up on the left. */
 export function layoutWeek(week, grounds) {
   const g = groundsOf(grounds), w = obj(week);
   const days = int(w.days), spd = int(w.slots_per_day);
   const out = { tiles: [], gaps: [], flags: [], pitch: { x: 0, z: 0 } };
   if (!days || !spd) return out;
-  const rests = new Set(list(w.rests).map(int).filter((s) => s < spd));
+  const ps = list(w.positions).length ? list(w.positions) : null;
+  const kindAt = (day, slot) => (ps ? obj(ps[day * spd + slot]).kind : null);
+  const rests = new Set(ps ? [] : list(w.rests).map(int).filter((s) => s < spd));
   const px = Math.min(6, Math.max(1, g.w - 14) / spd), pz = Math.min(8, Math.max(1, g.d - 8) / days);
   out.pitch = { x: r2(px), z: r2(pz) };
   const x = (slot) => r2(2 + (slot - (spd - 1) / 2) * px), z = (day) => r2((day - (days - 1) / 2) * pz);
@@ -197,11 +202,14 @@ export function layoutWeek(week, grounds) {
     for (let k = 0; k < dur && slot + k < spd; k++) pinned.add(day * spd + slot + k);
     out.flags.push({ name: String(obj(p).name || 'Pinned'), x: x(slot), z: z(day), day, slot });
   }
-  const open = [...Array(spd).keys()].filter((s) => !rests.has(s));
-  const edges = list(w.edge_subjects).length > 0 && open.length ? new Set([open[0], open[open.length - 1]]) : new Set();
+  const openOf = (day) => [...Array(spd).keys()].filter((s) => (ps ? kindAt(day, s) === 'period' : !rests.has(s)));
+  const edgy = list(w.edge_subjects).length > 0;
   for (let day = 0; day < days; day++) {
+    const open = openOf(day), edges = edgy && open.length ? new Set([open[0], open[open.length - 1]]) : new Set();
     for (let slot = 0; slot < spd; slot++) {
-      if (rests.has(slot)) { out.gaps.push({ day, slot, x: x(slot), z: z(day) }); continue; }
+      const k = kindAt(day, slot);
+      if (ps && k !== 'period' && k !== 'break') continue;                 // closed: nothing drawn
+      if (ps ? k === 'break' : rests.has(slot)) { out.gaps.push({ day, slot, x: x(slot), z: z(day) }); continue; }
       const kind = pinned.has(day * spd + slot) ? 'pinned' : edges.has(slot) ? 'edge' : 'lesson';
       out.tiles.push({ day, slot, x: x(slot), z: z(day), kind });
     }
@@ -534,7 +542,9 @@ function constraintsScene(doc, c) {
     flag.scale.set(1, 0.001, 1);
     c.anim({ delay: 0.6 + n * 0.1, dur: 0.5, ease: 'back', update: (k) => flag.scale.set(1, Math.max(0.001, k), 1) });
   });
-  const dayName = (d) => (labels[d * spd] || '').split(/\s+/)[0] || `Day ${d + 1}`;
+  const names = list(week.days_names), ps = list(week.positions);
+  const dayName = (d) => (names[d] != null && String(names[d])) || (labels[d * spd] || '').split(/\s+/)[0] || `Day ${d + 1}`;
+  const open = ps.filter((p) => obj(p).kind === 'period').length;   // the periods a cycle, breaks and closed left out
   const x0 = W.tiles.length || W.gaps.length ? Math.min(...W.tiles.concat(W.gaps).map((t) => t.x)) : 0;
   const x1 = W.tiles.length || W.gaps.length ? Math.max(...W.tiles.concat(W.gaps).map((t) => t.x)) : 0;
   const zOf = (d) => (d - (days - 1) / 2) * pz;
@@ -563,7 +573,8 @@ function constraintsScene(doc, c) {
     legend: [['Lesson period', COL.lesson], ['Rest', T.dirt], ['Pinned', COL.pinned]]
       .concat(edges.length ? [[`Edge subject (${edges.slice(0, 3).join(', ')}${edges.length > 3 ? '…' : ''})`, edgeCol]] : [])
       .concat(byDay.size ? [['Note to check', RED]] : []),
-    counters: [[days && spd ? `${days} × ${spd}` : '0', 'Days × periods'], [pinned.length, 'Pinned'], [notes.length, 'Notes to check', notes.length > 0]],
+    counters: [ps.length && days && spd ? [`${days} days · ${open}`, 'Periods a cycle'] : [days && spd ? `${days} × ${spd}` : '0', 'Days × periods'],
+      [pinned.length, 'Pinned'], [notes.length, 'Notes to check', notes.length > 0]],
     note: !(days && spd) ? "Give the Assistant your timetable's week and its periods will be laid out here."
       : (said.length ? said.join('; ') : 'Each row is a day of the cycle; rests are gaps') + '.',
   };

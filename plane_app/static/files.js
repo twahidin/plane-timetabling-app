@@ -25,7 +25,7 @@
   const SHOWN = new Set(['waiting', 'failed', 'retry']);   // and an applied reading that can still be undone
   const VIA = { exact: 'exact', saved: 'saved reader', ai: 'read by AI' };
   const TITLES = { staff: 'Staff', classes: 'Classes', rooms: 'Rooms', requirements: 'Requirements', rules: 'Rules',
-    notes: 'Notes', timetable: 'Timetable' };
+    notes: 'Notes', timetable: 'Timetable', students: 'Students' };
   const NOUNS = { timetable: 'lessons' };
   const MODES = [['keep', 'Keep the existing placement, then check it'], ['rebuild', 'Start again: place everything afresh']];
 
@@ -128,6 +128,10 @@
     label.appendChild(node('b', null, TITLES[name] || name));
     let line = ` · ${s.count}`;
     if (name === 'timetable') line = ` · ${s.count} lessons` + (s.teachers ? `, ${s.teachers} teachers` : '');
+    else if (name === 'students') {
+      line = ` · ${s.count} student${s.count === 1 ? '' : 's'}` + (s.added && s.changed ? ` (${s.added} new, ${s.changed} changed)` : '');
+      if (s.removed) line += `; replaces ${s.removed} stored student${s.removed === 1 ? '' : 's'} not in this file`;
+    }
     else if (s.added && s.changed) line += ` (${s.added} new, ${s.changed} changed)`;
     else if (s.changed && !s.added) line += ' changed';
     label.appendChild(document.createTextNode(line));
@@ -148,6 +152,30 @@
     return sec;
   }
 
+  // What adopting a week costs (POST /api/week/impact), in words, said before Apply.
+  function impactText(imp) {
+    const parts = [];
+    if (imp.lessons > 0) {
+      const where = [...new Set(imp.where || [])].join(', ');
+      parts.push(`${imp.lessons} ${imp.lessons === 1 ? 'lesson sits' : 'lessons sit'} in ${where}${imp.lessons > (imp.where || []).length ? ' and other periods' : ''}, where the new week has no period. They will show as clashes until you rebuild or move them.`);
+    }
+    const other = [imp.bookings > 0 ? `${imp.bookings} room ${imp.bookings === 1 ? 'booking' : 'bookings'}` : '', imp.pins > 0 ? `${imp.pins} pinned ${imp.pins === 1 ? 'lesson' : 'lessons'}` : ''].filter(Boolean);
+    if (other.length) parts.push(`It also affects ${other.join(' and ')}.`);
+    return 'Adopting changes your timetable\u2019s week. ' + parts.join(' ') + ' Undo history from before this change will be cleared.';
+  }
+
+  // What a saved week moved or could not keep (`week_changes` of an apply), in words.
+  function weekChangesText(w) {
+    if (window.WeekEditor && typeof window.WeekEditor.changesText === 'function') return window.WeekEditor.changesText(w);
+    if (!w) return '';
+    const out = [];
+    if ((w.unplaced || []).length) out.push(`${w.unplaced.length} lesson(s) could not stay on their day and are unplaced.`);
+    if ((w.bookings || []).length) out.push(`${w.bookings.length} room booking(s) no longer fit and were removed.`);
+    if ((w.pins || []).length) out.push(`${w.pins.length} pin(s) could not be kept.`);
+    if ((w.avail || []).length) out.push(`${w.avail.length} person(s)' availability no longer fits the week; check it.`);
+    return out.join(' ');
+  }
+
   function timetableOptions(view, mine) {
     const opts = mine.options || view.options || {};
     const box = node('div', 'rc-options');
@@ -162,10 +190,54 @@
     check.appendChild(cap);
     check.appendChild(document.createTextNode(' Also check each class for clashes'));
     box.appendChild(check);
-    const read = () => ({ mode: mode.value, classes_as_planes: cap.checked });
+    // an export whose week differs from the timetable's: both weeks side by side, and Keep (the default) or Adopt
+    const radios = [];
+    let impact = null;
+    if (view.week) {
+      const weeks = node('div', 'rc-week');
+      [['This file\u2019s week', view.week.file], ['Your timetable\u2019s week', view.week.mine]].forEach(([title, lines]) => {
+        const col = node('div', 'rc-week-col');
+        col.appendChild(node('div', 'rc-week-title', title + ':'));
+        (lines || []).forEach((line) => col.appendChild(node('div', 'rc-week-line', String(line))));
+        weeks.appendChild(col);
+      });
+      box.appendChild(weeks);
+      impact = node('div', 'rc-week-impact');
+      impact.hidden = true;
+      [['keep', 'Keep my week'], ['adopt', 'Adopt the file\u2019s week']].forEach(([v, text]) => {
+        const label = node('label', 'check');
+        const r = node('input');
+        r.type = 'radio'; r.name = 'week-' + view.id; r.value = v; r.checked = (opts.week === 'adopt' ? 'adopt' : 'keep') === v;
+        label.appendChild(r);
+        label.appendChild(document.createTextNode(' ' + text));
+        box.appendChild(label);
+        radios.push(r);
+      });
+      box.appendChild(impact);
+    }
+    // choosing Adopt asks what it would move, and says so on the card before Apply
+    let asked = 0;
+    const showImpact = async () => {
+      if (!impact) return;
+      const adopt = radios.some((r) => r.checked && r.value === 'adopt');
+      const mark = ++asked;
+      if (!adopt) { impact.hidden = true; impact.textContent = ''; return; }
+      impact.hidden = false; impact.textContent = 'Checking what adopting would move\u2026';
+      try {
+        const imp = await post('/api/week/impact', { time: view.week.time });
+        if (mark === asked) impact.textContent = impactText(imp);
+      } catch (e) { if (mark === asked) impact.textContent = 'Could not check what adopting would move: ' + e.message; }
+    };
+    radios.forEach((r) => r.addEventListener('change', showImpact));
+    showImpact();
+    const read = () => {
+      const o = { mode: mode.value, classes_as_planes: cap.checked };
+      if (radios.length) o.week = radios.some((r) => r.checked && r.value === 'adopt') ? 'adopt' : 'keep';
+      return o;
+    };
     const onChange = () => {};
     const out = { box, read, onChange };
-    [mode, cap].forEach((x) => x.addEventListener('change', () => { mine.options = read(); out.onChange(); }));
+    [mode, cap, ...radios].forEach((x) => x.addEventListener('change', () => { mine.options = read(); out.onChange(); }));
     return out;
   }
 
@@ -176,6 +248,10 @@
     if (typeof window.loadBoard === 'function') Promise.resolve(window.loadBoard()).catch(() => {});
     if (typeof window.loadWizard === 'function') Promise.resolve(window.loadWizard()).catch(() => {});
     if (view.kind === 'timetable' && typeof window.loadDraft === 'function') Promise.resolve(window.loadDraft()).catch(() => {});
+    if (view.kind === 'students') {             // the students moved, not the plan: no plan status to show
+      document.dispatchEvent(new CustomEvent('plane:students'));
+      return;
+    }
     planeFiles.showStatus(res.status, view.kind);
     loadReaders();                              // an apply of a workbook reading saves its layout as a reader
   }
@@ -239,6 +315,10 @@
           const extra = node('p', 'rc-note' + (res.note ? ' warn' : ''), res.note || `Saved as a reader: ${res.reader}`);
           next.insertBefore(extra, next.querySelector('.acts'));
         }
+        if (res.week_changes) {
+          const said = weekChangesText(res.week_changes);
+          next.insertBefore(node('p', 'rc-note' + (said ? ' warn' : ''), "The file\u2019s week is now the timetable\u2019s." + (said ? ' ' + said : '')), next.querySelector('.acts'));
+        }
         moved(view, res);
       });
       skipBtn.addEventListener('click', async () => {
@@ -266,6 +346,7 @@
         });
         acts.appendChild(undoBtn);
         card.appendChild(acts);
+        if (view.week_adopted) card.appendChild(node('p', 'rc-note', 'Undo puts the draft back; the week stays. Change it in Settings.'));
       }
     } else if (view.status === 'skipped') {
       card.classList.add('done');

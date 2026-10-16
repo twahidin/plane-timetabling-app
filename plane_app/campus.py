@@ -8,7 +8,7 @@ import re
 
 from fastapi import APIRouter, Depends
 
-from . import auth
+from . import auth, week
 from .learning import log as decisions
 from .wizard import library as wizard_library
 
@@ -119,15 +119,38 @@ def clashes(check: dict | None, org: dict) -> list[dict]:
     return out
 
 
+def week_for(settings: dict, labels: list) -> dict | None:
+    """The settings' week (week.shape) when it has its own days and `labels` are its grid, else None: a
+    legacy week, or an organisation on another grid, keeps the old `t % slots_per_day` reading. Never raises."""
+    try:
+        s = week.shape(settings.get("time"), settings.get("rules"))
+        return None if s["legacy"] or not labels or s["labels"] != [str(x) for x in labels] else s
+    except Exception:                                    # noqa: BLE001 - an odd stored week: the old reading
+        return None
+
+
+def week_fields(s: dict) -> dict:
+    """What the campus's JS reads of a week: each position's day, kind, label and clock, the open periods a day,
+    the cycle and the days' names."""
+    return {"positions": [{k: p[k] for k in ("t", "day", "index", "kind", "period", "label", "start", "end")} for p in s["positions"]],
+            "open_per_day": s["open_per_day"], "cycle": s["cycle"], "days_names": s["days"]}
+
+
 def time_of(org: dict, settings: dict) -> dict:
     """{labels, slots_per_day, days, start, slot_minutes}: the cycle is `len(labels) // slots_per_day` days
-    (plan/model.py::cycle_days); slots per day from the organisation's rules, else the settings."""
+    (plan/model.py::cycle_days); slots per day from the organisation's rules, else the settings. When the
+    settings' week has its own days and the organisation is on its grid, also {positions, open_per_day, cycle,
+    days_names}, and the days and slots per day are the week's (spec 2026-10-15-week-shape §1)."""
     t = (settings or {}).get("time") or {}
     labels = list((org or {}).get("time_labels") or [])
     spd = _int(((org or {}).get("rules") or {}).get("slots_per_day"), None) or _int(t.get("slots_per_day"), None) or len(labels) or 1
     spd = max(spd, 1)
-    return {"labels": labels, "slots_per_day": spd, "days": len(labels) // spd if labels else 0,
-            "start": str(t.get("start") or "07:30"), "slot_minutes": _int(t.get("slot_minutes"), 40) or 40}
+    out = {"labels": labels, "slots_per_day": spd, "days": len(labels) // spd if labels else 0,
+           "start": str(t.get("start") or "07:30"), "slot_minutes": _int(t.get("slot_minutes"), 40) or 40}
+    s = week_for(settings, labels)
+    if s:
+        out.update(slots_per_day=s["spd"], days=s["n_days"], **week_fields(s))
+    return out
 
 
 ROOM_W, ROOM_D, HALL_W, HALL_D, FIELD_W, FIELD_D = 2.6, 6.5, 9.0, 10.0, 16.0, 11.0

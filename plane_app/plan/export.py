@@ -353,7 +353,11 @@ def _readme_lines(plan: dict, settings: dict, notes: list[str], example: bool) -
     person, group, lesson, venue = v["person"], v["group"], v["requirement"], v["venue"]
     rules = (settings or {}).get("rules") or {}
     try:
-        capacity = f"{rules['max_load']} × {M.cycle_days(settings)} periods"
+        from .. import week as W
+        if W.shape(settings["time"], rules)["legacy"]:
+            capacity = f"{rules['max_load']} × {M.cycle_days(settings)} periods"
+        else:
+            capacity = f"{M.open_capacity(settings)} periods"
     except (KeyError, TypeError, ZeroDivisionError):
         capacity = "the most periods a day × the days in the cycle"
     lines = [

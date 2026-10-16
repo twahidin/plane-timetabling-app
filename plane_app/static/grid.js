@@ -19,7 +19,12 @@
     { kind: 'class', key: 'classes', label: () => Words.word('group', { cap: true }) },
     { kind: 'group', key: 'groups', label: () => Words.word('group', { cap: true }) + ' option' },
     { kind: 'room', key: 'rooms', label: () => Words.word('venue', { cap: true }) },
+    // the admin's alone: the server leaves students out of a department account's targets, and /api/me
+    // is asked as well, so a department page never offers the kind
+    { kind: 'student', key: 'students', label: () => 'Student' },
   ];
+  let isAdmin = false;                // /api/me says so (set before the first reload fills the picker)
+  const meReady = api('/api/me').then((m) => { isAdmin = !!m && m.role === 'admin'; }).catch(() => { isAdmin = false; });
   let targets = null;                 // last /api/print/targets response
   let current = { kind: 'teacher', id: null };
   let selected = null;
@@ -35,7 +40,10 @@
 
   function list(kind) {
     const k = KINDS.find((x) => x.kind === kind);
+    if (kind === 'student' && !isAdmin) return [];
     const raw = (targets && k && targets[k.key]) || [];
+    // a student is found by name or ID (or class), so the one text carries all three
+    if (kind === 'student') return raw.map((t) => ({ id: t.id, name: `${t.name} · ${t.id} · ${t.class}` }));
     return raw.map((t) => (typeof t === 'string' ? { id: t, name: t } : t));
   }
   function fillKinds() {
@@ -63,6 +71,7 @@
     const attrs = `class="${cls}"` + (c.span > 1 ? ` colspan="${c.span}"` : '') + (c.events && c.events.length ? ` data-events="${esc(c.events.join(' '))}"` : '')
       + (tip ? ` title="${esc(tip)}"` : '');
     if (c.kind === 'rest') return `<td ${attrs}><span class="s">${esc(c.text || 'rest')}</span></td>`;
+    if (c.kind === 'break') return `<td ${attrs}><span class="s">${esc(c.text)}</span></td>`;
     if (c.kind === 'lesson' || c.kind === 'booking') return `<td ${attrs}><div class="t">${esc(c.text)}</div><div class="s">${esc(c.sub)}</div></td>`;
     return `<td ${attrs}></td>`;
   }
@@ -112,11 +121,26 @@
   el('grid-zoom-in').addEventListener('click', () => stepZoom(1));
   el('grid-zoom-fit').addEventListener('click', () => { zoom = 'fit'; applyZoom(); });
 
+  // A day's own header (its period words and break names); a day that sends none uses the grid's.
+  const slotsOf = (g, d) => (d.slots && d.slots.length ? d.slots : g.slots);
+  const headCells = (slots) => slots.map((s) => `<th>${esc(s)}<span class="tt-grip" title="Drag to stretch the columns; double-click to fit"></span></th>`).join('');
+  // Cells a day's row leaves empty to the right, so days of different lengths line up on the left.
+  const filler = (n, max) => (max > n ? `<td class="pad" colspan="${max - n}"></td>` : '');
+
   function renderGrid(g) {
     const box = el('grid');
+    // One shared header when every day's slots are the first day's; otherwise each day brings its own
+    // small header row above its cells (days of different lengths: spec week-shape §1 Grids).
+    const shared = g.days.every((d) => { const s = slotsOf(g, d); return s.length === g.slots.length && s.every((x, i) => x === g.slots[i]); });
+    const cols = Math.max(g.slots.length, ...g.days.map((d) => d.cells.length));
+    const dayRows = shared
+      ? (d) => `<tr${d.off ? ' class="off"' : ''}><th class="day">${esc(d.label)}</th>${d.cells.map(cellHtml).join('')}</tr>`
+      : (d) => { const s = slotsOf(g, d); return `<tr class="day-head"><th class="day"></th>${headCells(s)}${filler(s.length, cols)}</tr>` +
+          `<tr${d.off ? ' class="off"' : ''}><th class="day">${esc(d.label)}</th>${d.cells.map(cellHtml).join('')}${filler(d.cells.length, cols)}</tr>`; };
     box.innerHTML = `<div class="tt-head"><span class="tt-title">${esc(g.title)}</span> <span class="tt-sub">${esc(g.subtitle)}</span></div>` +
-      `<div class="tt-scroll"><table class="tt" data-cols="${g.slots.length}"><thead><tr><th class="day"></th>${g.slots.map((s) => `<th>${esc(s)}<span class="tt-grip" title="Drag to stretch the columns; double-click to fit"></span></th>`).join('')}</tr></thead><tbody>` +
-      g.days.map((d) => `<tr${d.off ? ' class="off"' : ''}><th class="day">${esc(d.label)}</th>${d.cells.map(cellHtml).join('')}</tr>`).join('') +
+      `<div class="tt-scroll"><table class="tt" data-cols="${cols}">` +
+      (shared ? `<thead><tr><th class="day"></th>${headCells(g.slots)}</tr></thead>` : '') + '<tbody>' +
+      g.days.map(dayRows).join('') +
       '</tbody></table></div>';
     applyZoom();
     box.querySelectorAll('.tt-grip').forEach((grip) => {
@@ -132,7 +156,9 @@
     const my = ++gen;
     const box = el('grid');
     if (current.id == null) { box.innerHTML = `<p class="empty">${esc(emptyText())}</p>`; return; }
-    const date = el('grid-date').value;
+    // a student's timetable is the cycle only: no dated week
+    el('grid-date').disabled = current.kind === 'student';
+    const date = current.kind === 'student' ? '' : el('grid-date').value;
     let g;
     try { g = await api(`/api/grid/${current.kind}/${encodeURIComponent(current.id)}` + (date ? `?view=week&date=${encodeURIComponent(date)}` : '')); }
     catch (e) { if (my === gen) box.innerHTML = `<p class="empty">${esc(e.message)}</p>`; return; }
@@ -147,6 +173,7 @@
   window.gridReload = async () => {
     const my = ++gen;
     let got = null, err = null;
+    await meReady;
     try { got = await api('/api/print/targets'); }
     catch (e) { err = e; }
     if (my !== gen) return;                 // a newer reload owns the DOM: leave its targets alone

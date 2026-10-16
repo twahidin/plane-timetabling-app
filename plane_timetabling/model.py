@@ -105,6 +105,7 @@ class Band:
 
 
 SHARE_SEP = "#"       # part group id + SHARE_SEP + class code: the class's share of a part group
+PATTERN_ROLE = "Pattern"     # an anonymous choice pattern: a plane for clashes only, never judged, never a body
 SHARE_ROLE = "Group share"    # reserved for the synthesised share planes: internal, never in to_dict
 
 
@@ -183,6 +184,12 @@ def _fresh(items: list, cache: dict, marker):
 DEFAULT_SOFT = {"spread": 10, "stability": 8, "compact": 6, "even_days": 3, "edge": 2, "venue": 1}
 
 
+def _slots(value, n_slots: int, what: str) -> tuple[int, ...]:
+    if not isinstance(value, (list, tuple)) or not all(isinstance(t, int) and not isinstance(t, bool) and 0 <= t < n_slots for t in value):
+        raise ValueError(f"rules.{what} must be slot numbers within 0..{n_slots - 1}")
+    return tuple(sorted(set(value)))
+
+
 @dataclass(frozen=True)
 class Rules:
     max_load: int
@@ -191,6 +198,8 @@ class Rules:
     slots_per_day: int | None = None    # when set, load, run and mandatory rest are judged within each day
     soft: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_SOFT))
     soft_edge_subjects: tuple[str, ...] = ()   # subjects penalised for a day's first/last slot
+    closed: tuple[int, ...] = ()        # absolute positions nothing may use (a short day's tail)
+    rest_slots: tuple[int, ...] = ()    # absolute break positions, per day (with mandatory_rest offsets)
 
 
 @dataclass
@@ -207,6 +216,7 @@ class Organisation:
     _synth_persons: set[str] = field(default_factory=set, repr=False, compare=False)
     _implied_members: dict[str, tuple[str, ...]] = field(default_factory=dict, repr=False, compare=False)
     _share_ids: set[str] = field(default_factory=set, repr=False, compare=False)
+    _pattern_ids: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False)
     _by_id: dict[str, Person] = field(default_factory=dict, repr=False, compare=False)
     _indexed: list[Person] | None = field(default=None, repr=False, compare=False)
     _locs_by_id: dict[str, Location] = field(default_factory=dict, repr=False, compare=False)
@@ -217,6 +227,36 @@ class Organisation:
     @property
     def n_slots(self) -> int:
         return len(self.time_labels)
+
+    def closed_mask(self) -> int:
+        m = 0
+        for t in self.rules.closed:
+            m |= 1 << t
+        return m
+
+    def rest_slot_set(self) -> frozenset[int]:
+        """Every absolute rest position: mandatory_rest (offsets within each day when slots_per_day is set,
+        absolute otherwise) and the per-day rest_slots."""
+        spd, n = self.rules.slots_per_day, self.n_slots
+        if spd:
+            offs = {d * spd + o for d in range(-(-n // spd)) for o in self.rules.mandatory_rest if 0 <= o < spd and d * spd + o < n}
+        else:
+            offs = set(self.rules.mandatory_rest)
+        return frozenset(offs | set(self.rules.rest_slots))
+
+    def day_edges(self) -> list[tuple[int, int]]:
+        """Each day's first and last open position (inclusive); the last is the day's nominal end
+        stepped back past closed positions, so a short day's edge is its last real period."""
+        spd = self.rules.slots_per_day or self.n_slots or 1
+        closed, out = set(self.rules.closed), []
+        for k in range(max(1, -(-self.n_slots // spd))):
+            first, last = k * spd, (k + 1) * spd - 1
+            while first in closed and first < last:
+                first += 1
+            while last in closed and last > first:
+                last -= 1
+            out.append((first, last))
+        return out
 
     def location(self, lid: str) -> Location:
         self._locs_by_id, self._locs_indexed = _fresh(self.locations, self._locs_by_id, self._locs_indexed)
@@ -239,6 +279,12 @@ class Organisation:
         eligible everywhere. A person the input supplied is an ordinary plane whatever its role says."""
         return pid in self._share_ids
 
+    def is_pattern(self, pid: str) -> bool:
+        """Send a pattern with full avail ([[0, n]]) and every location id: it narrows domains like any plane.
+        An anonymous choice pattern (role "Pattern"): an ordinary plane for clashes, so two events
+        sharing it never overlap, but never judged by load, run, rest or any soft rule, and never a body."""
+        return pid in self._pattern_ids
+
     def event(self, eid: str) -> Event:
         e = next((e for e in self.events if e.id == eid), None)
         if e is None:
@@ -259,8 +305,11 @@ class Organisation:
 
     def bodies(self, e: Event) -> list[str]:
         """The members that put people in a room: a synthesised share plane is the same students as the
-        class group already counted, so it must not inflate occupancy against a location's capacity."""
-        return [m for m in e.members if m not in self._share_ids] if self._share_ids else list(e.members)
+        class group already counted, so it must not inflate occupancy against a location's capacity. A pattern is a choice pattern's anonymous students,
+        likewise already counted through the option group's own members."""
+        if not self._share_ids and not self._pattern_ids:
+            return list(e.members)
+        return [m for m in e.members if m not in self._share_ids and m not in self._pattern_ids]
 
     def band_of(self, e: Event) -> str | None:
         """The band an event is an option of: the band of its first member group that has one."""
@@ -341,6 +390,8 @@ class Organisation:
                 slots_per_day=d["rules"].get("slots_per_day"),
                 soft={**DEFAULT_SOFT, **d["rules"].get("soft", {})},
                 soft_edge_subjects=tuple(d["rules"].get("soft_edge_subjects", [])),
+                closed=_slots(d["rules"].get("closed", []), len(d["time_labels"]), "closed"),
+                rest_slots=_slots(d["rules"].get("rest_slots", []), len(d["time_labels"]), "rest_slots"),
             ),
             locations=locations,
             persons=persons,
@@ -350,6 +401,7 @@ class Organisation:
             _synth_persons=synth_persons,
             _implied_members=implied,
             _share_ids=share_ids,
+            _pattern_ids=frozenset(p.id for p in persons if p.role == PATTERN_ROLE),
             _by_id={p.id: p for p in persons},
             _indexed=persons,
         )
@@ -363,7 +415,9 @@ class Organisation:
                       "mandatory_rest": list(self.rules.mandatory_rest),
                       **({"slots_per_day": self.rules.slots_per_day} if self.rules.slots_per_day else {}),
                       "soft": dict(self.rules.soft),
-                      **({"soft_edge_subjects": list(self.rules.soft_edge_subjects)} if self.rules.soft_edge_subjects else {})},
+                      **({"soft_edge_subjects": list(self.rules.soft_edge_subjects)} if self.rules.soft_edge_subjects else {}),
+                      **({"closed": list(self.rules.closed)} if self.rules.closed else {}),
+                      **({"rest_slots": list(self.rules.rest_slots)} if self.rules.rest_slots else {})},
             "locations": [asdict(l) for l in self.locations],
             "persons": [
                 {"id": p.id, "name": p.name, "role": p.role, "avail": [list(w) for w in p.avail],

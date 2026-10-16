@@ -65,6 +65,11 @@ def set_pending(db, items: list[dict], session_id: str = "", run: str = "") -> l
     return items
 
 
+def clear_all(db) -> None:
+    """Drop every pending card of every thread (a saved week moved the grid their slots were proposed on)."""
+    _write(db, {}, {})
+
+
 def clear_pending(db, session_id: str = "") -> None:
     store = _store(db)
     cards, runs = dict(store.get("cards") or {}), dict(store.get("runs") or {})

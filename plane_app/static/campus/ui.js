@@ -10,7 +10,7 @@
    'build' the period bar (and with it play, ▶ Build, Present, All clashes and the search) is hidden, the
    legend and counters are the scene's, and its note sits above the bottom edge. showSetup(card) opens a
    text-only card with a "Show in the table" link. */
-import { labelParts } from 'campus/data';
+import { labelParts, stepPeriod, dayPeriods } from 'campus/data';
 
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
@@ -50,19 +50,30 @@ export function createUI(host, h) {
   host.append(legend, kpis, skpis, hint, sceneNote, card, bar);
   const shownKpis = () => (mode === 'build' ? kpis : skpis);
 
+  /* With the week's positions (spec 2026-10-15-week-shape §1) the bar stops only on periods: never on a
+     break or a closed position; the period select lists that day's periods. Without them, every slot. */
+  const positions = () => { const p = doc && doc.time && doc.time.positions; return Array.isArray(p) && p.length ? p : null; };
   function go(nt) {
     const total = spd * days;
     if (!total) return;
     t = ((nt % total) + total) % total;
     h.period(t);
   }
-  prev.addEventListener('click', () => go(t - 1));
-  next.addEventListener('click', () => go(t + 1));
-  daySel.addEventListener('change', () => go(Number(daySel.value) * spd + (t % spd)));
+  const step = (dir) => go(positions() ? stepPeriod(doc.time, t, dir) : t + dir);
+  prev.addEventListener('click', () => step(-1));
+  next.addEventListener('click', () => step(1));
+  daySel.addEventListener('change', () => {
+    const d = Number(daySel.value), ps = positions();
+    if (!ps) { go(d * spd + (t % spd)); return; }
+    const open = dayPeriods(doc.time, d), now = ps[t] && ps[t].period;   // the same period number, else the day's last
+    if (!open.length) return;
+    const same = open.find((s) => ps[s].period === now), before = open.filter((s) => now && ps[s].period <= now);
+    go(same != null ? same : before.length ? before[before.length - 1] : open[0]);
+  });
   perSel.addEventListener('change', () => go(Math.floor(t / spd) * spd + Number(perSel.value)));
   play.addEventListener('click', () => {
     if (playing) { clearInterval(playing); playing = 0; play.textContent = '▶ Play'; return; }
-    playing = setInterval(() => { if (!document.hidden) go(t + 1); }, 2500); play.textContent = '❚❚ Pause';
+    playing = setInterval(() => { if (!document.hidden) step(1); }, 2500); play.textContent = '❚❚ Pause';
   });
   build.addEventListener('click', () => h.replay());
   present.addEventListener('click', () => h.present(!host.classList.contains('presenting')));
@@ -94,8 +105,8 @@ export function createUI(host, h) {
   host.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !card.hidden) { closeCard(); return; }
     if (mode !== 'build' || e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input,select,textarea')) return;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); go(t - 1); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); go(t + 1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
   });
   hintClose.addEventListener('click', () => { dismissed = hintText.textContent; hint.hidden = true; });
   search.addEventListener('input', () => {
@@ -198,11 +209,19 @@ export function createUI(host, h) {
   }
   const buildLegend = () => Object.entries((doc && doc.legend) || {}).map(([key, name]) => [name, palette[key]]);
 
+  let perDay = null;                              // the day the period select lists (with positions)
   function fillSelects() {
-    daySel.replaceChildren(); perSel.replaceChildren();
-    const labels = (doc && doc.time && doc.time.labels) || [];
-    for (let d = 0; d < days; d++) daySel.append(new Option(labelParts(labels, d * spd, spd, days).day, String(d)));
-    for (let p = 0; p < spd; p++) perSel.append(new Option(labelParts(labels, p, spd, days).period, String(p)));
+    daySel.replaceChildren(); perSel.replaceChildren(); perDay = null;
+    const labels = (doc && doc.time && doc.time.labels) || [], names = doc && doc.time && doc.time.days_names;
+    for (let d = 0; d < days; d++) daySel.append(new Option(Array.isArray(names) && names[d] != null ? String(names[d]) : labelParts(labels, d * spd, spd, days).day, String(d)));
+    if (positions()) fillPeriods(Math.floor(t / spd));
+    else for (let p = 0; p < spd; p++) perSel.append(new Option(labelParts(labels, p, spd, days).period, String(p)));
+  }
+  function fillPeriods(day) {                     // that day's periods only: no breaks, nothing closed
+    if (day === perDay) return;
+    perDay = day; perSel.replaceChildren();
+    const labels = doc.time.labels || [], ps = positions();
+    for (const s of dayPeriods(doc.time, day)) perSel.append(new Option(labelParts(labels, s, spd, days, ps, doc.time.days_names).period, String(s - day * spd)));
   }
 
   return {
@@ -223,6 +242,7 @@ export function createUI(host, h) {
     },
     setPeriod(nt) {
       t = nt;
+      if (positions()) fillPeriods(Math.floor(t / spd));
       daySel.value = String(Math.floor(t / spd)); perSel.value = String(t % spd);
     },
     showRoom, showTeacher, hideCard, closeCard, showSetup,

@@ -19,6 +19,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 
+from . import generate as G
 from . import importer as IMP
 from . import model as M
 
@@ -128,7 +129,8 @@ def _plain(number):
 # view
 # ---------------------------------------------------------------------------
 
-def _cell_view(key: str, reqs: list[dict], col_of: dict[str, int]) -> dict:
+def _cell_view(key: str, reqs: list[dict], col_of: dict[str, int], plan: dict | None = None,
+               student_counts: dict[str, int] | None = None) -> dict:
     reqs = sorted(reqs, key=lambda r: r["id"])
     classes = list(reqs[0].get("classes") or [])
     cols = sorted(col_of[c] for c in classes if c in col_of)
@@ -147,10 +149,17 @@ def _cell_view(key: str, reqs: list[dict], col_of: dict[str, int]) -> dict:
                           "locked": bool(r.get("locked"))})
         else:
             unassigned.append({"req": r["id"], "periods": p, "locked": bool(r.get("locked"))})
-    return {"key": key, "classes": classes, "col": col, "span": len(cols) if contiguous else 1,
+    cell = {"key": key, "classes": classes, "col": col, "span": len(cols) if contiguous else 1,
             "grouping": reqs[0].get("grouping") or "class", "needed": needed, "assigned": assigned,
             "pattern": _pattern(lessons), "locked": all(r.get("locked") for r in reqs), "split": len(reqs) > 1,
             "parts": parts, "unassigned": unassigned}
+    if student_counts and plan is not None and cell["grouping"] != "class":
+        # an option group some students take: how many, beside the size the plan states (counts only)
+        taking = student_counts.get(G.option_group_id(plan, reqs[0]))
+        if taking:
+            cell["students"] = taking
+            cell["size"] = next((r["size"] for r in reqs if r.get("size")), None)
+    return cell
 
 
 def _part_time(staff: dict, n_slots: int) -> bool:
@@ -165,11 +174,14 @@ def _part_time(staff: dict, n_slots: int) -> bool:
 
 
 def view(plan: dict, settings: dict, dept: str | None = None, level: str | None = None,
-         principal=None) -> dict:
+         principal=None, student_counts: dict[str, int] | None = None) -> dict:
     """The board JSON of spec §4 for one department and level tab (default: the first of each).
     `level` may be a tab ("1") or a full level ("1G3", read as its tab). BoardError 404 for a
     department or level the plan does not have. For a head of department (`principal`) the
-    department is always theirs, and the tray lists only the teachers available to it."""
+    department is always theirs, and the tray lists only the teachers available to it. `student_counts`
+    (option group id -> students taking it, from students.sizes) puts `students` and the stated `size`
+    on the option cells that have any: counts for every account, never a name; without it the board
+    is as it was."""
     index: dict[str, dict[str, dict[str, dict[str, list]]]] = {}
     tab_classes: dict[str, set] = {}
     load: Counter = Counter()
@@ -230,7 +242,7 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
     rows = []
     for rk, cells in (tabs.get(level) or {}).items():
         first = next(iter(cells.values()))[0]
-        cell_views = sorted((_cell_view(k, reqs, col_of) for k, reqs in cells.items()),
+        cell_views = sorted((_cell_view(k, reqs, col_of, plan, student_counts) for k, reqs in cells.items()),
                             key=lambda c: (c["col"], c["grouping"], c["key"]))
         (periods, pattern), _ = Counter((c["needed"], c["pattern"]) for c in cell_views).most_common(1)[0]
         stream = _stream(first.get("level"))

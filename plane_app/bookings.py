@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 
-from . import calendar as cal
+from . import calendar as cal, week as W
 
 
 class BookingError(ValueError):
@@ -43,8 +43,18 @@ def validate(db, b: dict) -> dict:
         start, dur = int(b.get("start")), int(b.get("dur") or 1)
     except (TypeError, ValueError):
         raise BookingError("start and dur must be integers")
-    if dur < 1 or start < rng[0] or start + dur > rng[1]:
-        raise BookingError(f"slots {start}–{start + dur - 1} are outside that day's range {rng[0]}–{rng[1] - 1}")
+    if dur < 1:
+        raise BookingError("a booking lasts at least one slot")
+    if start < rng[0] or start >= rng[1]:
+        raise BookingError(f"that booking starts outside {cal.describe(s['calendar'], s['time'], date)}")
+    if start + dur > rng[1]:
+        raise BookingError(f"a booking of {dur} from {cal.slot_word(s['time'], start)} runs outside "
+                           f"{cal.describe(s['calendar'], s['time'], date)}")
+    shape = W.shape(s["time"], s.get("rules"))
+    if any(t in shape["closed"] for t in range(start, start + dur)):    # a short day's padding: on no grid
+        k = start // (shape["spd"] or 1)
+        n = shape["open_per_day"][k]
+        raise BookingError(f"{shape['days'][k]} has {n} period{'s' if n != 1 else ''}; a booking must end by its last period")
     out = {"venue": venue, "date": date, "start": start, "dur": dur, "title": str(b["title"]).strip(),
            "booked_by": str(b.get("booked_by") or ""), "note": str(b.get("note") or "")}
     out["id"] = _id(out)

@@ -1,7 +1,7 @@
 """Apply a reading by section, and undo it (spec docs/superpowers/specs/2026-10-12-assistant-files-design.md
 §3.3–3.4). Under the plan lock: the reading is merged into the plan as it is now and only the ticked
-sections are taken; a timetable reading becomes the draft. Undo puts back what was there when nothing
-has changed it since."""
+sections are taken; a timetable reading becomes the draft; a student list replaces the timetable's
+students. Undo puts back what was there when nothing has changed it since."""
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +9,7 @@ import json
 import time
 from pathlib import Path
 
-from ... import asc_import, journey
+from ... import asc_import, journey, week as W, week_apply, week_save
 from ...intake import IntakeError
 from .. import model as M
 from ..issues import plan_issues
@@ -60,7 +60,7 @@ def _update(db, rid: str, reading: dict, tid: str | None = None) -> dict:
 
 def reading_view(db, rid: str, tid: str | None = None) -> dict:
     """What the page sees of reading `rid` now."""
-    return inbox.view(_find(db, rid, tid))
+    return inbox.view(_find(db, rid, tid), db.get_settings(tid))
 
 
 def plan_status(db, tid: str | None = None) -> dict:
@@ -76,6 +76,8 @@ def plan_body(db, entry: dict, current: dict, tid: str | None) -> dict:
     """The reading as sections.merged takes it; an exact workbook merged again from its kept file, with the
     sizes CSVs given with it on top."""
     reading = {**entry["reading"], "file": entry.get("file")}
+    if reading.get("via") == "exact" and not reading.get("path"):     # never kept (its Students sheet stayed in)
+        raise ApplyError(409, f"{inbox.NOT_KEPT[0].upper()}{inbox.NOT_KEPT[1:]}: give the workbook again without it.")
     if reading.get("via") == "exact" and reading.get("path"):
         try:
             data = Path(reading["path"]).read_bytes()
@@ -98,24 +100,72 @@ def _options(reading: dict, options: dict | None) -> dict:
         out["mode"] = given["mode"]
     if "classes_as_planes" in given:
         out["classes_as_planes"] = bool(given["classes_as_planes"])
+    if isinstance(reading.get("week"), dict) and given.get("week") in ("keep", "adopt"):
+        out["week"] = given["week"]             # only a card that offers the choice carries it
     return out
 
 
-def _organisation(reading: dict, opts: dict) -> dict:
+def _timetable(reading: dict, opts: dict) -> tuple[dict, dict | None]:
     """The draft a timetable reading makes: the model's organisation, or an aSc export read again from its
-    kept files with the card's options."""
+    kept files with the card's options; and, for an aSc export, the week its grid proposes."""
     if reading.get("organisation"):
-        return reading["organisation"]
+        return reading["organisation"], None
     try:
         datas = [Path(p).read_bytes() for p in reading.get("paths") or []]
     except OSError:
         raise ApplyError(409, "The file is gone: give it to the Assistant again.")
     try:
-        return inbox.asc_org(datas, mode=opts["mode"], classes_as_planes=bool(opts["classes_as_planes"]))[0]
+        org, _notes, week = inbox.asc_read(datas, mode=opts["mode"], classes_as_planes=bool(opts["classes_as_planes"]))
+        return org, week
     except asc_import.AscFormatError as e:
         raise ApplyError(422, str(e))
     except IntakeError as e:
         raise ApplyError(422, f"The timetable export could not be turned into a draft: {e}")
+
+
+def _organisation(reading: dict, opts: dict) -> dict:
+    return _timetable(reading, opts)[0]
+
+
+def _lay(org: dict, week: dict, time: dict) -> dict:
+    """`org`, an export's draft on its own break-free grid (one position a period), laid on the saved week
+    `time` by day and period number, so a break the week has moves the later periods along. Nothing written."""
+    grid = W.derive({**week, "days": [{**d, "breaks": []} for d in week["days"]]})      # the file's own grid
+    old, shape = W.shape(grid), W.shape(time)
+    moved, _lost = week_apply.remap_org(org, W.position_map(old, shape), old, shape)
+    try:
+        return inbox.apply_org_patch(moved, {})
+    except IntakeError as e:
+        raise ApplyError(422, f"The timetable export does not fit the week: {e}")
+
+
+def _apply_timetable(db, reading: dict, opts: dict, tid: str | None) -> dict:
+    org, proposed = _timetable(reading, opts)
+    moved = None
+    if proposed is not None:
+        settings = db.get_settings(tid)
+        mine, theirs = W.shape(settings["time"], settings["rules"]), W.shape(W.derive(proposed))
+        if not inbox._same_week(mine, theirs) and opts.get("week") == "adopt":
+            if tid != db.working_timetable():
+                raise ApplyError(409, "The selected timetable changed while this waited; open it again to adopt the file's week.")
+            try:                                # every refusal and the remapped draft come before the first write
+                _current, new = week_save.prepared(db, proposed)
+            except week_save.WeekRefused as e:
+                raise ApplyError(e.code, e.message)
+            org = _lay(org, proposed, new)
+            try:                                # the PUT /api/settings path: check, refuse, remap the stored timetable
+                body, moved = week_save.save(db, proposed)
+            except week_save.WeekRefused as e:
+                raise ApplyError(e.code, e.message)
+            db.store_settings(body)
+        elif not mine["legacy"] and inbox._same_week(mine, theirs):
+            org = _lay(org, proposed, settings["time"])     # the school's own week already: lie on it, write nothing
+    before = db.get_org("draft", tid)
+    db.set_org("draft", org, tid)
+    out = {"draft_before": before, "draft_after": _hash(db.get_org("draft", tid))}
+    if moved is not None:
+        out["week_changes"] = moved
+    return out
 
 
 def _apply_plan(db, entry: dict, names: list[str], tid: str | None) -> dict:
@@ -136,11 +186,38 @@ def _apply_plan(db, entry: dict, names: list[str], tid: str | None) -> dict:
     return {"plan_before": before, "rev_after": int(after.get("rev") or 0), "content_after": _content(after)}
 
 
-def _apply_timetable(db, reading: dict, opts: dict, tid: str | None) -> dict:
-    org = _organisation(reading, opts)
-    before = db.get_org("draft", tid)
-    db.set_org("draft", org, tid)
-    return {"draft_before": before, "draft_after": _hash(db.get_org("draft", tid))}
+STUDENTS_CHANGED = "The students have changed since; undo is not possible."
+
+
+def _apply_students(db, reading: dict, tid: str | None) -> dict:
+    """The timetable's students replaced by the list's; what undo needs to put them back."""
+    if "students" not in reading:
+        raise ApplyError(409, "This student list was cleared; give the file again.")
+    before = db.get_value("students", tid)
+    db.set_value("students", reading.get("students") or [], tid)
+    return {"before": before, "after_hash": _hash(db.get_value("students", tid) or [])}
+
+
+def forget_students(db, tid: str | None = None) -> int:
+    """Every student-list reading of `tid` without the names it holds (its students and its undo's
+    `before`), marked `removed`: an applied card no longer offers Undo, a waiting one is skipped. Called
+    when all the students are removed. The number of readings changed."""
+    n = 0
+    with RR._lock:
+        stored = RR._stored(db, tid)
+        for e in stored:
+            r = e["reading"]
+            if r.get("kind") != "students" or not ("students" in r or "undo" in r):
+                continue
+            r = {k: v for k, v in r.items() if k not in ("students", "undo")}
+            r["removed"] = True
+            if r.get("status") in (None, "waiting"):
+                r["status"] = "skipped"
+            e["reading"] = r
+            n += 1
+        if n:
+            db.set_value(RR.KEY, stored, tid)
+    return n
 
 
 def _saved_reader(db, entry: dict) -> dict:
@@ -186,17 +263,23 @@ def apply(db, rid: str, ticked: list[str] | None, options: dict | None = None, t
         names = [n for n in wanted if n in secs]
         if not names:
             raise ApplyError(409, "Nothing ticked to apply.")
+        week_changes = None
         if view["kind"] == "timetable":
             opts = _options(reading, options)
             undo = {"kind": "timetable", **_apply_timetable(db, reading, opts, tid)}
+            week_changes = undo.pop("week_changes", None)      # undo puts the draft back; a saved week stays
+            undo["week_adopted"] = week_changes is not None
             reading = {**reading, "options": opts}
+        elif view["kind"] == "students":
+            undo = {"kind": "students", **_apply_students(db, reading, tid)}
         else:
             undo = {"kind": "plan", **_apply_plan(db, entry, names, tid)}
         applied = {n: int(secs[n].get("count") or 0) for n in names}
         entry = _update(db, rid, {**reading, "status": "applied", "applied_at": time.time(), "applied": applied,
                                   "undo": undo}, tid)
-    extra = _saved_reader(db, entry) if view["kind"] != "timetable" else {}
-    return {"ok": True, "applied": applied, "status": plan_status(db, tid), "reading": inbox.view(entry), **extra}
+    extra = _saved_reader(db, entry) if view["kind"] == "plan" else {}
+    return {"ok": True, "applied": applied, "status": plan_status(db, tid), "reading": inbox.view(entry, db.get_settings(tid)), **extra,
+            **({"week_changes": week_changes} if view["kind"] == "timetable" and week_changes is not None else {})}
 
 
 def choose(db, rid: str, sections: dict | None, options: dict | None = None, tid: str | None = None) -> dict:
@@ -216,7 +299,7 @@ def choose(db, rid: str, sections: dict | None, options: dict | None = None, tid
         if reading.get("kind") == "timetable" and isinstance(options, dict):
             reading["options"] = _options(reading, options)
         entry = _update(db, rid, reading, tid)
-    return {"reading": inbox.view(entry)}
+    return {"reading": inbox.view(entry, db.get_settings(tid))}
 
 
 def undo(db, rid: str, tid: str | None = None) -> dict:
@@ -233,6 +316,10 @@ def undo(db, rid: str, tid: str | None = None) -> dict:
             if _hash(db.get_org("draft", tid)) != undo.get("draft_after"):
                 raise ApplyError(409, "The draft has changed since this was applied; undo left it as it is.")
             db.set_org("draft", undo.get("draft_before"), tid)
+        elif undo.get("kind") == "students":
+            if _hash(db.get_value("students", tid) or []) != undo.get("after_hash"):
+                raise ApplyError(409, STUDENTS_CHANGED)
+            db.set_value("students", undo.get("before") or [], tid)
         else:
             now = db.get_value("plan", tid)
             # the plan this apply wrote: by its rev, or by its content when a later apply was undone since
@@ -255,7 +342,8 @@ def skip(db, rid: str, tid: str | None = None) -> dict:
         if reading.get("status") == "applied":
             raise ApplyError(409, "Already applied.")
         gone = inbox._paths(reading)
-        _update(db, rid, {**reading, "status": "skipped"}, tid)
+        # a skipped student list keeps its card, not its students
+        _update(db, rid, {k: v for k, v in reading.items() if k != "students"} | {"status": "skipped"}, tid)
     for p in gone:
         inbox._unlink(p)
     return {"ok": True}

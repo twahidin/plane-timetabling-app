@@ -41,39 +41,87 @@
     quality: { stability: 0, spread: 14, compact: 8, even_days: 5, edge: 3, venue: 1 },
   };
 
-  let labelsEdited = false;
-  let labelsPerDay = 8;                     // the slots per day the labels in the field were made for
-  const SettingsLabels = window.SettingsLabels;
   const msg = (text, cls) => { const m = el('msg'); m.textContent = text; m.className = 'msg-line ' + (cls || ''); };
 
+  // ---- the week (week-editor.js) and the calendar fields that follow its cycle ----
+  let editor = null;
+  let stored = { time: {}, rules: {} };     // the week as saved, to tell a changed grid from an unchanged one
+  let loadedWeek = '';                      // the week the editor showed when filled: unchanged, it is not sent
+
+  function showCalendar(t, pick) {          // Odd/Even for a cycle of two or more weeks; a start day for a rolling one
+    const n = t.days.length, rolling = t.cycle === 'rolling', rs = el('rolling-start');
+    el('first-week').closest('label').hidden = rolling || n < 10;
+    rs.closest('label').hidden = !rolling;
+    const want = Math.min(Math.max(pick || +rs.value || 1, 1), Math.max(n, 1));
+    if (rs.querySelectorAll('option').length !== n) {
+      rs.replaceChildren(...Array.from({ length: n }, (_, k) => {
+        const o = document.createElement('option');
+        o.value = String(k + 1); o.textContent = `Day ${k + 1}`;
+        return o;
+      }));
+    }
+    rs.value = String(want);
+  }
+
+  // ---- an old time the week cannot read (a 24-hour ward, more than 20 days): the Time grid inputs, as before ----
+  let grid = false;                         // the old Time grid inputs show instead of the week editor
+  let labelsEdited = false;
+  let labelsPerDay = 8;                     // the slots per day the labels in the field were made for
   const labelList = () => el('labels').value.split(',').map((x) => x.trim()).filter(Boolean);
   function showCycle() {                    // "5-day cycle · 40 labels" under the labels field
     const n = +el('slots_per_day').value, labels = labelList(), hint = el('cycle-hint');
     if (!hint) return;
-    const problem = SettingsLabels.check(labels, n);
-    hint.textContent = problem || `${SettingsLabels.cycleDays(labels, n)}-day cycle · ${labels.length} labels`;
+    const problem = window.SettingsLabels.check(labels, n);
+    hint.textContent = problem || `${window.SettingsLabels.cycleDays(labels, n)}-day cycle · ${labels.length} labels`;
     hint.classList.toggle('bad', !!problem);
   }
   function regenLabels() {                  // every day of the cycle, keeping day names and the period style
     if (!labelsEdited) {
       const mins = +el('slot_minutes').value, n = +el('slots_per_day').value;
       if (mins > 0 && n > 0 && n <= 64) {
-        el('labels').value = SettingsLabels.regenerate(labelList(), labelsPerDay, n, mins, el('start').value || '00:00').join(', ');
+        el('labels').value = window.SettingsLabels.regenerate(labelList(), labelsPerDay, n, mins, el('start').value || '00:00').join(', ');
         labelsPerDay = n;
       }
     }
     showCycle();
   }
-
-  function fill(s) {
-    const t = s.time || {}, r = s.rules || {}, p = s.provider || {}, e = s.engine || {}, c = s.calendar || {};
+  function fillGrid(t, r) {
     el('slot_minutes').value = t.slot_minutes ?? 40;
     el('slots_per_day').value = t.slots_per_day ?? 8;
     el('start').value = t.start || '07:30';
     el('labels').value = (t.labels || []).join(', ');
+    el('mandatory_rest').value = (r.mandatory_rest || []).join(', ');
+    labelsEdited = false;
+    labelsPerDay = t.slots_per_day ?? 8;
+    showCycle();
+    el('first-week').closest('label').hidden = false;      // the calendar as before: Odd/Even, no rolling start day
+    el('rolling-start').closest('label').hidden = true;
+  }
+
+  function weekOf() {                       // the time to send: the editor's week and, when rolling, the start day
+    const t = editor.value();
+    const time = { slot_minutes: t.slot_minutes, start: t.start, cycle: t.cycle, days: t.days, label_style: t.label_style };
+    return Object.assign(time, t.cycle === 'rolling' ? { rolling_start_day: +el('rolling-start').value || 1 } : {});
+  }
+
+  function fill(s) {
+    const t = s.time || {}, r = s.rules || {}, p = s.provider || {}, e = s.engine || {}, c = s.calendar || {};
+    stored = { time: t, rules: r };
+    grid = !window.WeekEditor.editable(t, r);
+    el('week').hidden = grid;
+    el('time-grid').hidden = !grid;
+    el('mandatory_rest').closest('label').hidden = !grid;
+    if (grid) {
+      editor = null; loadedWeek = '';
+      el('week-editor').replaceChildren();
+      fillGrid(t, r);
+    } else {
+      editor = window.WeekEditor.mount(el('week-editor'), t, { rules: r, onChange: (w) => showCalendar(w) });
+      showCalendar(editor.value(), t.rolling_start_day);
+      loadedWeek = JSON.stringify(weekOf());
+    }
     el('max_load').value = r.max_load ?? 6;
     el('max_run').value = r.max_run ?? 4;
-    el('mandatory_rest').value = (r.mandatory_rest || []).join(', ');
     el('provider_kind').value = p.kind || 'anthropic';
     showModel(p.kind || 'anthropic', p.model || '');
     el('base_url').value = p.base_url || '';
@@ -89,9 +137,6 @@
     RULES.forEach((r) => { el('w_' + r).value = w[r] ?? PRESETS.balanced[r]; });
     const lk = (s.look || {}).default || 'classic';
     document.querySelectorAll('input[name=look]').forEach((r) => { r.checked = r.value === lk; });
-    labelsEdited = false;
-    labelsPerDay = t.slots_per_day ?? 8;
-    showCycle();
   }
 
   function collect() {
@@ -101,23 +146,34 @@
       if (v === '' || !Number.isInteger(n)) throw new Error(el(id).parentElement.firstChild.textContent.trim() + ' must be a whole number');
       return n;
     };
-    const list = (id) => el(id).value.split(',').map((x) => x.trim()).filter(Boolean);
-    const rest = list('mandatory_rest').map(Number);
-    if (rest.some((n) => !Number.isInteger(n) || n < 0)) throw new Error('Mandatory rest slots must be whole numbers');
-    const labels = list('labels');
-    const n = ints('slots_per_day');
-    const problem = SettingsLabels.check(labels, n);
-    if (problem) throw new Error(problem);
+    if (!editor && !grid) throw new Error('Settings have not loaded yet; reload the page.');
+    let time = null, rest = null;
+    if (grid) {                             // the old time grid, sent as before: labels for whole days, rest offsets
+      const list = (id) => el(id).value.split(',').map((x) => x.trim()).filter(Boolean);
+      rest = list('mandatory_rest').map(Number);
+      if (rest.some((n) => !Number.isInteger(n) || n < 0)) throw new Error('Mandatory rest slots must be whole numbers');
+      const labels = list('labels'), n = ints('slots_per_day');
+      const bad = window.SettingsLabels.check(labels, n);
+      if (bad) throw new Error(bad);
+      time = { slot_minutes: ints('slot_minutes'), slots_per_day: n, start: el('start').value, labels };
+    } else {
+      // an unchanged week is not sent, so saving other settings never rewrites an old timetable's week
+      const week = weekOf(), weekChanged = JSON.stringify(week) !== loadedWeek;
+      const problem = weekChanged ? editor.problem() : null;
+      if (problem) throw new Error(problem);
+      if (weekChanged) time = week;
+    }
     return {
-      time: { slot_minutes: ints('slot_minutes'), slots_per_day: n, start: el('start').value, labels },
-      rules: { max_load: ints('max_load'), max_run: ints('max_run'), mandatory_rest: rest },
+      ...(time ? { time } : {}),
+      rules: { max_load: ints('max_load'), max_run: ints('max_run'), ...(rest ? { mandatory_rest: rest } : {}) },
       provider: { kind: el('provider_kind').value, base_url: el('base_url').value.trim(), api_key: el('api_key').value, model: chosenModel() },
       engine: { url: el('engine_url').value.trim(), key: el('engine_key').value },
       solve: { preset: el('solve_preset').value, time_limit: solveLimit(), weights: Object.fromEntries(RULES.map((r) => [r, weight(r)])) },
       look: { default: (document.querySelector('input[name=look]:checked') || { value: 'classic' }).value },
       calendar: {
         term_start: el('term-start').value,
-        first_week: el('first-week').value,
+        // a hidden Odd/Even (a one-week or rolling cycle) is not sent: the stored value stays, unused
+        ...(el('first-week').closest('label').hidden ? {} : { first_week: el('first-week').value }),
         non_teaching_dates: el('non-teaching').value.split('\n').map((x) => x.trim()).filter(Boolean),
       },
     };
@@ -158,11 +214,18 @@
     try { body = collect(); } catch (e) { msg(e.message, 'bad'); return; }
     el('save').disabled = true; msg('Saving\u2026', '');
     try {
+      const newGrid = !!body.time && !grid && window.WeekEditor.gridChanged(stored.time, stored.rules, body.time);
+      if (newGrid) {                        // a new grid: say what it costs before saving
+        const imp = await api('/api/week/impact', { method: 'POST', body: JSON.stringify({ time: body.time }) });
+        const question = window.WeekEditor.saveQuestion(imp);
+        if (question && !confirm(question)) { msg('Not saved.', ''); return; }
+      }
       const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
       fill(saved);
       document.documentElement.dataset.schoolLook = (saved.look || {}).default || 'classic';
       if (window.planeLook) window.planeLook.refresh();
-      msg('Saved.', 'ok');
+      const changes = window.WeekEditor.savedText(saved.week_changes, newGrid);
+      msg(changes ? `Saved. ${changes}` : 'Saved.', changes ? '' : 'ok');
     } catch (e) { msg(e.message, 'bad'); }
     finally { el('save').disabled = false; }
   });

@@ -20,6 +20,7 @@ import time as _time
 from collections import Counter
 
 from ..db import DEFAULT_SOFT, PRESETS, RULES
+from .. import week
 from ..plan import model as plan_model
 from ..wizard import library as L
 from ..wizard.library import WizardError
@@ -83,23 +84,57 @@ def _label_kind(labels: list) -> str:
     return "period"
 
 
+def _day_rows(raw_days: list) -> list[dict]:
+    """The wizard's `time.days` entries (`{periods, start, breaks}`, no names) for these saved days."""
+    out = []
+    for d in raw_days:
+        row = {"periods": _int(d.get("periods"), 1)}
+        if week.minutes(d.get("start")) is not None:
+            row["start"] = d["start"]
+        row["breaks"] = [{"after": _int(b.get("after"), 0), "name": str(b.get("name") or "Break"),
+                          "minutes": _int(b.get("minutes"), 0)} for b in d.get("breaks") or [] if isinstance(b, dict)]
+        out.append(row)
+    return out
+
+
 def _cycle(settings: dict) -> tuple[dict, int]:
-    """The template's `time` and the number of days in the cycle."""
+    """The template's `time` and the number of days in the cycle.
+
+    A timetable with a week table (`time.days`) keeps it: the first five days of a Monday-to-Friday week-based
+    cycle (a one-day cycle its one day), as the library validates them. A rolling or other week keeps the old
+    form (labels only), with the breaks of its first day as the rest offsets; a timetable from before the
+    week table is read exactly as it always was."""
     t = settings["time"]
-    slots_per_day = max(1, _int(t.get("slots_per_day"), 8))
+    shape = week.shape(t, settings.get("rules"))
+    legacy = shape["legacy"]
+    slots_per_day = max(1, _int(t.get("slots_per_day"), 8)) if legacy else max(1, shape["spd"])
     match = _CLOCK.fullmatch(str(t.get("start") or ""))
     hours, minutes = (int(match.group(1)), int(match.group(2))) if match else (8, 0)
     start = f"{hours:02d}:{minutes:02d}" if hours < 24 and minutes < 60 else "08:00"
-    days = max(1, len(t.get("labels") or []) // slots_per_day)
-    return {"slot_minutes": max(1, _int(t.get("slot_minutes"), 60)), "day_start": start,
-            "slots_per_day": slots_per_day, "labels": _label_kind(t.get("labels")),
-            "days_per_week": 5 if _int(t.get("days_per_week"), 5) <= 5 else 7}, days
+    labels = t.get("labels") if legacy else shape["labels"]
+    days = max(1, len(labels or []) // slots_per_day) if legacy else max(1, shape["n_days"])
+    out = {"slot_minutes": max(1, _int(t.get("slot_minutes"), 60)), "day_start": start,
+           "slots_per_day": slots_per_day, "labels": _label_kind(labels),
+           "days_per_week": 5 if _int(t.get("days_per_week"), 5) <= 5 else 7}
+    if not legacy and out["days_per_week"] == 5 and shape["cycle"] == "weeks" and (days == 1 or days % 5 == 0):
+        raw = [d for d in t["days"] if isinstance(d, dict)]
+        out["days"] = _day_rows(raw[:1] if days == 1 else raw[:5])
+    return out, days
 
 
-def _rules(settings: dict, slots_per_day: int) -> dict:
+def _rules(settings: dict, slots_per_day: int, time: dict | None = None) -> dict:
+    """The template's rules. `time` is what `_cycle` returned: with `days` in it the breaks are there and
+    `mandatory_rest` stays empty; a week table the template could not keep (rolling) gives the breaks of its
+    first day as offsets; a timetable from before the week table keeps its own offsets."""
     r = settings.get("rules") or {}
     clamp = lambda v: min(max(_int(v, slots_per_day), 1), slots_per_day)
-    rest = sorted({_int(x, -1) for x in r.get("mandatory_rest") or []} & set(range(slots_per_day)))
+    shape = week.shape(settings["time"], r)
+    if time is not None and "days" in time:
+        rest: list[int] = []
+    elif shape["legacy"]:
+        rest = sorted({_int(x, -1) for x in r.get("mandatory_rest") or []} & set(range(slots_per_day)))
+    else:
+        rest = sorted(p["index"] for p in shape["positions"] if p["day"] == 0 and p["kind"] == "break")
     return {"max_load_slots": clamp(r.get("max_load")), "max_run_slots": clamp(r.get("max_run")), "mandatory_rest": rest}
 
 
@@ -213,7 +248,7 @@ def export_template(db, meta: dict, now: float | None = None) -> dict:
     settings = db.get_settings()
     plan = _plan(db)
     time, days = _cycle(settings)
-    rules = _rules(settings, time["slots_per_day"])
+    rules = _rules(settings, time["slots_per_day"], time)
     vocabulary = dict(plan["vocabulary"]) if plan else dict(plan_model.DEFAULT_VOCABULARY)
     subjects = _subjects(plan, rules["max_run_slots"]) if plan else []
     if subjects:

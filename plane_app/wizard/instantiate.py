@@ -26,7 +26,7 @@ import copy
 import io
 from datetime import date as _date
 
-from .. import intake
+from .. import intake, students as ST, week
 from ..plan import model as M
 from ..plan.generate import generate
 from ..print import grid as G, pdf as P
@@ -40,6 +40,7 @@ MAX_SAMPLE_GRIDS = 6    # the sample PDF is a taste, not a timetable
 MAX_SAMPLE_ROWS = 3     # sample rows a sheet, and never the same row twice
 CLASS_SIZE = 30         # invented, like every name in a sample
 ROOM_CAP = 40
+STUDENT_SUBJECTS = 6    # the Students sheet's Subject columns
 SPARE_ROOMS = 2         # rooms beyond one per class, so a band's options always have somewhere to go
 SHARE_ABOVE = 0.6       # a venue kind this full of its own sample is marked shared: duties overlap in it
 
@@ -63,7 +64,12 @@ def _clock(start: int, index: int, slot_minutes: int) -> str:
 
 def shape(template: dict, knobs: dict) -> dict:
     """The cycle the knobs describe: slot length, slots a day, when the day starts, days in the
-    cycle. The template's `time` is the default; a knob that names one of them wins."""
+    cycle. The template's `time` is the default; a knob that names one of them wins.
+
+    `slots_per_day` is what the knobs count. A `periods_per_day` knob counts teaching periods (its
+    help says so), so the template's break sits on top of them (`teaching`); anything else counts
+    positions of the day, a rest among them, so the day keeps its span. `rest` is where the template
+    puts its breaks: the `recess_after` knob, else the rules' offsets."""
     time = template["time"]
     slot_minutes = knobs.get("slot_minutes") or knobs.get("period_minutes") or time["slot_minutes"]
     day_start = knobs.get("open_from") or time["day_start"]
@@ -74,9 +80,11 @@ def shape(template: dict, knobs: dict) -> dict:
         slots_per_day = max(1, open_minutes // int(slot_minutes))
     else:
         slots_per_day = time["slots_per_day"]
+    rest = [int(knobs["recess_after"])] if "recess_after" in knobs else list(template["rules"]["mandatory_rest"])
     return {"slot_minutes": int(slot_minutes), "slots_per_day": int(slots_per_day),
             "day_start": day_start, "cycle_days": int(knobs["cycle_days"]),
-            "days_per_week": time["days_per_week"], "kind": time["labels"]}
+            "days_per_week": time["days_per_week"], "kind": time["labels"],
+            "teaching": "periods_per_day" in knobs, "rest": sorted(set(rest))}
 
 
 def _unit_word(template: dict, knobs: dict) -> str:
@@ -93,13 +101,45 @@ def _day_name(sh: dict, day: int) -> str:
     name = WEEKDAYS[day % per_week]
     if cycle_days <= per_week:
         return name
-    week = day // per_week
+    week_no = day // per_week
     weeks = -(-cycle_days // per_week)
-    return f"{('Odd', 'Even')[week] if weeks == 2 else f'W{week + 1}'} {name}"
+    return f"{('Odd', 'Even')[week_no] if weeks == 2 else f'W{week_no + 1}'} {name}"
+
+
+def _day_rows(template: dict, sh: dict) -> list[dict]:
+    """One `{periods, start, breaks}` a day of the cycle (spec §5). The template's `time.days` is one
+    entry for every day or five for Monday to Friday, repeated over the weeks; a day it shortens
+    (fewer periods than the template's own day) keeps its own, every other day takes what the knobs
+    say. A day with no entry, and an entry with no breaks, take the template's rest as breaks."""
+    entries = template["time"].get("days") or []
+    baseline = template["time"]["slots_per_day"]
+    slots = sh["slots_per_day"]
+    if sh["teaching"]:
+        rest = [o for o in sh["rest"] if 1 <= o <= slots - 1]
+        periods, rest_breaks = slots, rest
+    else:                                     # the rest is one of the day's positions: it is not a period
+        rest = [o for o in sh["rest"] if 1 <= o <= slots - 2]
+        periods, rest_breaks = slots - len(rest), [o - i for i, o in enumerate(rest)]
+    default = [{"after": a, "name": "Break", "minutes": sh["slot_minutes"]} for a in rest_breaks]
+    rows = []
+    for day in range(sh["cycle_days"]):
+        entry = entries[day % len(entries)] if entries else {}
+        own = entry.get("periods")
+        row_periods = min(own, periods) if own is not None and own < baseline else periods
+        if "breaks" in entry:
+            breaks = [dict(b) for b in entry["breaks"]]
+            if not sh["teaching"] and not (own is not None and own < baseline):
+                row_periods = slots - len(breaks)
+        else:
+            breaks = [dict(b) for b in default]
+        rows.append({"periods": max(1, row_periods), "start": entry.get("start") or sh["day_start"],
+                     "breaks": [b for b in breaks if 1 <= b["after"] <= max(1, row_periods) - 1]})
+    return rows
 
 
 def labels_for(template: dict, knobs: dict) -> list[str]:
-    """One label a slot for the whole cycle: "Odd Mon P1"…, "Mon 07:00"…, "P1"…"""
+    """One label a slot for the whole cycle, as every timetable of this wizard had them before the
+    week table: "Odd Mon P1"…, "Mon 07:00"…, "P1"…"""
     sh = shape(template, knobs)
     start = _minutes(sh["day_start"])
     out = []
@@ -111,32 +151,72 @@ def labels_for(template: dict, knobs: dict) -> list[str]:
     return out
 
 
-def rules_for(template: dict, knobs: dict) -> dict:
-    """The template's slot rules, in the settings' words, with `slots_per_day` so that load, runs
-    and breaks are judged within a day rather than across the whole cycle."""
+def _labels_only(template: dict, knobs: dict) -> tuple[dict, list[int]]:
+    """The timetable as it was written before the week table: one label a slot, no `days`, the rest as
+    offsets for `rules.mandatory_rest`. Seven-day rotas (Mon to Sun labels, "W3 Mon") and cycles over 20 days
+    are not weeks `week.check` accepts, so they keep this form and the labels they always had."""
     sh = shape(template, knobs)
-    slots_per_day = sh["slots_per_day"]
+    rest = [t for t in sh["rest"] if 0 <= t < sh["slots_per_day"]]
+    return ({"slot_minutes": sh["slot_minutes"], "slots_per_day": sh["slots_per_day"], "start": sh["day_start"],
+             "days_per_week": sh["days_per_week"], "labels": labels_for(template, knobs), "window": "day"}, rest)
+
+
+def _week(template: dict, knobs: dict) -> tuple[dict, list[int]]:
+    """The `time` the template and knobs write, and the rest offsets its rules keep.
+
+    A Monday-to-Friday template (`days_per_week` 5) gets a week table (spec §5): `days`, a cycle
+    (week-based when the days are whole weeks, else rolling), the label style and, derived from them,
+    the labels and positions a day. `WizardError` when that week could not be saved. Every other
+    template keeps the labels-only form (`_labels_only`)."""
+    sh = shape(template, knobs)
+    if sh["days_per_week"] != 5 or sh["cycle_days"] > week.MAX_DAYS:
+        return _labels_only(template, knobs)
+    n = sh["cycle_days"]
+    time = {"slot_minutes": sh["slot_minutes"], "start": sh["day_start"], "days_per_week": sh["days_per_week"],
+            "cycle": "weeks" if n == 1 or n % 5 == 0 else "rolling",
+            "label_style": "clock" if sh["kind"] == "day-hour" else "period", "window": "day",
+            "days": [{"name": _day_name(sh, d) or "Day", **row} for d, row in enumerate(_day_rows(template, sh))]}
+    problem = week.check(time)
+    if problem:
+        raise WizardError(f"{template.get('name') or 'This template'}: {problem}")
+    return week.derive(time), []
+
+
+def time_for(template: dict, knobs: dict) -> dict:
+    """The `time` of the settings the template and knobs write (see `_week`)."""
+    return _week(template, knobs)[0]
+
+
+def week_shape(template: dict, knobs: dict) -> dict:
+    """`week.shape` of that time: positions, closed ones and open periods a day."""
+    time, rest = _week(template, knobs)
+    return week.shape(time, {"mandatory_rest": rest})
+
+
+def rules_for(template: dict, knobs: dict, given: tuple[dict, list[int]] | None = None) -> dict:
+    """The template's slot rules, in the settings' words, with `slots_per_day` so that load, runs
+    and breaks are judged within a day rather than across the whole cycle. The break the template
+    asked for is in `time.days` (spec §5), so `mandatory_rest` is empty; a labels-only timetable keeps
+    its offsets."""
+    time, rest = given or _week(template, knobs)
+    sh = shape(template, knobs)
     rules = template["rules"]
     max_run = rules["max_run_slots"]
     if "shift_hours" in knobs:
         max_run = max(1, round(int(knobs["shift_hours"]) * 60 / sh["slot_minutes"]))
-    rest = [int(knobs["recess_after"])] if "recess_after" in knobs else list(rules["mandatory_rest"])
-    return {"max_load": min(rules["max_load_slots"], slots_per_day),
-            "max_run": min(max_run, slots_per_day),
-            "mandatory_rest": [t for t in rest if 0 <= t < slots_per_day],
-            "slots_per_day": slots_per_day}
+    open_most = sh["slots_per_day"] if "days" not in time else max(week.shape(time)["open_per_day"])
+    return {"max_load": min(rules["max_load_slots"], open_most),
+            "max_run": min(max_run, open_most),
+            "mandatory_rest": list(rest),
+            "slots_per_day": time["slots_per_day"]}
 
 
 def settings_for(template: dict, knobs: dict, current_settings: dict) -> dict:
-    """A full settings document for the timetable: time and rules from the template and knobs,
-    everything else (the calendar, the solver, the provider, the engine) as it already is."""
-    sh = shape(template, knobs)
-    settings = {
-        "time": {"slot_minutes": sh["slot_minutes"], "slots_per_day": sh["slots_per_day"],
-                 "start": sh["day_start"], "days_per_week": sh["days_per_week"],
-                 "labels": labels_for(template, knobs), "window": "day"},
-        "rules": rules_for(template, knobs),
-    }
+    """A full settings document for the timetable: time (the week, `days` always written) and rules
+    from the template and knobs, everything else (the calendar, the solver, the provider, the
+    engine) as it already is."""
+    made = _week(template, knobs)
+    settings = {"time": made[0], "rules": rules_for(template, knobs, made)}
     for key in CARRIED_SETTINGS:
         if key in (current_settings or {}):
             settings[key] = copy.deepcopy(current_settings[key])
@@ -342,8 +422,8 @@ def sample_plan(template: dict, knobs: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _usable_slots(template: dict, knobs: dict) -> int:
-    rules = rules_for(template, knobs)
-    return max(1, rules["slots_per_day"] - len(rules["mandatory_rest"]))
+    open_per_day = week_shape(template, knobs)["open_per_day"]
+    return max(1, sum(open_per_day) // len(open_per_day))
 
 
 def sample_venues(template: dict, knobs: dict, plan: dict) -> list[dict]:
@@ -390,18 +470,25 @@ def sample_organisation(template: dict, knobs: dict, settings: dict) -> dict:
 # facts
 # ---------------------------------------------------------------------------
 
-def facts(template: dict, knobs: dict) -> dict:
-    """What the side panel shows about the configuration being considered."""
+def facts(template: dict, knobs: dict, settings: dict | None = None) -> dict:
+    """What the side panel shows about the configuration being considered. Given the timetable's
+    settings (a wizard record exists), the week is the one saved there, which the school may have
+    changed since the wizard wrote it; before that it is the template's own."""
     sh = shape(template, knobs)
+    wk = (week.shape(settings["time"], settings.get("rules")) if settings and isinstance(settings.get("time"), dict)
+          else week_shape(template, knobs))
     plan = sample_plan(template, knobs)
     groups = len(plan["classes"]) + len({(r["grouping"], tuple(r["classes"]))
                                          for r in plan["requirements"] if r["grouping"] != "class"})
     return {
         "cycle_days": sh["cycle_days"],
-        "slots_per_day": sh["slots_per_day"],
-        "slots": sh["slots_per_day"] * sh["cycle_days"],
+        # a labels-only timetable counts slots as it always did; a week table counts its open periods
+        "slots_per_day": sh["slots_per_day"] if wk["legacy"] else max(wk["open_per_day"]),
+        "slots": sh["slots_per_day"] * sh["cycle_days"] if wk["legacy"] else sum(wk["open_per_day"]),
         "slot_minutes": sh["slot_minutes"],
         "unit": _unit_word(template, knobs),     # "hours" or "periods": never the engine's "slots"
+        "week": week.describe(wk),     # one line a day: "Fri · 08:00–10:40 · 4 periods"
+        "uneven": len(set(wk["open_per_day"])) > 1,
         "sample": {"people": len(plan["staff"]), "groups": groups,
                    "requirements": len(plan["requirements"]),
                    "events": sum(sum(r["lessons"].values()) for r in plan["requirements"])},
@@ -636,6 +723,25 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                                _column("Short", "A short form for the printed timetable", _initials(teachers[0]))],
                    "head": ["S/N", "Staff", "Dept", "Profile", "Teaching Load Factor", "Short"],
                    "rows": staff_rows})
+
+    # one example student in the first class, taking the first option group of each banded subject: the
+    # reader (plan.reader.inbox) ignores a sheet holding nothing but this row, so a workbook given back
+    # as it is stores no student
+    option_codes = group_codes[0::2][:STUDENT_SUBJECTS]
+    sheets.append({"name": "Students",
+                   "purpose": f"Optional: one row per student, the {v['group']} they are in and the option "
+                              "groups (or subjects) they take, a column each. Leave it with its example row to "
+                              "add no students.",
+                   "columns": [_column("Student ID", "A code for the student, different on every row", ST.EXAMPLE_ID),
+                               _column("Name", "The student's name", ST.EXAMPLE_NAME),
+                               _column("Class", f"The student's {v['group']}, as the subject sheets spell it",
+                                       first_codes[0]),
+                               *(_column(f"Subject {n}", "An option group code, or a subject, the student takes "
+                                                         "(leave a cell empty when there is nothing to list)",
+                                         option_codes[n - 1] if n <= len(option_codes) else "")
+                                 for n in range(1, STUDENT_SUBJECTS + 1))],
+                   "rows": [[ST.EXAMPLE_ID, ST.EXAMPLE_NAME, first_codes[0],
+                             *(option_codes + [None] * STUDENT_SUBJECTS)[:STUDENT_SUBJECTS]]]})
     return sheets
 
 
@@ -659,7 +765,7 @@ def chosen_knobs(template: dict, knobs: dict) -> list[dict]:
     return out
 
 
-def workbook_bytes(template: dict, knobs: dict) -> bytes:
+def workbook_bytes(template: dict, knobs: dict, settings: dict | None = None) -> bytes:
     """The workbook to fill in: the template's sheets with a few sample rows on each sheet (the Staff
     sheet lists whoever the sample duties need), and a README that explains every column in the
     template's own words."""
@@ -683,6 +789,9 @@ def workbook_bytes(template: dict, knobs: dict) -> bytes:
     readme.append(["What you chose", "", ""])
     for knob in chosen_knobs(template, knobs):
         readme.append([knob["label"], knob["value"], knob["help"]])
+    readme.append(["The week", "", "Open periods and breaks each day; change them in the app, not here."])
+    for line in facts(template, knobs, settings)["week"]:
+        readme.append(["", line, ""])
     readme.append([])
     readme.append(["Column", "What to put", "Example"])
     for sheet in sheets:
@@ -697,7 +806,7 @@ def workbook_bytes(template: dict, knobs: dict) -> bytes:
     return buf.getvalue()
 
 
-def guide_html(templates_env, template: dict, knobs: dict) -> str:
+def guide_html(templates_env, template: dict, knobs: dict, settings: dict | None = None) -> str:
     """One printable page: the configuration chosen, the knobs, each sheet and column, three steps."""
     v = template["vocabulary"]
     steps = [
@@ -709,7 +818,7 @@ def guide_html(templates_env, template: dict, knobs: dict) -> str:
     ]
     return templates_env.env.get_template("wizard/guide.html").render(
         template=template, vocabulary=template["vocabulary"], knobs=chosen_knobs(template, knobs),
-        facts=facts(template, knobs), sheets=sheets_for(template, knobs), steps=steps,
+        facts=facts(template, knobs, settings), sheets=sheets_for(template, knobs), steps=steps,
         generated=_date.today().strftime("%-d %b %Y"))
 
 

@@ -91,6 +91,7 @@ export async function mount(el, opts) {
       if (!presenting || presentTimer || gen !== presentGen) return;      // left, or a newer presentation owns the stepping
       presentTimer = setInterval(() => {
         if (presentPaused || document.hidden || !doc) return;
+        if (Array.isArray(doc.time && doc.time.positions) && doc.time.positions.length) { t = D.stepPeriod(doc.time, t, 1); showPeriod(); return; }   // periods only
         const total = ((doc.time && doc.time.labels) || []).length || 1;
         t = (t + 1) % total; showPeriod();
       }, 4000);
@@ -239,16 +240,19 @@ export async function mount(el, opts) {
     return {
       room, now, nowTeachers: now ? names(now.teachers) : '',
       next: nx ? { subject: nx.subject, label: label(nx.t0) } : null,
-      used: D.usedPeriods(list), total: (doc.time.labels || []).length,
+      used: D.usedPeriods(list), total: D.openCount(doc.time),
       clashes: D.clashesAt(doc.clashes, t).filter((c) => c.rooms.includes(id)).map((c) => c.message),
     };
   }
   function teacherInfo(id) {
     const person = byId(doc.people, id); if (!person) return null;
     const spd = doc.time.slots_per_day || 1, day = Math.floor(t / spd);
+    const ps = Array.isArray(doc.time.positions) && doc.time.positions.length ? doc.time.positions : null;
+    const opens = ps ? D.dayPeriods(doc.time, day) : null;
+    const end = opens ? (opens.length ? opens[opens.length - 1] + 1 : day * spd) : (day + 1) * spd;   // the day's last period
     const at = D.whereIs(id, doc.lessons, t);
     let next = null;
-    for (let s = t + 1; s < (day + 1) * spd && !next; s++) {
+    for (let s = t + 1; s < end && !next; s++) {
       const w = D.whereIs(id, doc.lessons, s);
       if (w && w.lesson.t0 === s) next = { subject: w.lesson.subject, roomName: (byId(doc.rooms, w.room) || { name: w.room }).name, label: label(s) };
     }
@@ -256,7 +260,7 @@ export async function mount(el, opts) {
     return {
       person, load: l ? { load: l.load, max: Number.isFinite(l.max_load) ? l.max_load : null } : null,
       where: at ? { room: at.room, roomName: (byId(doc.rooms, at.room) || { name: at.room }).name, lesson: at.lesson } : null,
-      next, free: D.freePeriods(id, doc.lessons, day, spd).map((p) => D.labelParts(doc.time.labels, day * spd + p, spd, doc.time.days).period),
+      next, free: D.freePeriods(id, doc.lessons, day, spd, ps).map((p) => D.labelParts(doc.time.labels, day * spd + p, spd, doc.time.days, ps, doc.time.days_names).period),
     };
   }
 
@@ -338,9 +342,10 @@ export async function mount(el, opts) {
       const w = sdoc.week || {}, spd = w.slots_per_day || 0, id = p.id || {}, day = id.day, slot = id.slot;
       if (!Number.isInteger(day) || !Number.isInteger(slot)) return null;
       const labels = w.labels || [], label = labels[day * spd + slot] || `Day ${day + 1}, period ${slot + 1}`;
-      const rest = (w.rests || []).includes(slot);
+      const ps = Array.isArray(w.positions) && w.positions.length ? w.positions : null, pos = ps ? ps[day * spd + slot] : null;
+      const rest = ps ? !!(pos && pos.kind === 'break') : (w.rests || []).includes(slot);   // the day's own breaks
       const pins = (w.pinned || []).filter((x) => x.day === day && slot >= x.slot && slot < x.slot + (x.dur || 1)).map((x) => x.name || 'Pinned');
-      const open = [...Array(spd).keys()].filter((k) => !(w.rests || []).includes(k));
+      const open = ps ? D.dayPeriods(w, day).map((s) => s - day * spd) : [...Array(spd).keys()].filter((k) => !(w.rests || []).includes(k));
       const edge = (w.edge_subjects || []).length && !rest && (slot === open[0] || slot === open[open.length - 1]);
       const notes = (sdoc.notes || []).filter((n) => n.day === day).map((n) => 'Note: ' + n.text);
       return {

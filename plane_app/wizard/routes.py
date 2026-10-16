@@ -132,11 +132,18 @@ def make_router(db, templates, engine) -> APIRouter:
     @r.post("/api/wizard/preview")
     def preview(body: dict, sid: str = Depends(auth.require_session)):
         template, knobs = _resolved(body)
-        return I.facts(template, knobs)
+        try:                       # `saved`: the week as saved on this timetable, which may differ from the template's
+            return I.facts(template, knobs, db.get_settings() if (body or {}).get("saved") else None)
+        except L.WizardError as e:               # a week that cannot be saved (a cycle past 20 days)
+            raise HTTPException(422, str(e))
 
     @r.post("/api/wizard/instantiate")
     def instantiate_route(body: dict, background: BackgroundTasks, sid: str = Depends(auth.require_session)):
         template, knobs = _resolved(body)
+        try:
+            I.settings_for(template, knobs, {})                   # a week that cannot be saved writes nothing
+        except L.WizardError as e:
+            raise HTTPException(422, str(e))
         result = instantiate(db, template, knobs, _engine() if "shared" in template else None, background)
         return {"ok": True, **result}
 
@@ -147,7 +154,7 @@ def make_router(db, templates, engine) -> APIRouter:
     @r.get("/api/wizard/workbook.xlsx")
     def workbook(sid: str = Depends(auth.require_session)):
         template, knobs = _chosen()
-        return Response(I.workbook_bytes(template, knobs),
+        return Response(I.workbook_bytes(template, knobs, db.get_settings()),
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": 'attachment; filename="template.xlsx"'})
 
@@ -166,6 +173,6 @@ def make_router(db, templates, engine) -> APIRouter:
     @r.get("/api/wizard/guide", response_class=HTMLResponse)
     def guide(sid: str = Depends(auth.require_session)):
         template, knobs = _chosen()
-        return HTMLResponse(I.guide_html(templates, template, knobs))
+        return HTMLResponse(I.guide_html(templates, template, knobs, db.get_settings()))
 
     return r

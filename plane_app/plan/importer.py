@@ -14,13 +14,15 @@ import re
 from datetime import datetime, timezone
 
 from .. import names as names_mod
+from .. import week
 from . import model as M
 from .issues import Issue
 
 #  README is skipped on both shapes of workbook: the start wizard's `wizard.instantiate.workbook_bytes`
 # always appends one (spec docs/superpowers/specs/2026-09-20-start-wizard-design.md §5), and it is
-# never a department, staff or duties sheet.
-_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees", "readme"}
+# never a department, staff or duties sheet. Nor is Students (spec 2026-10-16-students-design.md): a
+# student list is read by `plan.reader.inbox`, never as a subject sheet.
+_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees", "readme", "students"}
 _SPECIAL_SHEETS = {"groups", "control", "load"}
 
 _NEEDED_HEADERS = {"subject", "single", "double", "grouping", "class 1"}
@@ -944,6 +946,9 @@ def cycle_shape(org: dict | None, settings: dict | None) -> tuple[int, int, int]
     spd = time.get("slots_per_day")
     n_slots = len(time.get("labels") or ())
     per_week = time.get("days_per_week")
+    shape = week.shape(time, (settings or {}).get("rules")) if time else None
+    if shape is not None and not shape["legacy"] and shape["n_days"] and shape["spd"]:
+        spd, n_slots = shape["spd"], shape["n_days"] * shape["spd"]       # a saved week: the padded grid, closed positions included
     if not spd and org:
         spd = ((org.get("rules") or {}).get("slots_per_day"))
         n_slots = len(org.get("time_labels") or ())

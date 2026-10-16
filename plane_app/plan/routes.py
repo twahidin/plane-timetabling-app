@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import auth, journey, users
+from .. import students as S
 from ..learning import sharing
 from . import board as B
 from . import export as X
@@ -169,12 +170,13 @@ def make_router(db) -> APIRouter:
         if has_blocks(issues):
             blocks = [i.text for i in issues if i.level == "block"]
             return JSONResponse({"detail": f"{len(blocks)} blocking issues", "blocks": capped(blocks)}, status_code=409)
-        org, summary = G.generate(plan, base_org, settings)
+        from ..main import make_engine
+        org, summary = G.generate(plan, base_org, settings, students=db.get_value("students") or None)
         db.set_org("draft", org)
         journey.stamp(db, "draft")
         # a timetable started from another school's shared template: the first draft reports it kept (§2.2), after
         # the response has gone, so a slow engine never holds the draft
-        background.add_task(sharing.report_kept, db, lambda: request.app.state.engine_factory(db.get_settings()),
+        background.add_task(sharing.report_kept, db, lambda: make_engine(request.app, db),
                             db.working_timetable())
         return {"ok": True, "summary": summary, "issues": [_issue_dict(i) for i in issues]}
 
@@ -197,17 +199,23 @@ def make_router(db) -> APIRouter:
             raise HTTPException(422, str(e))
         return _xlsx(data, f"plan-{M.plan_slug(name)}.xlsx")
 
+    def _counts(plan: dict):
+        """How many students take each option group, for the board: counts, never a student (None
+        without a list, so the board is as it was)."""
+        stored = db.get_value("students")
+        return S.sizes(stored, plan) if stored else None
+
     def _board(plan: dict, dept, level, who: auth.Principal | None = None) -> dict:
         """The board for (dept, level), or the first department and level when an edit or undo
         took that one away; with the plan's issues."""
-        settings = db.get_settings()
+        settings, counts = db.get_settings(), _counts(plan)
         try:
-            out = B.view(plan, settings, dept, level, principal=who)
+            out = B.view(plan, settings, dept, level, principal=who, student_counts=counts)
         except B.BoardError:
             try:
-                out = B.view(plan, settings, dept, principal=who)
+                out = B.view(plan, settings, dept, principal=who, student_counts=counts)
             except B.BoardError:
-                out = B.view(plan, settings, principal=who)
+                out = B.view(plan, settings, principal=who, student_counts=counts)
         out.update(_board_issues(_issues_for(db, plan, who)))
         return out
 
@@ -220,7 +228,8 @@ def make_router(db) -> APIRouter:
     def get_board(dept: str | None = None, level: str | None = None, who: auth.Principal = Depends(auth.require_user)):
         plan = _current_plan(db)
         try:
-            out = B.view(plan, db.get_settings(), dept or None, level or None, principal=who)
+            out = B.view(plan, db.get_settings(), dept or None, level or None, principal=who,
+                         student_counts=_counts(plan))
         except B.BoardError as e:
             raise HTTPException(e.status, e.message)
         out.update(_board_issues(_issues_for(db, plan, who)))

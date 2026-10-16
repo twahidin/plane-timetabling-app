@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -33,7 +34,10 @@ from .learning.routes import make_router as learning_router
 from .intake import IntakeError, apply_patch, clone_for_rebuild, empty_organisation, summarise
 from .llm import ProviderError, make_provider
 from . import periods
+from . import week
+from . import week_apply, week_save
 from . import proposals
+from . import students as students_mod
 from .plan import model as plan_model
 from .plan.model import vocabulary_of
 from .periods_api import make_router as periods_router
@@ -43,6 +47,7 @@ from .print.routes import make_router as print_router
 from .learning import log as decisions
 from .promote import promote_build
 from .relief_api import make_router as relief_router
+from .students_api import make_router as students_router
 from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
@@ -154,6 +159,22 @@ def _default_engine_factory(config: Config):
     return factory
 
 
+def make_engine(app, db) -> EngineClient:
+    """The one way the app reaches the engine: the timetable's own week rides along with every organisation."""
+    s = db.get_settings()
+    c = app.state.engine_factory(s)
+    c.week_rules = week.engine_rules(s.get("time") or {}, s.get("rules") or {})
+    # and its students' choice patterns (students spec §3): ids and group ids only, never a name
+    # A plan or list that no longer reads never stops a build or a check: no patterns, only the kind of error logged.
+    stored, plan = db.get_value("students"), db.get_value("plan")
+    try:
+        c.patterns = students_mod.patterns(stored, plan) if stored and isinstance(plan, dict) else {}
+    except Exception as e:
+        logging.getLogger("plane_app").warning("student patterns skipped: %s", type(e).__name__)
+        c.patterns = {}
+    return c
+
+
 def create_app(config: Config, db: Db, engine_factory=None, provider_factory=None) -> FastAPI:
     app = FastAPI(title="plane-app", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config, app.state.db = config, db
@@ -196,7 +217,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     (config.data_dir / "uploads").mkdir(parents=True, exist_ok=True)
 
     def engine() -> EngineClient:
-        return app.state.engine_factory(db.get_settings())
+        return make_engine(app, db)
 
     def provider():
         try:
@@ -395,18 +416,48 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     def get_settings(sid: str = Depends(auth.require_session)):
         return mask_settings(db.get_settings())
 
+    def _solve_running() -> bool:
+        record = db.get_value("solve")
+        if not record or "final" in record:
+            return False
+        try:
+            return engine().job(record["job"])["status"] in ("queued", "running")
+        except EngineError:
+            return False                                        # the engine forgot it
+
+    db.solve_probe = _solve_running            # week_save.refuse_if_busy asks it, from the routes and from a reading applied
+
     @app.put("/api/settings")
     def put_settings(body: dict, sid: str = Depends(auth.require_session)):
         given = body.get("time") if isinstance(body, dict) else None
+        moved = None
         if isinstance(given, dict):
-            # one label a slot for every day of the cycle: the count must be whole days
-            time = {**db.get_settings().get("time", {}), **given}
-            labels, per_day = time.get("labels"), time.get("slots_per_day")
-            if (isinstance(labels, list) and labels and isinstance(per_day, int) and not isinstance(per_day, bool)
-                    and per_day > 0 and len(labels) % per_day):
-                raise HTTPException(400, f"There are {len(labels)} slot labels for {per_day} slots per day. Give one label "
-                                         f"for each slot of each day of the cycle, so the count must be a multiple of {per_day}.")
-        return mask_settings(db.store_settings(body))
+            if isinstance(given.get("days"), list):
+                try:
+                    body, moved = week_save.save(db, given, body)
+                except week_save.WeekRefused as e:
+                    raise HTTPException(e.code, e.message)
+            else:
+                current = db.get_settings()
+                time = {**current.get("time", {}), **given}
+                # one label a slot for every day of the cycle: the count must be whole days
+                labels, per_day = time.get("labels"), time.get("slots_per_day")
+                if (isinstance(labels, list) and labels and isinstance(per_day, int) and not isinstance(per_day, bool)
+                        and per_day > 0 and len(labels) % per_day):
+                    raise HTTPException(400, f"There are {len(labels)} slot labels for {per_day} slots per day. Give one label "
+                                             f"for each slot of each day of the cycle, so the count must be a multiple of {per_day}.")
+        out = mask_settings(db.store_settings(body))
+        if moved is not None:
+            out = {**out, "week_changes": moved}                # what the new week moved or could not keep; not stored
+        return out
+
+    @app.post("/api/week/impact")
+    def week_impact(body: dict, sid: str = Depends(auth.require_session)):
+        time = {**db.get_settings().get("time", {}), **((body or {}).get("time") or {})}
+        problem = week.check(time)
+        if problem:
+            raise HTTPException(400, problem)
+        return week_apply.impact(db, week.derive(time))
 
     # ---- the deployment timetable (the one department accounts work on) --------
     def _deployment_payload() -> dict:
@@ -450,10 +501,23 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     def get_solid(who: auth.Principal = Depends(auth.require_user)):
         live, draft = db.get_org("live"), (db.get_org("draft") if who.is_admin else None)     # an HOD sees no draft
         cur = db.working_timetable()
-        return {"organisation": live, "draft": summarise(draft) if draft else None, "check": db.get_value("last_check"),
-                "labels": db.get_settings()["time"]["labels"],
-                "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)},
-                "vocabulary": vocabulary_of(db)}
+        out = {"organisation": live, "draft": summarise(draft) if draft else None, "check": db.get_value("last_check"),
+               "labels": db.get_settings()["time"]["labels"],
+               "timetable": {"id": cur, "name": next((t["name"] for t in db.timetables() if t["id"] == cur), cur)},
+               "vocabulary": vocabulary_of(db)}
+        # the student clash check (students spec §3), worked out here, not stored with the engine's check, so it
+        # covers a timetable built before the students were added. Slots, group names and counts only: a department
+        # account reads this, and a student's ID or name never rides along (GET /api/students/clashes is the admin's)
+        # An odd or later-edited plan or list must never turn the page every account loads into a 500: the keys are
+        # simply left out (only the kind of error is logged, never data).
+        try:
+            stored, plan = db.get_value("students"), db.get_value("plan")
+            if live and stored and isinstance(plan, dict):
+                found = students_mod.cached_clash_report(stored, live, plan_model.normalise(plan))
+                out["student_clashes"], out["student_clash_students"] = found["clashes"], found["students"]
+        except Exception as e:
+            logging.getLogger("plane_app").warning("student clash check skipped: %s", type(e).__name__)
+        return out
 
     @app.post("/api/upload")
     async def upload(sid: str = Depends(auth.require_session), files: list[UploadFile] = File(...)):
@@ -507,12 +571,15 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 raise HTTPException(404, f"no timetable {source}")
             db.select_timetable(source)
             src_settings, src_org = db.get_settings(), (db.get_org("live") or db.get_org("draft"))
+            src_students = db.get_value("students")
             cloned = source
         tid = db.create_timetable(name)
         if cloned:
             db.set_settings(src_settings)           # time and rules travel with the clone; provider/engine are global anyway
             if src_org:
                 db.set_org("draft", clone_for_rebuild(src_org))
+            if src_students:                         # the same school's students (design §4)
+                db.set_value("students", src_students)
         return {"id": tid, "name": name, "cloned_from": cloned, **_timetables_payload()}
 
     @app.post("/api/timetables/{tid}/select")
@@ -567,6 +634,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
 
     app.include_router(periods_router(db, engine, _delete_instance))
     app.include_router(relief_router(db))
+    app.include_router(students_router(db))
 
     @app.get("/api/draft")
     def get_draft(sid: str = Depends(auth.require_session)):
@@ -738,7 +806,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     def list_bookings(sid: str = Depends(auth.require_session)):
         s = db.get_settings(tid=periods.base_tid(db))      # dated: the base's term calendar
         items = bookings.list_all(db)
-        return {"items": items, "describe": {b["id"]: cal_mod.describe(s["calendar"], s["time"], b["date"]) for b in items}}
+        return {"items": items, "describe": {b["id"]: cal_mod.describe(s["calendar"], s["time"], b["date"]) for b in items},
+                "periods": {b["id"]: cal_mod.slot_words(s["time"], b["start"], b["start"] + b["dur"] - 1) for b in items}}
 
     @app.delete("/api/bookings/{bid}")
     def delete_booking(bid: str, sid: str = Depends(auth.require_session)):

@@ -74,6 +74,13 @@ def record(db, kind: str, description: str, booking: dict | None = None, cover: 
     db.set_value("changes", kept)
 
 
+def clear(db) -> None:
+    """Forget the whole log of the selected timetable and its snapshots (a week change makes them describe a grid that is gone)."""
+    for e in _entries(db):
+        db.set_value(_snap_key(e["snap"]), None)
+    db.set_value("changes", [])
+
+
 def list_all(db, tid=None) -> list[dict]:
     """The log of the selected timetable (or of `tid`), newest first, without the snapshot keys."""
     return [{k: v for k, v in e.items() if k not in ("before", "snap")} for e in _entries(db, tid)]

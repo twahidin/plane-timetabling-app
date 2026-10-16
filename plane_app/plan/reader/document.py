@@ -4,6 +4,7 @@ makes the plan patch), the plan rules it can hold, notes and doubts; or, for a t
 organisation extraction. The reply is data: validated here, never evaluated. Nothing is stored."""
 from __future__ import annotations
 
+from ... import week
 from ...intake import IntakeError, extract_organisation
 from .. import model as M
 from .language import LIST_FIELDS, NUMBER_FIELDS, REQUIRED, TARGETS
@@ -29,8 +30,12 @@ def _int(v) -> int | None:
 
 
 def _grid(settings: dict) -> tuple[int, int]:
-    """(days, slots a day) of the school's cycle: the labels run `days` of `slots` periods each."""
+    """(days, slots a day) of the school's cycle: the labels run `days` of `slots` periods each. A saved week
+    gives its days and its longest day's periods (shorter days are named in the prompt)."""
     t = (settings or {}).get("time") or {}
+    s = week.shape(t, (settings or {}).get("rules"))
+    if not s["legacy"] and s["n_days"] and max(s["open_per_day"]):
+        return s["n_days"], max(s["open_per_day"])
     slots = _int(t.get("slots_per_day")) or 8
     labels = t.get("labels")
     days = len(labels) // slots if isinstance(labels, list) else 0
@@ -61,6 +66,11 @@ def _prompt(settings: dict) -> str:
     t = settings.get("time") or {}
     days, slots = _grid(settings)
     labels = (t.get("labels") or [])[:slots] if isinstance(t.get("labels"), list) else []
+    s = week.shape(t, settings.get("rules"))
+    if not s["legacy"]:                          # periods only: a break is not a period, and a padded day has closed ends
+        longest = s["open_per_day"].index(max(s["open_per_day"])) if s["open_per_day"] else 0
+        labels = [p["label"] for p in s["positions"] if p["day"] == longest and p["kind"] == "period"]
+    short = "; ".join(week.describe(s)) if not s["legacy"] and len(set(s["open_per_day"])) > 1 else ""
     return (
         "You read a school's planning document for a timetabling app. Say kind 'timetable' when the document "
         "IS a timetable (a grid of lessons by day and period); otherwise 'plan'. For a plan, list what it states, "
@@ -69,7 +79,8 @@ def _prompt(settings: dict) -> str:
         "record does not say. Rules: only subjects to keep to the start or end of the day (edge_subjects) and "
         "fixed whole-school or named events at a fixed day and period (pinned: day from 0 = the first school "
         f"day, slot from 0 = the first period; the school has {days} days and "
-        f"{slots} periods a day, periods labelled {', '.join(labels) or 'P1, P2, ...'}). "
+        f"{slots} periods a day, periods labelled {', '.join(labels) or 'P1, P2, ...'}"
+        + (f"; the days are not all alike: {short}" if short else "") + "). "
         "Every other preference or constraint goes in notes, one short sentence each. Put anything you are "
         "unsure of (a name that may be someone else, a class you cannot place) in doubts. Do not invent data.")
 
@@ -131,6 +142,9 @@ def _records(raw) -> tuple[dict, list[str]]:
 
 def _rules(raw, settings: dict) -> tuple[dict, list[str]]:
     days, slots = _grid(settings)
+    shape = week.shape((settings or {}).get("time"), (settings or {}).get("rules"))
+    opened = shape["open_per_day"] if not shape["legacy"] else None
+    periods = [[p["index"] for p in shape["positions"] if p["day"] == k and p["kind"] == "period"] for k in range(shape["n_days"])]
     raw = raw if isinstance(raw, dict) else {}
     edge = [_str(s) for s in raw.get("edge_subjects") or [] if _str(s)] if isinstance(raw.get("edge_subjects"), list) else []
     pinned, doubts = [], []
@@ -138,9 +152,11 @@ def _rules(raw, settings: dict) -> tuple[dict, list[str]]:
         if not isinstance(p, dict) or not _str(p.get("name")):
             continue
         day, slot = _int(p.get("day")), _int(p.get("slot"))
-        if day is None or slot is None or not (0 <= day < days and 0 <= slot < slots):
+        if day is None or slot is None or not (0 <= day < days and 0 <= slot < (opened[day] if opened else slots)):
             doubts.append(f"{_str(p.get('name'))}: its day or period is not one this timetable has; left out.")
             continue
+        if opened:                               # a period number to the position it sits at (breaks count as positions)
+            slot = periods[day][slot]
         dur = _int(p.get("dur"))
         dur = dur if dur is not None and 1 <= dur <= slots else 1
         pinned.append({"name": _str(p["name"]), "day": day, "slot": slot, "dur": dur, "everyone": bool(p.get("everyone"))})

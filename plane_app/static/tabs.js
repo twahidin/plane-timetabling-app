@@ -69,13 +69,22 @@
     box.textContent = '';
     if (failed) { box.appendChild(node('p', 'empty', failed.message)); return; }
     const r = s.rules || {}, labels = (s.time || {}).labels || [];
-    const rest = (r.mandatory_rest || []).map((i) => labels[i] || `slot ${i + 1}`);
+    // A week with its own days (spec 2026-10-15-week-shape) keeps its breaks there, not in mandatory_rest:
+    // read them off the week, one line for each distinct pattern. An older timetable reads as it always did.
+    const wk = window.Week.shape(s.time, r);
+    const rest = wk.legacy ? (r.mandatory_rest || []).map((i) => labels[i] || `slot ${i + 1}`)
+      : window.Week.breakLines(wk);
     const list = node('dl', 'kv');
     [
       [`Most ${word('requirement', { plural: true })} a ${word('person')} has in a day`, r.max_load == null ? '6' : String(r.max_load)],
       ['Most in a row without a break', r.max_run == null ? '4' : String(r.max_run)],
-      ['Rest for everyone at', rest.length ? rest.join(', ') : 'none'],
-    ].forEach(([k, v]) => { list.appendChild(node('dt', null, k)); list.appendChild(node('dd', null, v)); });
+      ['Rest for everyone at', wk.legacy ? (rest.length ? rest.join(', ') : 'none') : (rest.length ? rest : 'none')],
+    ].forEach(([k, v]) => {
+      list.appendChild(node('dt', null, k));
+      const dd = node('dd', null, Array.isArray(v) ? null : v);
+      if (Array.isArray(v)) v.forEach((line) => dd.appendChild(node('div', null, line)));
+      list.appendChild(dd);
+    });
     box.appendChild(list);
     const link = node('a', null, 'Change these in Settings'); link.href = '/settings';
     const p = node('p', 'constraints-link'); p.appendChild(link); box.appendChild(p);
@@ -92,9 +101,10 @@
   function renderConsolidation(s) {
     const t = el('consolidation-title');
     if (!s) { t.textContent = 'Checks'; return; }
-    const n = ((s.check && s.check.clashes) || []).length;
-    t.textContent = !s.organisation ? 'No timetable yet.' : !s.check ? 'Not checked yet'
-      : n ? `${n} issue${n > 1 ? 's' : ''} to clear` : 'No issues found';
+    const n = ((s.check && s.check.clashes) || []).length, sn = s.student_clash_students || 0;   // distinct students
+    const todo = [n ? `${n} issue${n > 1 ? 's' : ''} to clear` : '', sn ? `${sn} student${sn > 1 ? 's' : ''} with clashes` : ''].filter(Boolean);
+    t.textContent = !s.organisation ? 'No timetable yet.' : !s.check && !sn ? 'Not checked yet'
+      : todo.length ? todo.join(', ') : 'No issues found';
   }
   async function loadConsolidation() {
     const my = ++conTitleGen;

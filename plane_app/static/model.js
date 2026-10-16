@@ -27,12 +27,14 @@
   const T = (ds) => ds.timeLabels.length;
   const eventsIn = (ds, l, t) => ds.events.filter((e) => e.loc === l && t >= e.t0 && t < e.t0 + e.dur);
   const slotLabel = (ds, t) => ds.timeLabels[t];
+  // a closed position of a short day (spec 2026-10-15-week-shape §1): its label is the day's name and " —"
+  const isClosedLabel = (tl) => { const s = String(tl == null ? '' : tl); return s === '\u2014' || s.endsWith(' \u2014'); };
   const isRestEvent = (ds, e) => !!ds.locations[e.loc].rest;
   const spanLabel = (ds, e) => (e.dur === 1 ? slotLabel(ds, e.t0) : slotLabel(ds, e.t0) + '\u2013' + slotLabel(ds, e.t0 + e.dur - 1));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   // ---------- State ----------
-  const state = { ds: null, view: 'orbit', selected: null, clashes: [], check: null };
+  const state = { ds: null, view: 'orbit', selected: null, clashes: [], check: null, studentClashes: null, studentsClashing: 0, admin: false };
 
   // ---------- Theme colours ----------
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -230,6 +232,7 @@
     });
     const spd = ds.rules.slotsPerDay, nTot = ds.timeLabels.length;
     ds.timeLabels.forEach((tl, t) => {
+      if (isClosedLabel(tl)) return;                        // a short day's closed positions carry no label
       // long cycles: label each day's first slot with the day, then every sixth slot with the time only
       if (nTot > 40) {
         const dayStart = spd ? t % spd === 0 : false;
@@ -424,7 +427,9 @@
       : n ? `${n} problem${n > 1 ? 's' : ''} found.`
       : !ds ? 'No problems found.'
       : `No problems found: ${ds.events.length} ${Words.word('requirement', { plural: ds.events.length !== 1 })}, ${ds.persons.length} ${Words.word('person', { plural: ds.persons.length !== 1 })}.`;
-    el('verdict-dot').classList.toggle('bad', n > 0);
+    const sn = state.studentsClashing;   // distinct students (the list below may name the same student twice)
+    if (sn) el('verdict').textContent += (n ? ' ' : check ? 'Checked: ' : '') + `${sn} student${sn > 1 ? 's have' : ' has'} a clash.`;
+    el('verdict-dot').classList.toggle('bad', n > 0 || sn > 0);
     const list = el('clash-list'); list.textContent = '';
     state.clashes.forEach((c) => {
       const li = document.createElement('li'), b = document.createElement('button');
@@ -438,7 +443,54 @@
       }
       list.appendChild(li);
     });
+    renderStudentClashes();
     paint();
+  }
+
+  // "3 students: Physics 3SCIA and Art 3ART1 overlap on Tue P4". Every word from the data goes in by textContent.
+  // The list is counts only (a department account may read it); "Show students" asks the admin route for who.
+  function studentClashText(c) {
+    return `${c.count} student${c.count === 1 ? '' : 's'}: ${c.groups.join(' and ')} overlap on ${c.label}`;
+  }
+  function renderStudentClashes() {
+    const box = el('student-clashes'), found = state.studentClashes;
+    box.textContent = '';
+    box.hidden = !found;
+    if (!found) return;
+    const head = document.createElement('h3'); head.textContent = 'Student clashes'; box.appendChild(head);
+    if (!found.length) {
+      const none = document.createElement('p'); none.className = 'muted'; none.textContent = 'No student clashes.'; box.appendChild(none);
+      return;
+    }
+    const ul = document.createElement('ul'); ul.className = 'student-clash-list';
+    const items = found.map((c) => {
+      const li = document.createElement('li'), line = document.createElement('div');
+      line.textContent = studentClashText(c); li.appendChild(line); ul.appendChild(li);
+      return li;
+    });
+    box.appendChild(ul);
+    if (!state.admin) return;          // the names behind the counts are the admin's alone (a department account sees counts)
+    const btn = document.createElement('button'), note = document.createElement('p');
+    btn.type = 'button'; btn.className = 'btn'; btn.id = 'show-students'; btn.textContent = 'Show students';
+    note.className = 'muted'; note.hidden = true;
+    let shown = false;
+    const clear = () => items.forEach((li) => { const w = li.querySelector('.student-clash-who'); if (w) w.remove(); });
+    btn.addEventListener('click', async () => {
+      if (shown) { clear(); shown = false; btn.textContent = 'Show students'; return; }
+      btn.disabled = true; note.hidden = true;
+      try {
+        const res = await api('/api/students/clashes');
+        const rows = res.clashes || [];
+        items.forEach((li, i) => {
+          const who = document.createElement('div'); who.className = 'student-clash-who';
+          who.textContent = ((rows[i] && rows[i].students) || []).map((x) => (x.name ? `${x.id} ${x.name}` : x.id)).join(', ');
+          li.appendChild(who);
+        });
+        shown = true; btn.textContent = 'Hide students';
+      } catch (e) { note.textContent = e.message; note.hidden = false; }
+      finally { btn.disabled = false; }
+    });
+    box.appendChild(btn); box.appendChild(note);
   }
 
   let loadGen = 0;   // overlapping reloads: only the newest renderLoads may touch the DOM after an await
@@ -545,7 +597,7 @@
     if (!ds) { el('q-args').innerHTML = ''; return; }
     const persons = ds.persons.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
     const locs = ds.locations.map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
-    const times = ds.timeLabels.map((t, i) => `<option value="${i}">${esc(t)}</option>`).join('');
+    const times = ds.timeLabels.map((t, i) => (isClosedLabel(t) ? '' : `<option value="${i}">${esc(t)}</option>`)).join('');
     if (type === 'load') el('q-args').innerHTML = `<select id="q-a" aria-label="Person">${persons}</select><div></div>`;
     else if (type === 'where') el('q-args').innerHTML = `<select id="q-a" aria-label="Person">${persons}</select><select id="q-b" aria-label="Time">${times}</select>`;
     else if (type === 'who') el('q-args').innerHTML = `<select id="q-a" aria-label="Location">${locs}</select><select id="q-b" aria-label="Time">${times}</select>`;
@@ -592,10 +644,18 @@
     parts.forEach((t) => { const s = document.createElement('span'); s.textContent = t; box.appendChild(s); });
     if (err) statusError(err);
   }
+  // The engine's verdict, worded so it never contradicts the student count shown beside it.
+  function checkedText(c, sn) {
+    if (!c) return 'Not checked yet';
+    if (c.ok) return sn ? 'Checked: no timetable clashes' : 'Checked: no clashes';
+    return `Checked: ${c.clashes.length} clash${c.clashes.length === 1 ? '' : 'es'}`;
+  }
   async function renderStatus(data) {
     const parts = [];
     const c = data.check;
-    parts.push(!c ? 'Not checked yet' : c.ok ? 'Checked: no clashes' : `Checked: ${c.clashes.length} clash${c.clashes.length === 1 ? '' : 'es'}`);
+    const sn = data.student_clash_students;   // distinct students; absent when the timetable has no students
+    parts.push(checkedText(c, sn));
+    if (sn != null) parts.push(sn ? `${sn} student${sn === 1 ? '' : 's'} with clashes` : 'no student clashes');
     if (data.draft) parts.push(`draft: ${data.draft.persons} persons, ${data.draft.locations} locations, ${data.draft.events} events (${data.draft.placed} placed)`);
     let err = null, why = '';
     try {
@@ -613,9 +673,13 @@
   // Every new /api/solid result (a build, a solve, a check, an applied change) is announced as
   // plane:solid, so parts of the page outside the 3D view (the Consolidation heading) redraw from it.
   const announceSolid = (data) => document.dispatchEvent(new CustomEvent('plane:solid', { detail: data }));
+  // who is looking, asked once: only the admin is offered "Show students" under the student clashes
+  const meReady = api('/api/me').then((m) => { state.admin = !!m && m.role === 'admin'; }).catch(() => { state.admin = false; });
   async function loadFromApi() {
     const data = await api('/api/solid');
+    await meReady;
     state.check = data.check;
+    state.studentClashes = data.student_clashes || null; state.studentsClashing = data.student_clash_students || 0;
     announceSolid(data);
     if (window.Words) { Words.set(data.vocabulary); Words.apply(document); }   // the timetable's own words, page-wide
     if (!data.organisation) {

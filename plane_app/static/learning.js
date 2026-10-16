@@ -249,11 +249,24 @@
     add(`When to choose it: ${t.when_to_choose}`);
     add(`Kind: ${KINDS[t.domain] || t.domain}`);
     add(`Words it uses: ${[voc.person, voc.group, voc.requirement, voc.venue].filter(Boolean).join(', ')}`);
-    add(`Days: ${cycle != null ? plural(cycle, 'day') + ' in the cycle, ' : ''}${plural(time.slots_per_day, unit)} a day ` +
+    // A template that carries its week (time.days: periods, start and breaks for each weekday) says the
+    // periods a day and its breaks from the week; one without keeps the old wording.
+    const days = Array.isArray(time.days) && time.days.length ? time.days : null;
+    const wk = days ? window.Week.shape({ slot_minutes: time.slot_minutes, start: time.day_start,
+      days: days.map((d, i) => Object.assign({ name: days.length === 5 ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'][i] : 'Day' }, d)) },
+      { mandatory_rest: [] }) : null;
+    let perDay = `${plural(time.slots_per_day, unit)} a day`;
+    if (wk) {
+      const most = Math.max(...wk.openPerDay);
+      const odd = wk.days.map((n, i) => (wk.openPerDay[i] === most ? null : `${n} ${wk.openPerDay[i]}`)).filter(Boolean);
+      perDay = `${plural(most, unit)} a day` + (odd.length ? ` (${odd.join(', ')})` : '');
+    }
+    add(`Days: ${cycle != null ? plural(cycle, 'day') + ' in the cycle, ' : ''}${perDay} ` +
         `of ${time.slot_minutes} minutes, starting at ${time.day_start}`);
     const rest = (rules.mandatory_rest || []).map((o) => `${unit} ${o + 1}`);
+    const breaks = wk ? window.Week.breakLines(wk) : [];
     add(`Rules: at most ${plural(rules.max_load_slots, unit)} a day and ${rules.max_run_slots} in a row for each ${voc.person || 'person'}` +
-        (rest.length ? `; a break at ${rest.join(', ')}` : ''));
+        (wk ? (breaks.length ? `; breaks: ${breaks.join('; ')}` : '') : (rest.length ? `; a break at ${rest.join(', ')}` : '')));
     if (t.sheets === 'deployment') {
       add(`Shape: ${plural(sample.levels, 'level')} of ${plural(sample.classes_per_level, voc.group || 'class', (voc.group || 'class') + 'es')}, ` +
           `${plural(sample.teachers, voc.person || 'teacher')}`);

@@ -57,7 +57,7 @@ create index if not exists decisions_tt on decisions (timetable_id, at);
 """
 DEFAULT_TIMETABLE = "default"
 SCOPED_KEYS = ("org:live", "org:draft", "last_check", "solve", "tt")   # kv keys that live per timetable
-PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "plan_history", "wizard", "periods", "period_base", "relief", "plan_activity", "learning", "readings", "journey")  # get_value/set_value keys that are scoped
+PER_TIMETABLE_VALUES = ("last_check", "solve", "bookings", "changes", "change_seq", "pending", "plan", "plan_history", "wizard", "periods", "period_base", "relief", "plan_activity", "learning", "readings", "journey", "students")  # get_value/set_value keys that are scoped
 # The one chat thread of a timetable. Messages, uploads and pending proposals are keyed by this
 # rather than by the browser's login session, so a user who logs in on another device (or after
 # the cookie expired) continues the same conversation. The login session id still authenticates
@@ -256,7 +256,7 @@ class Db:
             con.execute("delete from uploads where timetable_id=?", (tid,))
             con.execute("delete from messages where timetable_id=?", (tid,))
             con.execute("delete from decisions where timetable_id=?", (tid,))
-            keys = (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"plan_history:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}", f"plan_activity:{tid}", f"learning:{tid}", f"readings:{tid}", f"journey:{tid}")
+            keys = (f"org:{tid}:live", f"org:{tid}:draft", f"last_check:{tid}", f"solve:{tid}", f"tt:{tid}", f"bookings:{tid}", f"changes:{tid}", f"change_seq:{tid}", f"pending:{tid}", f"plan:{tid}", f"plan_history:{tid}", f"wizard:{tid}", f"periods:{tid}", f"period_base:{tid}", f"relief:{tid}", f"plan_activity:{tid}", f"learning:{tid}", f"readings:{tid}", f"journey:{tid}", f"students:{tid}")
             con.execute(f"delete from kv where k in ({','.join('?' * len(keys))})", keys)
             con.execute("delete from kv where k like ?", (f"{CHANGE_SNAP_PREFIX}%:{tid}",))   # one row per snapshot; not enumerable by exact key
             con.execute("delete from kv where k like ?", (f"{PRINT_CUSTOM_PREFIX}%:{tid}",))  # one row per saved custom timetable
@@ -384,6 +384,11 @@ class Db:
             if not isinstance(submitted, str) or not submitted or submitted.startswith("***"):
                 groups["provider"]["api_key"] = ""
         merged = {k: {**(current.get(k) if isinstance(current.get(k), dict) else {}), **groups[k]} for k in groups}
+        if "labels" in groups["time"] and "days" not in groups["time"]:
+            for k in ("days", "cycle", "rolling_start_day", "label_style"):
+                merged["time"].pop(k, None)          # labels written without a week: the week is the labels again
+        elif "days" in groups["time"] and "rolling_start_day" not in groups["time"]:
+            merged["time"].pop("rolling_start_day", None)    # a week that is not rolling has no start day to keep
         self.set_settings(merged)
         return merged
 

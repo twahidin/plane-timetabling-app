@@ -10,6 +10,7 @@
   th { background: #f2f2f2; font-weight: 600; }
   td.col { width: 11em; font-weight: 600; } td.eg { width: 9em; color: #555; }
   ul { margin: 4px 0 10px; padding-left: 18px; } li { margin: 2px 0; }
+  ul.week { margin: 0 0 8px; }
   .facts span { display: inline-block; margin-right: 14px; }
   .sheet { page-break-inside: avoid; }
   .foot { color: #777; font-size: 11px; margin-top: 14px; }
@@ -22,10 +23,11 @@
 <h2>The configuration you chose</h2>
 <p class="facts">
   <span>Cycle: {{ facts.cycle_days }} day{{ "" if facts.cycle_days == 1 else "s" }}</span>
-  <span>{{ facts.slots_per_day }} {{ facts.unit }} a day</span>
+  <span>{{ "up to " if facts.uneven else "" }}{{ facts.slots_per_day }} {{ facts.unit }} a day</span>
   <span>{{ facts.slot_minutes }} minutes each</span>
   <span>{{ facts.slots }} {{ facts.unit }} in the cycle</span>
 </p>
+<ul class="week">{% for line in facts.week %}<li>{{ line }}</li>{% endfor %}</ul>
 <table>
   <thead><tr><th>Question</th><th>Your answer</th><th>What it means</th></tr></thead>
   <tbody>

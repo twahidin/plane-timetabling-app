@@ -349,6 +349,9 @@
     const unassigned = cell.needed - cell.assigned;
     head.appendChild(node('span', done ? 'board-status ok' : 'board-status miss', done ? '✓' : `${unassigned}p unassigned`));
     td.appendChild(head);
+    // an option group some students take: their count beside what the plan says (text via node)
+    if (cell.students) td.appendChild(node('div', 'board-students', `${cell.students} ${cell.students === 1 ? 'student' : 'students'}`
+      + (cell.size ? ` · you said ${cell.size}` : '')));
 
     cell.parts.forEach((p) => td.appendChild(chip(p, cell)));
     cell.unassigned.forEach((u) => {

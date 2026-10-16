@@ -11,6 +11,7 @@ import copy
 import hashlib
 
 from .. import intake
+from .. import week as W
 from .issues import capped, has_blocks, plan_issues
 from .model import PlanError, home_room, plan_slug, unique_id
 
@@ -51,6 +52,27 @@ def _division_of(plan: dict, classes: list[str]) -> str | None:
     return None
 
 
+def class_group_id(code: str) -> str:
+    """The id of a class's whole-class group."""
+    return _fit_id(plan_slug(code))
+
+
+def option_division(plan: dict, r: dict) -> str:
+    """The division a non-class requirement's option group belongs to: the division covering its
+    classes, else its classes joined (plan issues warn when no division covers them)."""
+    return _division_of(plan, r["classes"]) or "-".join(r["classes"])
+
+
+def option_id(grouping: str, division: str) -> str:
+    """The id of option group `grouping` of `division` (an option_division value)."""
+    return _fit_id(plan_slug(f"{grouping}-{division}"))
+
+
+def option_group_id(plan: dict, r: dict) -> str:
+    """The id of the option group a non-class requirement attends (one per grouping per division)."""
+    return option_id(r["grouping"], option_division(plan, r))
+
+
 def _band_name(band: dict) -> str:
     division = band.get("division") or ""
     prefix = f"{division}-"
@@ -77,9 +99,11 @@ def _persons(plan: dict, base: dict, n_slots: int, loc_ids: list[str]) -> list[d
     return persons
 
 
-def _groups_and_bands(plan: dict, warnings: list[str]) -> tuple[list[dict], list[dict], dict[str, str]]:
+def _groups_and_bands(plan: dict, warnings: list[str],
+                      counts: dict[str, int] | None = None) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Whole-class groups (one per class) and option groups (one per grouping per division),
-    plus the map from requirement id to the group that attends it."""
+    plus the map from requirement id to the group that attends it. An option group's size is the
+    number of students who take it (`counts`, by group id) when there are any, else the stated one."""
     sizes = {c["code"]: c.get("size") for c in plan["classes"]}
     codes = list(sizes)
     for source in (*plan["divisions"], *plan["requirements"]):
@@ -89,7 +113,7 @@ def _groups_and_bands(plan: dict, warnings: list[str]) -> tuple[list[dict], list
                 codes.append(code)
                 warnings.append(f"{code}: not in the plan's classes; added as a whole-class group")
 
-    groups = [{"id": _fit_id(plan_slug(code)), "name": code, "classes": [code], "band": None,
+    groups = [{"id": class_group_id(code), "name": code, "classes": [code], "band": None,
                "option": None, "size": sizes[code]} for code in codes]
     by_id = {g["id"]: g for g in groups}
 
@@ -97,16 +121,15 @@ def _groups_and_bands(plan: dict, warnings: list[str]) -> tuple[list[dict], list
     group_of_req: dict[str, str] = {}
     for r in plan["requirements"]:
         if r["grouping"] == "class":
-            group_of_req[r["id"]] = _fit_id(plan_slug(r["classes"][0]))
+            group_of_req[r["id"]] = class_group_id(r["classes"][0])
             continue
-        division = _division_of(plan, r["classes"])
-        gid = _fit_id(plan_slug(f"{r['grouping']}-{division or '-'.join(r['classes'])}"))
+        gid = option_group_id(plan, r)
         group_of_req[r["id"]] = gid
         if gid not in by_id:
             group = {"id": gid,
                      "name": f"{'/'.join(r['classes'])} · {r['subject']} · {r['grouping']}",
                      "classes": list(r["classes"]), "band": band_of_req.get(r["id"]),
-                     "option": r["grouping"], "size": r.get("size")}
+                     "option": r["grouping"], "size": (counts or {}).get(gid, r.get("size"))}
             groups.append(group)
             by_id[gid] = group
 
@@ -243,7 +266,7 @@ def _events(plan: dict, locations: list[dict], group_of_req: dict[str, str],
 
 
 def _pinned(plan: dict, settings: dict, teacher_ids: list[str], locations: list[dict]) -> list[dict]:
-    slots_per_day = settings["time"]["slots_per_day"]
+    slots_per_day = W.shape(settings["time"], settings.get("rules"))["spd"]
     non_rest = [l["id"] for l in locations if not l.get("rest")]
     events = []
     for i, pin in enumerate(plan["rules"].get("pinned", [])):
@@ -263,8 +286,11 @@ def _pinned(plan: dict, settings: dict, teacher_ids: list[str], locations: list[
 # generate
 # ---------------------------------------------------------------------------
 
-def generate(plan: dict, base_org: dict | None, settings: dict) -> tuple[dict, dict]:
-    """Return (draft organisation, summary). Raises PlanError while the plan has block issues."""
+def generate(plan: dict, base_org: dict | None, settings: dict,
+             students: list[dict] | None = None) -> tuple[dict, dict]:
+    """Return (draft organisation, summary). Raises PlanError while the plan has block issues.
+    Given a student list, an option group's size is how many of them take it (counts only: no
+    student is read further, and none reaches the draft)."""
     base = copy.deepcopy(base_org) if base_org else intake.empty_organisation(settings, _source_name(plan))
 
     issues = plan_issues(plan, base, settings)
@@ -278,7 +304,11 @@ def generate(plan: dict, base_org: dict | None, settings: dict) -> tuple[dict, d
     n_slots = len(base["time_labels"])
 
     persons = _persons(plan, base, n_slots, loc_ids)
-    groups, bands, group_of_req = _groups_and_bands(plan, warnings)
+    counts = None
+    if students:
+        from .. import students as student_core        # students imports this module
+        counts = student_core.sizes(students, plan)
+    groups, bands, group_of_req = _groups_and_bands(plan, warnings, counts)
     teacher_ids = [s["id"] for s in plan["staff"]]
     events = _events(plan, locations, group_of_req, warnings, loc_of)
     events += _pinned(plan, settings, teacher_ids, locations)
@@ -289,6 +319,8 @@ def generate(plan: dict, base_org: dict | None, settings: dict) -> tuple[dict, d
     spd = (settings.get("time") or {}).get("slots_per_day")
     if not rules.get("slots_per_day") and spd and n_slots > spd:
         rules["slots_per_day"] = spd
+    rules.update({k: v for k, v in W.engine_rules(settings["time"], settings.get("rules")).items()
+                  if k in ("slots_per_day", "mandatory_rest")})
     rules["soft_edge_subjects"] = list(plan["rules"].get("edge_subjects", []))
 
     org = {"name": base.get("name") or _source_name(plan),

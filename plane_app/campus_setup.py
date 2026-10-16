@@ -105,6 +105,9 @@ def _week(org: dict | None, plan: dict, settings: dict, bad: set) -> dict:
     labels = [str(x) for x in labels]
     days = len(labels) // spd if labels else 0
     rests = [n for n in (C._int(x, None) for x in _l(_d(_d(settings).get("rules")).get("mandatory_rest"))) if n is not None]
+    s = C.week_for(settings, labels)                     # a week with its own days: each day at its own length
+    if s:
+        spd, days = s["spd"], s["n_days"]
     rules = _d(plan.get("rules"))
     pinned = []
     for p in _l(rules.get("pinned")):
@@ -112,8 +115,9 @@ def _week(org: dict | None, plan: dict, settings: dict, bad: set) -> dict:
             pinned.append({"name": str(p.get("name") or ""), "day": C._int(p.get("day"), 0) or 0,
                            "slot": C._int(p.get("slot"), 0) or 0, "dur": C._int(p.get("dur"), 1) or 1})
     return {"days": days, "slots_per_day": spd, "labels": labels, "rests": rests, "pinned": pinned,
-            "edge_subjects": [str(s) for s in _l(rules.get("edge_subjects"))],
-            "no_double_across_rest": bool(rules.get("no_double_across_rest", True))}
+            "edge_subjects": [str(x) for x in _l(rules.get("edge_subjects"))],
+            "no_double_across_rest": bool(rules.get("no_double_across_rest", True)),
+            **({**C.week_fields(s), "rests_abs": s["rests"]} if s else {})}
 
 
 def _legend(org: dict | None, plan) -> dict:
@@ -126,7 +130,10 @@ def _legend(org: dict | None, plan) -> dict:
 
 
 def _day_names(week: dict) -> list[str]:
-    """Each cycle day's name: the first word of its first label ("Fri P1" is "Fri")."""
+    """Each cycle day's name: the first word of the week's name for it, else of its first label ("Fri P1" is
+    "Fri")."""
+    if week.get("days_names"):
+        return [(str(n).split() or [""])[0].lower() for n in week["days_names"]]
     labels, spd = week["labels"], week["slots_per_day"]
     return [(labels[d * spd].split() or [""])[0].lower() for d in range(week["days"])]
 
@@ -194,7 +201,8 @@ def setup_view(plan: dict | None, org: dict | None, settings: dict, readings: li
     return {"campus": {**_campus(org, plan, bad), "ground": ground}, "ground": ground, "staff": staff,
             "departments": sorted(depts.values(), key=lambda d: d["name"].lower()),
             "classes": classes[:CLASSES_MAX], "classes_hidden": max(len(classes) - CLASSES_MAX, 0),
-            "cycle_periods": week["days"] * week["slots_per_day"] - len(week["rests"]) * week["days"],
+            "cycle_periods": (sum(week["open_per_day"]) if "positions" in week
+                              else week["days"] * week["slots_per_day"] - len(week["rests"]) * week["days"]),
             "week": week, "notes": _notes(plan, week), "legend": legend,
             "files": [v for v in (_view(e) for e in _l(readings)) if v], "problems": sorted(bad)}
 

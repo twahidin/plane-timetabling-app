@@ -119,7 +119,8 @@ def make_router(db) -> APIRouter:
     @r.get("/api/readings")
     def list_readings(sid: str = Depends(auth.require_session)):
         from . import inbox                 # here: inbox imports this module
-        return {"readings": [inbox.view(e) for e in _stored(db)]}
+        settings = db.get_settings()        # the card shows the timetable's week as it is now
+        return {"readings": [inbox.view(e, settings) for e in _stored(db)]}
 
     @r.post("/api/readings/clear")
     def clear_readings(sid: str = Depends(auth.require_session)):

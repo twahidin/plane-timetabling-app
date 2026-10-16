@@ -15,6 +15,8 @@ import io
 import re
 from dataclasses import dataclass, field, replace
 
+from . import week as W
+
 DAY_WORDS = ("Mon", "Tue", "Tues", "Wed", "Thu", "Thurs", "Fri", "Sat", "Sun")
 CYCLE_WORDS = ("Odd", "Even", "A", "B", "Week")
 _TIME = re.compile(r"^\d{1,2}:\d{2}$")
@@ -577,6 +579,12 @@ def build_organisation(pages: list[list[dict]], mode: str = "keep", default_cap:
            "time_labels": time_labels, "time_unit": f"{slot_minutes}-minute slot", "rules": rules,
            "locations": locations, "persons": list(persons.values()), "events": out_events,
            "groups": groups, "bands": bands}
+    proposed = week_from_times(days, ref.slot_times)
+    problem = W.check(proposed)
+    if problem is None:
+        org["_week"] = proposed                 # the reading stores this and removes it before the draft is applied
+    else:
+        notes.append({"section": "time", "source": "grid header", "note": f"The grid does not make a week the app can keep ({problem}); set the week in Settings."})
     notes.insert(0, {"section": "time", "source": "grid header",
                      "note": f"{len(days)} day rows x {spd} slots of {slot_minutes} minutes = {n_slots} slots. Load and rest rules apply per day; they start unlimited, set them in Settings."})
     n_lessons = sum(1 for e in out_events if e["loc"] != "campus" or e["t0"] is None)
@@ -593,6 +601,24 @@ def build_organisation(pages: list[list[dict]], mode: str = "keep", default_cap:
     if missing:
         notes.append({"section": "locations", "source": "venue pages", "note": f"No capacity found for {len(missing)} venue(s), set to {default_cap}: {', '.join(missing[:12])}{'...' if len(missing) > 12 else ''}"})
     return org, notes
+
+
+def week_from_times(day_names: list[str], slot_times: list[str]) -> dict:
+    """The week an export's grid proposes (ruling R3): every day the same. `slot_times` gives each
+    period's start; a period lasts the commonest gap, and a longer gap between two periods is a break of
+    the extra minutes. Empty times give no breaks and a 07:30 start."""
+    starts = [W.minutes(t) for t in slot_times]
+    slot_minutes = _slot_minutes(slot_times)
+    breaks = []
+    for i, (a, b) in enumerate(zip(starts, starts[1:])):
+        if a is not None and b is not None and b - a > slot_minutes:
+            breaks.append({"after": i + 1, "name": "Break", "minutes": b - a - slot_minutes})
+    first = next((m for m in starts if m is not None), None)
+    start = W.clock(first) if first is not None else "07:30"
+    names = [str(n) for n in day_names]
+    return {"cycle": "weeks" if len(names) in (1, 5, 10, 15, 20) else "rolling", "slot_minutes": slot_minutes,
+            "label_style": "clock",
+            "days": [{"name": n, "start": start, "periods": len(slot_times), "breaks": [dict(b) for b in breaks]} for n in names]}
 
 
 def _slot_minutes(times: list[str]) -> int:

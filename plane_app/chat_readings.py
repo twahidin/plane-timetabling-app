@@ -14,6 +14,7 @@ import json
 import re
 import time
 
+from . import week_save
 from .llm import ToolCall, ToolSpec
 from .plan import model as M
 from .plan.reader import applying, inbox, routes as RR, sections as S
@@ -31,12 +32,14 @@ SHOWN = ("staff", "classes", "rooms", "requirements", "rules", "notes", "timetab
 TARGETS_OF = {"rooms": ("venues",), "classes": ("classes", "homes"), "staff": ("staff",),
               "requirements": ("requirements",)}
 _NOUN = {"timetable": "lessons"}
+STUDENTS_UNSHOWN = ("a student list is never shown record by record (no names reach the Assistant): "
+                    "its counts and doubts are in readings_list, and the admin sees the students on the Students page")
 _NEGATION = re.compile(r"\b(?:no|not|dont|don't|do not|wait|stop|cancel|never|but)\b")
 NAME_SHOWN = 80             # a file name in the system prompt is cut to this
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 TOOLS: list[ToolSpec] = [
-    ToolSpec("readings_list", "The files the user gave and what each was read as: id, file, kind (plan or timetable), "
+    ToolSpec("readings_list", "The files the user gave and what each was read as: id, file, kind (plan, timetable or students), "
              "how it was read (exact, saved reader or AI), status (waiting, applied, skipped, failed), the count "
              "of each section and the doubts.", {"type": "object", "properties": {}}),
     ToolSpec("reading_show", "The records of one section of a reading, 50 at a time, optionally only those whose "
@@ -179,6 +182,8 @@ def _show(db, args: dict, tid: str) -> dict:
     entry = _entry(db, rid, tid)
     if entry is None:
         return {"error": "no such reading: readings_list names them"}
+    if entry["reading"].get("kind") == "students":    # counts only, before anything merges it into the plan
+        return {"error": STUDENTS_UNSHOWN, "sections": _counts(inbox.view(entry))}
     if section not in SHOWN:
         return {"error": f"section must be one of {', '.join(SHOWN)}"}
     reading = entry["reading"]
@@ -466,6 +471,14 @@ def _applied_event(rid: str, out: dict, kind: str) -> dict:
     return {"kind": "reading_applied", "id": rid, "status": out["status"], "reading_kind": kind}
 
 
+def _week_text(out: dict) -> str:
+    """' The file's week is now the timetable's. …' for an applied reading that adopted a week; '' otherwise."""
+    if "week_changes" not in out:
+        return ""
+    moved = week_save.changes_text(out["week_changes"])
+    return " The file's week is now the timetable's." + (" " + moved if moved else "") + " Undo history from before the change was cleared."
+
+
 def _apply(db, args: dict, events: list, run: str, session_id: str, tid: str) -> dict:
     from .chat import NOT_YET              # here: chat imports this module
     rid = _rid(args)
@@ -479,7 +492,8 @@ def _apply(db, args: dict, events: list, run: str, session_id: str, tid: str) ->
     except applying.ApplyError as e:
         return {"ok": False, "error": e.message}
     events.append(_applied_event(rid, out, out["reading"]["kind"]))
-    return {"ok": True, "applied": out["applied"], "status": out["status"]}
+    return {"ok": True, "applied": out["applied"], "status": out["status"],
+            **({"week_changes": out["week_changes"], "week": _week_text(out).strip()} if "week_changes" in out else {})}
 
 
 def run(call: ToolCall, db, events: list, run: str, session_id: str = "") -> str | None:
@@ -553,7 +567,9 @@ def confirm(db, events: list, session_id: str = "") -> str | None:
     status = out["status"]
     text = f"Applied {name}: {_counts_text(out['applied'])}."
     if out["reading"]["kind"] == "timetable":
-        return text + " It is the draft now: make the timetable from it."
+        return text + _week_text(out) + " It is the draft now: make the timetable from it."
+    if out["reading"]["kind"] == "students":
+        return text + " The Students page lists them."
     if status["ready"]:
         return text + " Plan ready."
     return text + " Still to sort: " + ("; ".join(status["blocks"]) or "the plan has no requirements yet") + "."
