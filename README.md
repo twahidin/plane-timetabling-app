@@ -375,6 +375,88 @@ so give the whole school's list before you generate a draft for room sizes.
 lessons and only the student's own option groups. Print one student, a class, a level or everyone, as
 one PDF with a student on each page, or as a printable page.
 
+## Option blocks
+
+For the upper years, where a school offers subject combinations (C1: Physics, Chemistry, History) with a
+limited number of places and students rank them. The app places each student in a combination, then builds
+the option blocks: which subjects run together, how many sets each subject needs, and who teaches each set.
+It sits on top of Students (above), so read that first.
+
+**Who sees it.** Only the admin; a department account is refused every route. Nothing in the plan or the
+students changes until you press Apply.
+
+**What the school enters.**
+- **On each student:** a **Merit** rank (1 chooses first) and **Choice 1, Choice 2, ... Choice n**, the
+  combination codes in the student's order of preference. They are read exactly, like the rest of the list.
+  A bad or missing merit does not stop the list being read: it is listed under "to check" with its row (for
+  example "row 7: Merit isn't a whole number from 1"), and the student has no rank until you fix it. To fix a
+  student's merit or choices, correct the list and upload it again: the Students form does not edit them. The
+  merit column is headed "Merit" or "Merit Rank"; a column called "Rank" or "Order" is left alone. A choice
+  column is only picked up when its header is like "Choice 1", "Preference 1" or "Combination 1", with a
+  number; any other column is skipped.
+- **On the Requirements tab,** the **Option blocks** card, for one level or for chosen classes: a table of
+  combinations (code, name, two or more subjects, **places**), then the limits (the number of blocks, the
+  smallest and largest set size, and for each subject its periods a cycle and room kind, prefilled from the
+  plan).
+- **Or in the workbook:** the start wizard's workbook has a **Combinations** sheet (Year, Code, Name,
+  Subject 1 to 5, Places), each Subject cell a short subject code such as PHY. The **Year** column says which level each row belongs to. Drop the workbook as
+  usual and you get a combinations card beside the plan's; Apply replaces that level's combinations and
+  keeps its limits, and Undo puts the old ones back. A sheet left with only its example row adds nothing.
+
+**Checks before placing.** The card lists what stops a placement: a combination with more subjects than
+there are blocks, a choice that is not a combination, a missing or repeated merit rank, and a subject with
+no periods a cycle or no department (give them in the card, or the plan's requirement for that subject
+gives them). More students than places in all is only a warning, since the extra students will be unplaced.
+Build is also refused, before the engine is asked, when no teacher of a subject's department has its
+periods left ("GEO: no HUM teacher has 3 periods a cycle left").
+
+**The order of placement.** Overrides first (a student you fixed to a combination keeps it and uses a
+place). Then the rest in merit order, ties by student ID: each takes their highest-ranked combination that
+still has places. Every student has a line saying why ("3rd · 1st choice C1 full · placed in C2 (2nd
+choice)", the first part being the student's merit rank), and
+the students none of whose choices had room are listed as unplaced; place them by hand with an override. An
+override is marked and kept when you place again, until you clear it. Placing is instant and always gives
+the same answer for the same input.
+
+**What the engine sees.** Counts only. A run sends each combination as an opaque id with its subjects by
+code and the number of students placed in it; for each subject its code, its room size and how many
+teachers have the allowance to take a set; for each department, as an unnamed group, its subjects and how
+many of its teachers have the allowance for its smallest set, so one block never holds more Physics,
+Chemistry and Biology sets together than Science has teachers; and the limits. Periods stay in the app. It never gets a name, a
+student ID, a merit rank or a class list; the app turns the answer back into real students itself. The Assistant is told the same kind of thing: a line of counts per
+year group ("Option blocks (Level 3): 3 combinations, 36 placed, 0 unplaced, proposal ready").
+
+**Build, Stop and the proposal.** **Build blocks** starts the engine (60 seconds by default); the card shows
+progress and **Stop** ends the run. The proposal has a column per block, each with its sets and their
+sizes, and a summary of sets and students. Each set has a suggested teacher from its department, someone
+not already teaching another set of that block, preferring one whose allowance still covers the set's
+periods, then one who already teaches that subject to the year's classes, then the most allowance left;
+change any of them from that
+department's teachers. Two sets of one block with one teacher, or a teacher over allowance, are warned. If
+the limits cannot be met the run says why, by subject code: before the search, for example "HIS needs 70
+places but its teachers and rooms give at most 60" or "PHY, CHE, BIO need 7 sets but their department's
+teachers give at most 6 (2 per block × 3 blocks)"; after it, the first single change that would fit, for
+example "with 1 more block this would fit", "with 1 more HIS teacher this would fit" or "with sets of up to
+35 this would fit".
+
+**Apply and Undo.** **Apply** writes the sets as option groups, the blocks as bands over the year group's
+division, and each student's sets; building again afterwards replaces them. Apply is refused when the
+students or the setup (combinations, limits, subject details) have changed since the run (build again), or
+when the year group's classes have, or when a set an
+earlier Apply wrote is locked ("3PHYA is locked: unlock it first"). **Undo** puts the
+plan and the students back exactly, and is refused once the plan or the students have changed since the
+Apply. After Apply, the Students checks, the clash check, sizes and student timetables work as before.
+Exporting the plan to Excel and dropping the workbook back regroups the sets into bands per subject; the
+sets keep their year group, and the next Apply puts the blocks back.
+
+**Not covered.** Collecting preferences from students (forms or links); the app setting merit ranks (the
+school provides them); one block structure across several year groups; blocks with different numbers of
+periods; and moving individual students inside the proposal (edit them in the Students section after Apply).
+
+**Deploying.** Update the engine first: its `/healthz` lists `blocks`. An older engine makes a run answer
+"The engine needs an update for option blocks"; placing, the checks and the Assistant's counts still work.
+Old timetables, and schools that do not use option blocks, are untouched.
+
 ## Appearance
 
 The app has three looks: **Classic** (the dark Nocturne look and its 3D planes view), **Toy town**

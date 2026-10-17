@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 from datetime import date as _date
 
-from .. import intake, students as ST, week
+from .. import blocks as BK, intake, students as ST, week
 from ..plan import model as M
 from ..plan.generate import generate
 from ..print import grid as G, pdf as P
@@ -41,6 +42,8 @@ MAX_SAMPLE_ROWS = 3     # sample rows a sheet, and never the same row twice
 CLASS_SIZE = 30         # invented, like every name in a sample
 ROOM_CAP = 40
 STUDENT_SUBJECTS = 6    # the Students sheet's Subject columns
+STUDENT_CHOICES = 4     # and its Choice columns, after Merit
+COMBINATION_SUBJECTS = 5    # the Combinations sheet's Subject columns
 SPARE_ROOMS = 2         # rooms beyond one per class, so a band's options always have somewhere to go
 SHARE_ABOVE = 0.6       # a venue kind this full of its own sample is marked shared: duties overlap in it
 
@@ -739,9 +742,40 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                                *(_column(f"Subject {n}", "An option group code, or a subject, the student takes "
                                                          "(leave a cell empty when there is nothing to list)",
                                          option_codes[n - 1] if n <= len(option_codes) else "")
-                                 for n in range(1, STUDENT_SUBJECTS + 1))],
+                                 for n in range(1, STUDENT_SUBJECTS + 1)),
+                               _column("Merit", "Optional: the school's merit rank, 1 for the student who chooses "
+                                                "first (for students ranking subject combinations)", ""),
+                               *(_column(f"Choice {n}", "Optional: a subject combination code, in order of "
+                                                        "preference (leave empty when the student takes Subject "
+                                                        "columns instead)", "")
+                                 for n in range(1, STUDENT_CHOICES + 1))],
                    "rows": [[ST.EXAMPLE_ID, ST.EXAMPLE_NAME, first_codes[0],
-                             *(option_codes + [None] * STUDENT_SUBJECTS)[:STUDENT_SUBJECTS]]]})
+                             *(option_codes + [None] * STUDENT_SUBJECTS)[:STUDENT_SUBJECTS],
+                             *[None] * (1 + STUDENT_CHOICES)]]})
+
+    # one example combination at the first class's level, with two subject codes (option ones first): the reader
+    # ignores a sheet holding nothing but this row, so a workbook given back as it is sets nothing up
+    banded = [s["name"] for s in sample["subjects"] if s["band"]]
+    example_subjects = [subject_codes[n] for n in
+                        list(dict.fromkeys([*banded, *(s["name"] for s in sample["subjects"])]))[:2]]
+    digits = re.match(r"\d+", first_codes[0])
+    level = digits.group(0) if digits else first_codes[0]
+    sheets.append({"name": "Combinations",
+                   "purpose": f"Optional: the subject combinations offered to a {v['group']} level, one row each "
+                              "(2 to 5 subjects and the places in it); a level's rows replace the combinations "
+                              "set up for it. Leave it with its example row to set nothing up.",
+                   "columns": [_column("Year", f"The level the combination is offered at, as the {v['group']} "
+                                               "codes start (3 for 3A and 3B)", level),
+                               _column("Code", "A short code for the combination, different within a level",
+                                       BK.EXAMPLE_CODE),
+                               _column("Name", "What the combination is called", BK.EXAMPLE_NAME),
+                               *(_column(f"Subject {n}", "A subject in the combination, as a short subject code, "
+                                                         "e.g. PHY (leave a cell empty when there is no more)",
+                                         example_subjects[n - 1] if n <= len(example_subjects) else "")
+                                 for n in range(1, COMBINATION_SUBJECTS + 1)),
+                               _column("Places", "How many students the combination can take", 20)],
+                   "rows": [[level, BK.EXAMPLE_CODE, BK.EXAMPLE_NAME,
+                             *(example_subjects + [None] * COMBINATION_SUBJECTS)[:COMBINATION_SUBJECTS], 20]]})
     return sheets
 
 

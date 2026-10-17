@@ -112,6 +112,16 @@ def _same_band(student: dict, groups: dict[str, dict]) -> list[dict]:
 # reading a list
 # ---------------------------------------------------------------------------
 
+def _merit(cell) -> int | None:
+    """A merit cell as a whole number from 1, else None (blank, 0, negative, a fraction or text)."""
+    if isinstance(cell, bool):
+        return None
+    if isinstance(cell, float) and cell.is_integer():
+        cell = int(cell)
+    text = str(cell if cell is not None else "").strip()
+    return int(text) if text.isascii() and text.isdigit() and int(text) >= 1 else None
+
+
 def read_rows(rows: list[dict], plan: dict) -> tuple[list[dict], list[dict]]:
     """Read rows {id, name, class, subjects: [str], columns?: [str], row?: int} (row numbers 1-based by
     position, or each row's own `row`: the file's row number) into (students, problems). `columns` names each subject cell's column as the file's header has it
@@ -120,6 +130,14 @@ def read_rows(rows: list[dict], plan: dict) -> tuple[list[dict], list[dict]]:
     A problem's `text` never echoes a cell the plan does not know (a name typed in the wrong column
     would otherwise travel on to the AI): it names the row and the column, and the raw cell goes in
     `detail`, for the admin page only.
+
+    A row may also carry `merit` (the merit-rank cell: 1 chooses first) and `choices` (the ranked
+    combination cells, in order), only when the file has those columns; the student then carries
+    `merit` (a whole number from 1, or None for a blank or invalid cell) and `choices` (the stripped,
+    non-blank cells). Problems for merit name the row and the student's ID, never a name or a cell:
+    `merit_invalid` (the cell goes in `detail`), `merit_missing` (a blank cell where other students
+    have a rank) and `merit_duplicate`. A choice is not a subject: it is never read as a take, and
+    whether it names a combination is checked later against the combinations.
 
     A subject cell matches, case- and space-insensitively, an option code of the student's class
     first, then a subject. A subject taught in several sets is deferred: once every row is read,
@@ -137,6 +155,7 @@ def read_rows(rows: list[dict], plan: dict) -> tuple[list[dict], list[dict]]:
     problems: list[dict] = []
     seen: set[str] = set()
     deferred: dict[tuple[str, ...], list[dict]] = {}
+    ranked: list[tuple[int, str, object, str]] = []   # (row, id, raw merit cell, column) of each kept student, when the file has a Merit column
     for n, row in enumerate(rows, 1):
         n = row.get("row") or n             # the file's own row number, when the reader knows it
         sid = str(row.get("id") or "").strip()
@@ -151,6 +170,12 @@ def read_rows(rows: list[dict], plan: dict) -> tuple[list[dict], list[dict]]:
         code = raw_class if raw_class in index else class_by_norm.get(norm(raw_class))
         student = {"id": sid, "name": str(row.get("name") or "").strip(), "class": code or raw_class,
                    "takes": [], "placed_by_app": []}
+        if "merit" in row:
+            student["merit"] = _merit(row["merit"])
+            ranked.append((n, sid, row["merit"], str(row.get("merit_column") or "").strip() or "merit"))
+        if "choices" in row:
+            student["choices"] = [c for c in (str(x if x is not None else "").strip()
+                                              for x in row["choices"] or []) if c]
         students.append(student)
         if code is None:
             problems.append({"kind": "unknown_class", "row": n, "text": f"row {n}: the class isn't known",
@@ -188,7 +213,31 @@ def read_rows(rows: list[dict], plan: dict) -> tuple[list[dict], list[dict]]:
 
     for student in students:
         problems += _same_band(student, groups)
+    problems += _merit_problems(students, ranked)
     return students, problems
+
+
+def _merit_problems(students: list[dict], ranked: list[tuple[int, str, object, str]]) -> list[dict]:
+    """The problems of a Merit column, by row: an invalid cell, a blank where others have a rank, a rank
+    two students share. Row numbers and IDs only; an invalid cell goes in `detail`."""
+    out: list[dict] = []
+    merit = {s["id"]: s["merit"] for s in students if "merit" in s}
+    anyone = any(m is not None for m in merit.values())
+    first_with: dict[int, str] = {}
+    for n, sid, cell, column in ranked:
+        m = merit[sid]
+        if m is None:
+            if str(cell if cell is not None else "").strip():
+                out.append({"kind": "merit_invalid", "row": n,
+                            "text": f"row {n}: {column} isn't a whole number from 1", "detail": str(cell).strip()})
+            elif anyone:
+                out.append({"kind": "merit_missing", "row": n, "text": f"row {n}: {sid} has no merit rank"})
+        elif m in first_with:
+            out.append({"kind": "merit_duplicate", "row": n,
+                        "text": f"row {n}: {sid} has the same merit rank as {first_with[m]}"})
+        else:
+            first_with[m] = sid
+    return out
 
 
 # ---------------------------------------------------------------------------

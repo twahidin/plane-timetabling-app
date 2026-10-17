@@ -12,6 +12,7 @@ import httpx
 # holds the wizard, the Project tab or a Generate draft for long (the solver's calls keep the client's 30 s).
 LIBRARY_TIMEOUT = 4.0
 
+BLOCKS_REFUSED = "The engine needs an update for option blocks."
 WEEK_REFUSED = "The engine needs an update for this week's shape (closed periods and per-day breaks). Ask whoever runs the engine to update it."
 # The request keys under which an organisation travels to the engine; each gets the week merged in.
 ORG_KEYS = ("organisation", "previous")
@@ -299,6 +300,14 @@ class EngineClient:
 
     def cancel_job(self, jid: str) -> dict:
         return self._call("DELETE", f"/v1/jobs/{jid}")
+
+    def blocks(self, request: dict, time_limit: int = 60) -> dict:
+        """Queue an option-blocks solve on counts only (`blocks.engine_request`); returns {"job": id}, polled
+        with `job`. An engine whose /healthz does not list `blocks` is refused before anything is sent. The
+        body has no organisation, so the week's rules and the choice patterns never touch it."""
+        if "blocks" not in self._engine_features():
+            raise EngineError(409, BLOCKS_REFUSED)
+        return self._call("POST", "/v1/blocks", {"request": request, "time_limit": int(time_limit)})
 
     def score(self, org: dict, previous: dict | None = None, weights: dict | None = None) -> dict:
         """The soft-rule score of a placed organisation: {total, breakdown, ideal, worst, scores}."""

@@ -1,15 +1,16 @@
 """Apply a reading by section, and undo it (spec docs/superpowers/specs/2026-10-12-assistant-files-design.md
 §3.3–3.4). Under the plan lock: the reading is merged into the plan as it is now and only the ticked
 sections are taken; a timetable reading becomes the draft; a student list replaces the timetable's
-students. Undo puts back what was there when nothing has changed it since."""
+students; a combinations reading replaces each level's combinations in `blocks_setup`. Undo puts back what was there when nothing has changed it since."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
 from pathlib import Path
 
-from ... import asc_import, journey, week as W, week_apply, week_save
+from ... import asc_import, blocks as BK, journey, students as ST, week as W, week_apply, week_save
 from ...intake import IntakeError
 from .. import model as M
 from ..issues import plan_issues
@@ -187,6 +188,20 @@ def _apply_plan(db, entry: dict, names: list[str], tid: str | None) -> dict:
 
 
 STUDENTS_CHANGED = "The students have changed since; undo is not possible."
+SETUP_CHANGED = "The option-block setup has changed since this was applied; undo left it as it is."
+PLAN_CHANGED = "The plan has changed since this was applied; undo left it as it is."
+
+
+def plan_as_written(now, undo: dict) -> bool:
+    """Whether the stored plan `now` is still the one an apply wrote (`undo`'s rev_after and content_after): by
+    its rev, or by its content when a later apply was undone since."""
+    return (int((now or {}).get("rev") or 0) == undo.get("rev_after")
+            or bool(undo.get("content_after")) and _content(now) == undo["content_after"])
+
+
+def students_as_written(db, undo: dict, tid: str | None = None) -> bool:
+    """Whether the stored students are still the list an apply wrote (`undo`'s after_hash)."""
+    return _hash(db.get_value("students", tid) or []) == undo.get("after_hash")
 
 
 def _apply_students(db, reading: dict, tid: str | None) -> dict:
@@ -196,6 +211,37 @@ def _apply_students(db, reading: dict, tid: str | None) -> dict:
     before = db.get_value("students", tid)
     db.set_value("students", reading.get("students") or [], tid)
     return {"before": before, "after_hash": _hash(db.get_value("students", tid) or [])}
+
+
+def setup_as_written(db, undo: dict, tid: str | None = None) -> bool:
+    """Whether the stored `blocks_setup` is still the one an apply wrote (`undo`'s after_hash)."""
+    return _hash(db.get_value("blocks_setup", tid) or {}) == undo.get("after_hash")
+
+
+def _apply_combinations(db, reading: dict, tid: str | None) -> dict:
+    """Each level's combinations in the reading replacing that level's in `blocks_setup`: a level with a
+    setup keeps its limits and subjects, drops its placement and the overrides naming a code no longer
+    offered (as the PUT route does); one without gets the default limits.
+    What undo needs to put `blocks_setup` back exactly (None when there was none)."""
+    found = reading.get("combinations")
+    if not isinstance(found, dict) or not found:
+        raise ApplyError(409, "This combinations sheet was cleared; give the file again.")
+    with BK.SETUP_LOCK:                     # the setup route's read-modify-write lock, taken after the plan lock
+        before = db.get_value("blocks_setup", tid)
+        setups = copy.deepcopy(before) if isinstance(before, dict) else {}
+        for key, combinations in found.items():
+            have = setups.get(key)
+            if isinstance(have, dict) and have:
+                offered = {ST.norm(c["code"]): c["code"] for c in combinations}
+                kept = {sid: offered[ST.norm(code)] for sid, code in (have.get("overrides") or {}).items()
+                        if isinstance(code, str) and ST.norm(code) in offered}      # as PUT does: only codes still offered
+                setups[key] = {**have, "combinations": copy.deepcopy(combinations), "overrides": kept,
+                               "placement": None}      # a placement made before is dropped (place again)
+            else:
+                setups[key] = {"year": {"level": key.partition(":")[2]}, "combinations": copy.deepcopy(combinations),
+                               "limits": dict(BK.DEFAULT_LIMITS), "subjects": {}, "overrides": {}, "placement": None}
+        db.set_value("blocks_setup", setups, tid)
+        return {"before": before, "after_hash": _hash(db.get_value("blocks_setup", tid) or {})}
 
 
 def forget_students(db, tid: str | None = None) -> int:
@@ -272,6 +318,8 @@ def apply(db, rid: str, ticked: list[str] | None, options: dict | None = None, t
             reading = {**reading, "options": opts}
         elif view["kind"] == "students":
             undo = {"kind": "students", **_apply_students(db, reading, tid)}
+        elif view["kind"] == "combinations":
+            undo = {"kind": "combinations", **_apply_combinations(db, reading, tid)}
         else:
             undo = {"kind": "plan", **_apply_plan(db, entry, names, tid)}
         applied = {n: int(secs[n].get("count") or 0) for n in names}
@@ -317,15 +365,17 @@ def undo(db, rid: str, tid: str | None = None) -> dict:
                 raise ApplyError(409, "The draft has changed since this was applied; undo left it as it is.")
             db.set_org("draft", undo.get("draft_before"), tid)
         elif undo.get("kind") == "students":
-            if _hash(db.get_value("students", tid) or []) != undo.get("after_hash"):
+            if not students_as_written(db, undo, tid):
                 raise ApplyError(409, STUDENTS_CHANGED)
             db.set_value("students", undo.get("before") or [], tid)
+        elif undo.get("kind") == "combinations":
+            with BK.SETUP_LOCK:
+                if not setup_as_written(db, undo, tid):
+                    raise ApplyError(409, SETUP_CHANGED)
+                db.set_value("blocks_setup", undo.get("before"), tid)      # None: there was none
         else:
-            now = db.get_value("plan", tid)
-            # the plan this apply wrote: by its rev, or by its content when a later apply was undone since
-            if (int((now or {}).get("rev") or 0) != undo.get("rev_after")
-                    and (not undo.get("content_after") or _content(now) != undo["content_after"])):
-                raise ApplyError(409, "The plan has changed since this was applied; undo left it as it is.")
+            if not plan_as_written(db.get_value("plan", tid), undo):
+                raise ApplyError(409, PLAN_CHANGED)
             # an empty plan rather than none: the rev keeps moving forward
             db.set_value("plan", undo.get("plan_before") or M.empty_plan(), tid)
         back = {k: v for k, v in reading.items() if k not in ("undo", "applied", "applied_at")}

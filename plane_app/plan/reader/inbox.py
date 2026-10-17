@@ -4,7 +4,8 @@
 planning workbook or a class-sizes CSV → an exact plan reading (merged by the importer, nothing
 stored; a drop's sizes CSVs go into the reading of its first planning workbook, applied on top); a
 student list → a students reading, read exactly by students.read_rows (one that cannot be read
-exactly is a failed card: a student list never reaches the AI); any other .xlsx/.csv → the smart
+exactly is a failed card: a student list never reaches the AI); a workbook's Combinations sheet →
+its own combinations reading, read exactly (never by the AI) and applied into `blocks_setup`; any other .xlsx/.csv → the smart
 reader; .docx and other PDFs → the document reader; anything else → a failed card that says why. A file the model could not read now (or read as nothing) is kept
 on disk for Try again. Nothing here writes the plan or the draft."""
 from __future__ import annotations
@@ -17,7 +18,7 @@ import secrets
 import time
 from pathlib import Path
 
-from ... import asc_import, students as ST
+from ... import asc_import, blocks as BK, students as ST
 from ...config import MAX_UPLOAD
 from ...extract import UnsupportedFile, extract
 from ...intake import IntakeError, apply_patch as apply_org_patch
@@ -199,7 +200,7 @@ def exact_merged(db, name: str, data: bytes, current: dict, tid: str | None,
     return merged, list(dict.fromkeys([*(i.text for i in issues), *size_doubts]))[:document.DOUBTS_MAX]
 
 
-NOT_KEPT = "the file wasn't kept because its Students sheet couldn't be removed"
+NOT_KEPT = "the file wasn't kept because its Students or Combinations sheet couldn't be removed"
 
 
 def _kept_workbook(name: str, data: bytes) -> bytes | None:
@@ -211,9 +212,14 @@ def _open_for_copy(data: bytes):
     return openpyxl.load_workbook(io.BytesIO(data), data_only=True)    # values: a saved formula would lose its cached result
 
 
+def _is_kept_out(title) -> bool:
+    """Whether a sheet title is one of the sheets read once at the drop and never kept (Students, Combinations)."""
+    return " ".join(str(title).split()).casefold() in KEPT_OUT
+
+
 def _names_students_sheet(data: bytes) -> bool:
-    """Whether the workbook's own list of sheets (xl/workbook.xml) names a Students sheet: asked without
-    openpyxl, for a workbook it could not open."""
+    """Whether the workbook's own list of sheets (xl/workbook.xml) names a Students or Combinations sheet:
+    asked without openpyxl, for a workbook it could not open."""
     import html
     import zipfile
     try:
@@ -221,22 +227,37 @@ def _names_students_sheet(data: bytes) -> bool:
             book = z.read("xl/workbook.xml").decode("utf-8", "replace")
     except Exception:
         return False
-    return any(html.unescape(n).strip().casefold() == STUDENTS_SHEET
+    return any(_is_kept_out(html.unescape(n))
                for n in re.findall(r"<(?:\w+:)?sheet\b[^>]*?\bname=\"([^\"]*)\"", book))
 
 
+def _has_other_sheets(data: bytes) -> bool:
+    """Whether the workbook has a sheet besides Students and Combinations. True when it cannot be told (the
+    stripping then decides, failing closed)."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+    except Exception:
+        return True
+    try:
+        return any(not _is_kept_out(ws.title) for ws in wb.worksheets)
+    finally:
+        wb.close()
+
+
 def without_students_sheet(data: bytes) -> bytes | None:
-    """`data` (a planning workbook) without any sheet named Students: the copy that is kept for Apply.
-    The students are read once, at the drop, and live only in the timetable's `students` value (and a
-    reading until it is applied or skipped); the plan reading never needs them, so the roster is not
-    left on disk in a file nothing removes. A workbook with no such sheet is kept as it came. Fails
-    closed: None (keep no copy) when the workbook has a Students sheet that could not be taken out."""
+    """`data` (a planning workbook) without any sheet named Students or Combinations: the copy that is kept
+    for Apply. The students are read once, at the drop, and live only in the timetable's `students` value
+    (and a reading until it is applied or skipped); the combinations likewise end in `blocks_setup`; the
+    plan reading never needs either, so they are not left on disk in a file nothing removes. A workbook
+    with no such sheet is kept as it came. Fails closed: None (keep no copy) when the workbook has such a
+    sheet that could not be taken out."""
     try:
         wb = _open_for_copy(data)
     except Exception:
         return None if _names_students_sheet(data) else data
     try:
-        extra = [ws for ws in wb.worksheets if str(ws.title).strip().casefold() == STUDENTS_SHEET]
+        extra = [ws for ws in wb.worksheets if _is_kept_out(ws.title)]
         if not extra:
             return data
         for ws in extra:
@@ -254,11 +275,12 @@ def _exact(db, name: str, data: bytes, tid: str | None, summary: str = "Planning
            sizes: list[tuple[str, bytes]] = (), alongside: list | None = None) -> dict:
     """A planning workbook (or sizes CSV) as an exact plan reading. When `alongside` is a list and the
     workbook's Students sheet holds students, their reading (read exactly, against the plan this workbook
-    brings) is appended to it: the one file then makes two readings, a plan and a student list."""
+    brings) is appended to it: the one file then makes two readings, a plan and a student list; its
+    Combinations sheet, when it holds any, likewise makes a combinations reading."""
     merged, doubts = exact_merged(db, name, data, _current(db, tid), tid, sizes)
     kept = _kept_workbook(name, data)
     if kept is None:                        # never a copy still holding the students: no copy at all
-        _log.warning("%s: the Students sheet could not be removed, the file was not kept", name)
+        _log.warning("%s: the Students or Combinations sheet could not be removed, the file was not kept", name)
         doubts = [*doubts, NOT_KEPT]
     body = {"merged": merged, "path": keep_file(db, name, kept) if kept is not None else None,
             "summary": summary, "doubts": doubts}
@@ -272,6 +294,9 @@ def _exact(db, name: str, data: bytes, tid: str | None, summary: str = "Planning
         students = _sheet_students_reading(db, name, data, tid, merged)
         if students is not None:
             alongside.append(students)
+        combinations = _sheet_combinations_reading(db, name, data, tid, merged)
+        if combinations is not None:
+            alongside.append(combinations)
     return out
 
 
@@ -386,19 +411,24 @@ def _asc(db, asc: list[tuple[int, str, bytes]], tid: str | None, results: dict, 
 # ---------------------------------------------------------------------------
 
 STUDENTS_SHEET = "students"
+COMBINATIONS_SHEET = "combinations"
+KEPT_OUT = (STUDENTS_SHEET, COMBINATIONS_SHEET)       # sheets read at the drop and left out of the kept copy and the AI's
 NOT_AI = "Student lists are never sent to the AI reader."
 RENAME = "Rename the columns to Student ID, Name, Class, Subject 1, Subject 2 and on, and give it again"
 _ID_HEADS = ("student id", "admission no", "id", "reg no")
 _NAME_HEADS = ("name", "student name", "full name")
 _CLASS_HEADS = ("class", "form class", "form", "class code")
 _SUBJECT_HEAD = re.compile(r"(?:subject|option|band) ?\d+")
+_MERIT_HEADS = ("merit", "merit rank")      # never "rank" or "order": a B1 list may have a class rank
+_CHOICE_HEAD = re.compile(r"(?:choice|preference|combination) ?(\d+)")         # ranked combination choices, never takes
 _SUBJECT_LIST = "subjects"
 _LIST_SPLIT = re.compile(r"[,;]")
 _DELIMITERS = ",;\t|"
 _WANTED = {"id": "a student ID column (Student ID, Admission No, ID or Reg No)",
            "name": "a name column (Name, Student Name or Full Name)",
            "class": "a class column (Class, Form Class, Form or Class Code)",
-           "subjects": "subject columns (Subject 1, Option 1, Band 1 and on, or Subjects)"}
+           "subjects": "subject columns (Subject 1, Option 1, Band 1 and on, or Subjects) or Choice columns "
+                       "(Choice 1, Preference 1, Combination 1 and on)"}
 # the refusal net, wider than the reader: a row with one cell naming a class and another naming a
 # student looks like a student list in other words, and is refused (never sent to the AI)
 _LOOSE_CLASS = re.compile(r"\b(?:class(?:es)?|form|tutor ?group|home ?room|register)\b")
@@ -415,9 +445,10 @@ def _head(cell) -> str:
 
 
 def _student_columns(header: list) -> dict | None:
-    """Where a header row's student-list columns are: {id, name, class: index | None, subjects: [(index,
-    label, a comma list?)]}; None unless it names a class and an ID or a name (it then looks like a
-    student list, read or refused, and never goes to the AI)."""
+    """Where a header row's student-list columns are: {id, name, class, merit: index | None, subjects:
+    [(index, label, a comma list?)], choices: [(index, label)] in choice-number order}; None unless it
+    names a class and an ID or a name (it then looks like a student list, read or refused, and never
+    goes to the AI)."""
     heads = [_head(c) for c in header]
 
     def first(names) -> int | None:
@@ -425,6 +456,9 @@ def _student_columns(header: list) -> dict | None:
     cols = {"id": first(_ID_HEADS), "name": first(_NAME_HEADS), "class": first(_CLASS_HEADS),
             "subjects": [(i, " ".join(str(header[i]).split()), h == _SUBJECT_LIST) for i, h in enumerate(heads)
                          if h == _SUBJECT_LIST or _SUBJECT_HEAD.fullmatch(h)]}
+    cols["merit"] = first(_MERIT_HEADS)
+    ranked = sorted((int(m.group(1)), i) for i, h in enumerate(heads) if (m := _CHOICE_HEAD.fullmatch(h)))
+    cols["choices"] = [(i, " ".join(str(header[i]).split())) for n, i in ranked if n >= 1]
     if cols["class"] is None or (cols["id"] is None and cols["name"] is None):
         return None
     return cols
@@ -581,7 +615,7 @@ def document_students(ex) -> bool:
     return False
 
 
-def _student_rows(cols: dict, rows: list[tuple[int, list]]) -> list[dict]:
+def _student_rows(cols: dict, rows: list[tuple[int, list]], header: list) -> list[dict]:
     """The rows students.read_rows takes ({row, id, name, class, subjects, columns}, `row` the file's own
     row number), blank rows left out."""
     def at(row, i):
@@ -595,8 +629,14 @@ def _student_rows(cols: dict, rows: list[tuple[int, list]]) -> list[dict]:
             cells = [x.strip() for x in _LIST_SPLIT.split(at(row, i))] if is_list else [at(row, i)]
             subjects += cells
             columns += [label] * len(cells)
-        out.append({"row": n, "id": at(row, cols["id"]), "name": at(row, cols["name"]),
-                    "class": at(row, cols["class"]), "subjects": subjects, "columns": columns})
+        entry = {"row": n, "id": at(row, cols["id"]), "name": at(row, cols["name"]),
+                 "class": at(row, cols["class"]), "subjects": subjects, "columns": columns}
+        if cols["merit"] is not None:           # only when the file has the column: other files read as they did
+            entry["merit"] = at(row, cols["merit"])
+            entry["merit_column"] = " ".join(str(header[cols["merit"]]).split())
+        if cols["choices"]:
+            entry["choices"] = [at(row, i) for i, _ in cols["choices"]]
+        out.append(entry)
     return out
 
 
@@ -626,12 +666,14 @@ def _students(db, name: str, found: tuple, tid: str | None, plan: dict | None = 
         return _students_failed(db, name, f"its columns weren't recognised. {RENAME}", tid)
     _, header, body = found
     cols = _student_columns(header)
-    missing = [_WANTED[k] for k in ("id", "name", "class", "subjects") if cols[k] in (None, [])]
+    # a list of choices needs no Subject columns: students choosing a combination have no subjects yet
+    missing = [_WANTED[k] for k in ("id", "name", "class", "subjects")
+               if cols[k] in (None, []) and not (k == "subjects" and cols["choices"])]
     if missing:
         return _students_failed(db, name, "its columns weren't recognised: it needs "
                                 + " and ".join(missing), tid)
     plan = plan if plan is not None else _current(db, tid)
-    rows = _student_rows(cols, body)
+    rows = _student_rows(cols, body, header)
     if not rows:
         return _students_failed(db, name, "it has no rows under its header", tid)
     read, problems = ST.read_rows(rows, plan)
@@ -686,6 +728,199 @@ def _students_branch(db, name: str, data: bytes, tid: str | None, plan: dict | N
 
 
 # ---------------------------------------------------------------------------
+# a workbook's Combinations sheet (option blocks B2): read exactly, never by the AI. The reading is a
+# kind of its own ("combinations"), kept under "<file> (Combinations sheet)" beside the file's other
+# readings; Apply replaces each level's combinations in `blocks_setup`. What it carries (summary, doubts,
+# error) is row numbers, levels, combination codes and the validation's own words: no student data.
+# ---------------------------------------------------------------------------
+
+COMBOS_NOT_AI = "A Combinations sheet is never sent to the AI reader."
+COMBOS_WANTED = "a Year column, a Code column, a Places column and Subject columns (Subject 1, Subject 2 and on)"
+_COMBO_YEAR_HEADS = ("year", "level", "year group")
+_COMBO_CODE_HEADS = ("code", "combination code", "combination")
+_COMBO_NAME_HEADS = ("name", "combination name")
+_COMBO_PLACES_HEADS = ("places", "seats")
+_COMBO_SUBJECT_HEAD = re.compile(r"subject ?\d+")
+SHOWN_CODE = 40             # a cell quoted in a doubt is cut to this
+
+
+def _combination_columns(header: list) -> dict | None:
+    """Where a header row's Combinations columns are: {year, code, name, places: index | None, subjects:
+    [index]}; None unless it names a year, a code and a places column and at least one Subject column."""
+    heads = [_head(c) for c in header]
+
+    def first(names) -> int | None:
+        return next((i for i, h in enumerate(heads) if h in names), None)
+    cols = {"year": first(_COMBO_YEAR_HEADS), "code": first(_COMBO_CODE_HEADS), "name": first(_COMBO_NAME_HEADS),
+            "places": first(_COMBO_PLACES_HEADS),
+            "subjects": [i for i, h in enumerate(heads) if _COMBO_SUBJECT_HEAD.fullmatch(h)]}
+    if None in (cols["year"], cols["code"], cols["places"]) or not cols["subjects"]:
+        return None
+    return cols
+
+
+def _combinations_sheet(data: bytes) -> tuple | None:
+    """A workbook's sheet named Combinations, looked at alone: ("table", header, numbered rows), ("loose",)
+    when it has cells but no header naming the columns, ("example",) when its one row is the start wizard's
+    example row, ("empty",) when it has no cell or no row under its header; None when there is no such sheet
+    (or the workbook does not open)."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        return None
+    try:
+        ws = next((w for w in wb.worksheets if " ".join(str(w.title).split()).casefold() == COMBINATIONS_SHEET), None)
+        if ws is None:
+            return None
+        ws.reset_dimensions()               # a stale <dimension ref="A1"/> would hide every other cell
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+    if not any(_cell(v) for r in rows for v in r):
+        return ("empty",)
+    at = next((i for i, r in enumerate(rows) if _combination_columns(r) is not None), None)
+    if at is None:
+        return ("loose",)
+    header = rows[at]
+    body = [(n, r) for n, r in enumerate(rows[at + 1:], start=at + 2) if any(_cell(v) for v in r)]
+    if not body:
+        return ("empty",)
+    cols = _combination_columns(header)
+    if len(body) == 1 and cols["name"] is not None:
+        row = body[0][1]
+
+        def cell(i):
+            return _cell(row[i]) if i < len(row) else ""
+        if cell(cols["code"]) == BK.EXAMPLE_CODE and cell(cols["name"]) == BK.EXAMPLE_NAME:
+            return ("example",)
+    return "table", header, body
+
+
+def sheet_combinations(data: bytes) -> tuple | None:
+    """What a workbook's sheet named Combinations holds: ("table", header, numbered rows) to read, ("loose",)
+    when it has cells but no header naming the columns; None when the workbook has no such sheet or it
+    holds nothing (no cell, no row under its header, or only the start wizard's example row). Only that
+    sheet is looked at."""
+    found = _combinations_sheet(data)
+    return None if found is None or found[0] in ("empty", "example") else found
+
+
+def holds_only_the_example(data: bytes) -> bool:
+    """Whether the workbook's Combinations sheet holds the start wizard's example row and nothing else."""
+    try:
+        return _combinations_sheet(data) == ("example",)
+    except Exception:
+        return False
+
+
+def _combinations_failed(db, name: str, why: str, tid: str | None, message: str | None = None) -> dict:
+    message = message or f"This looks like a Combinations sheet but {why}. {COMBOS_NOT_AI}"
+    entry = _entry(db, name, {"kind": "combinations", "via": "exact", "status": "failed", "sections": {},
+                              "doubts": [], "summary": "Combinations", "error": message}, tid)
+    return {"name": name, "status": "failed", "id": entry["id"], "message": message}
+
+
+def _shown(text: str) -> str:
+    return text if len(text) <= SHOWN_CODE else text[:SHOWN_CODE] + "..."
+
+
+def _places(text: str):
+    """A Places cell for the setup's own validation: a whole number as an int, nothing as None, anything else
+    as the text (which it refuses)."""
+    if not text:
+        return None
+    return int(text) if text.isdigit() else text
+
+
+def _combination_rows(cols: dict, rows: list[tuple[int, list]], plan: dict) -> tuple[dict, list[str], int]:
+    """({year key: [combination]} in sheet order, doubts, how many rows gave a doubt). A row is a doubt, with
+    its row number, and is not kept, when its level is blank or not in the plan, or the setup's own
+    validation (blocks.check_combinations) refuses it beside the rows kept before it."""
+    levels = {ST.level_of(plan, c["code"]) for c in plan.get("classes") or []} - {""}
+    known = ", ".join(sorted(levels, key=ST._natural)) or "none"
+
+    def at(row, i):
+        return _cell(row[i]) if i is not None and i < len(row) else ""
+    kept: dict[str, list[dict]] = {}
+    doubts, bad = [], 0
+    for n, row in rows:
+        level = at(row, cols["year"])
+        subjects = [x for x in (at(row, i) for i in cols["subjects"])]
+        candidate = {"code": at(row, cols["code"]), "name": at(row, cols["name"]), "subjects": subjects,
+                     "places": _places(at(row, cols["places"]))}
+        if not level:
+            why = "it has no Year"
+        elif level not in levels:
+            why = f"level {_shown(level)} isn't in the plan (the plan's levels: {known})"
+        else:
+            key = f"level:{level}"
+            try:
+                BK.check_combinations([*kept.get(key, []), candidate])
+            except ValueError as e:
+                why = str(e)
+            else:
+                kept.setdefault(key, []).append(candidate)
+                continue
+        bad += 1
+        doubts.append(f"Combinations row {n}: {why}")
+    return ({key: BK.check_combinations(value) for key, value in kept.items()}, doubts, bad)
+
+
+def _combinations(db, name: str, found: tuple, tid: str | None, plan: dict) -> dict:
+    if found[0] != "table":
+        return _combinations_failed(db, name, f"its columns weren't recognised: it needs {COMBOS_WANTED}", tid)
+    _, header, body = found
+    cols = _combination_columns(header)
+    read, doubts, bad = _combination_rows(cols, body, plan)
+    total = sum(len(v) for v in read.values())
+    if not read:
+        return _combinations_failed(db, name, "none of its rows could be read: " + "; ".join(doubts[:document.DOUBTS_MAX]), tid)
+    stored = db.get_value("blocks_setup", tid)
+    stored = stored if isinstance(stored, dict) else {}
+    added = changed = removed = 0
+    replaces = []
+    for key, combos in read.items():
+        old = {c["code"]: c for c in ((stored.get(key) or {}).get("combinations") or []) if isinstance(c, dict)}
+        new = {c["code"]: c for c in combos}
+        added += sum(1 for c in new if c not in old)
+        changed += sum(1 for c in new if c in old and old[c] != new[c])
+        removed += sum(1 for c in old if c not in new)
+        if old:
+            replaces.append(f"This replaces the {len(old):,} combination{'' if len(old) == 1 else 's'} stored for "
+                            f"level {key.partition(':')[2]}")
+    doubts = [*replaces, *doubts]
+    if len(doubts) > document.DOUBTS_MAX:
+        doubts = [*doubts[:document.DOUBTS_MAX], f"and {len(doubts) - document.DOUBTS_MAX} more to check"]
+    m = len(read)
+    summary = f"{total:,} combination{'' if total == 1 else 's'} at {m:,} level{'' if m == 1 else 's'}, {bad:,} to check"
+    secs = {"combinations": {"count": total, "added": added, "changed": changed, "removed": removed,
+                             "samples": [], "ticked": True}}
+    entry = _entry(db, name, {"kind": "combinations", "via": "exact", "status": "waiting", "sections": secs,
+                              "doubts": doubts, "summary": summary, "combinations": read}, tid)
+    return {"name": name, "status": "read", "id": entry["id"], "message": f"Combinations: {summary}"}
+
+
+def _sheet_combinations_reading(db, name: str, data: bytes, tid: str | None, plan: dict) -> dict | None:
+    """The reading of a workbook's Combinations sheet (None when it holds nothing), kept under its own file
+    name: one of the same name replaces the plan reading's. Whatever goes wrong is a combinations card,
+    logged by its kind only: an exception's words may hold a cell."""
+    label = f"{name} (Combinations sheet)"
+    try:
+        found = sheet_combinations(data)
+    except Exception as e:
+        _log.warning("checking %s for a Combinations sheet failed (%s)", name, type(e).__name__)
+        return None
+    if found is None:
+        return None
+    try:
+        return _combinations(db, label, found, tid, plan)
+    except Exception as e:
+        _log.warning("reading the Combinations sheet of %s failed (%s)", name, type(e).__name__)
+        return _combinations_failed(db, label, "it could not be read exactly; check its columns and rows", tid)
+
+
+# ---------------------------------------------------------------------------
 # a drop of files
 # ---------------------------------------------------------------------------
 
@@ -699,7 +934,28 @@ def _one(db, provider_factory, i: int, name: str, data: bytes, tid: str | None, 
     if lower.endswith((".xlsx", ".csv")):   # a student list: read exactly or refused, never by the AI
         students = _students_branch(db, name, data, tid)
         if students is not None:
+            if lower.endswith(".xlsx"):     # a list with a Combinations sheet: that is read too, exactly
+                combinations = _sheet_combinations_reading(db, name, data, tid, _current(db, tid))
+                if combinations is not None and alongside is not None:
+                    alongside.append(combinations)
+                # (without `alongside` the combinations reading is still stored, and shows with the others)
             return students
+    if lower.endswith(".xlsx"):             # a Combinations sheet is read exactly, and is not what the AI is given
+        combinations = _sheet_combinations_reading(db, name, data, tid, _current(db, tid))
+        if not _has_other_sheets(data):     # nothing else in the file for the AI: the exact reading is the whole result
+            if combinations is not None:
+                return combinations
+            if holds_only_the_example(data):
+                return _failed(db, name, f"{name} has nothing to read: its Combinations sheet holds only the "
+                                         "example row", tid)
+            return _failed(db, name, f"{name} has nothing to read.", tid)
+        else:
+            if combinations is not None and alongside is not None:
+                alongside.append(combinations)
+            data = without_students_sheet(data)
+            if data is None:
+                return _failed(db, name, f"{name} could not be read: its Combinations sheet couldn't be set aside "
+                                         "from the AI reader", tid)
     if lower.endswith((".xlsx", ".csv")):
         return _smart(db, provider_factory, name, data, tid)
     if lower.endswith((".docx", ".pdf")):

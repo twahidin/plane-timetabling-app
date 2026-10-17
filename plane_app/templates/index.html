@@ -142,6 +142,52 @@
         <button class="btn" id="students-more" type="button" hidden></button>
         <div class="students-problems" id="students-problems"></div>
       </section>
+      <section id="option-blocks" class="card" hidden>
+        <div class="section-title"><span>Option blocks <span class="eyebrow" id="blocks-head"></span></span></div>
+        <p class="tab-note">Subject <strong>combinations</strong> for a year group: students are placed by merit and their ranked choices, then the engine builds the option blocks. Nothing changes until <strong>Apply</strong>.</p>
+        <div class="blocks-yearbar">
+          <label class="blocks-field"><span class="blocks-field-name">Year group</span>
+            <select id="blocks-year" aria-label="Year group"></select></label>
+          <span class="blocks-classes-pick" id="blocks-classes-pick" hidden>
+            <input type="text" id="blocks-classes" placeholder="Class codes, e.g. 3A, 3B" aria-label="Class codes, separated by commas" autocomplete="off">
+            <button class="btn" id="blocks-classes-use" type="button">Use these classes</button>
+          </span>
+        </div>
+        <p class="blocks-msg" id="blocks-msg" role="status"></p>
+        <div class="blocks-setup" id="blocks-setup" hidden>
+          <h3 class="blocks-step">1. Combinations</h3>
+          <div class="tablewrap"><table class="grid blocks-table" id="blocks-combinations"></table></div>
+          <button class="btn" id="blocks-add" type="button">Add combination</button>
+          <h3 class="blocks-step">2. Limits</h3>
+          <div class="blocks-limits">
+            <label class="blocks-field"><span class="blocks-field-name">Blocks</span><input type="number" id="blocks-n" min="1" max="20" step="1"></label>
+            <label class="blocks-field"><span class="blocks-field-name">Smallest set</span><input type="number" id="blocks-min" min="0" step="1"></label>
+            <label class="blocks-field"><span class="blocks-field-name">Largest set</span><input type="number" id="blocks-max" min="1" step="1"></label>
+          </div>
+          <div class="tablewrap"><table class="grid blocks-table" id="blocks-subjects"></table></div>
+          <div class="blocks-actions"><button class="btn primary" id="blocks-save" type="button">Save</button></div>
+          <h3 class="blocks-step">3. Checks</h3>
+          <div class="blocks-checks" id="blocks-checks"></div>
+          <h3 class="blocks-step">4. Place students</h3>
+          <div class="blocks-actions"><button class="btn" id="blocks-place" type="button" title="Merit order, each student's highest-ranked combination with places left">Place students</button></div>
+          <div class="tablewrap"><table class="grid blocks-table blocks-lines" id="blocks-lines"></table></div>
+          <button class="btn" id="blocks-more" type="button" hidden></button>
+          <div class="blocks-unplaced" id="blocks-unplaced"></div>
+          <h3 class="blocks-step">5. Build blocks</h3>
+          <div class="blocks-actions">
+            <label class="blocks-field blocks-time"><span class="blocks-field-name">Time limit (s)</span><input type="number" id="blocks-time" min="10" max="300" step="1" value="60"></label>
+            <button class="btn primary" id="blocks-build" type="button">Build blocks</button>
+            <button class="btn" id="blocks-stop" type="button" hidden>Stop</button>
+            <span class="blocks-progress" id="blocks-progress" role="status"></span>
+          </div>
+          <div class="blocks-reasons" id="blocks-reasons"></div>
+          <div class="blocks-proposal" id="blocks-proposal"></div>
+          <div class="blocks-actions">
+            <button class="btn primary" id="blocks-apply" type="button" hidden>Apply</button>
+            <button class="btn" id="blocks-undo" type="button" hidden>Undo</button>
+          </div>
+        </div>
+      </section>
     </div>
   </section><!-- /tab-requirements -->
 
@@ -520,6 +566,7 @@
 <script src="{{ asset('files.js') }}"></script>
 <script src="{{ asset('plan.js') }}"></script>
 <script src="{{ asset('students.js') }}"></script>
+<script src="{{ asset('blocks.js') }}"></script>
 <script src="{{ asset('board-tray.js') }}"></script>
 <script src="{{ asset('board-forms.js') }}"></script>
 <script src="{{ asset('board-status.js') }}"></script>

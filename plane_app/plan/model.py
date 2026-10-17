@@ -316,10 +316,19 @@ def home_room(plan: dict, req: dict) -> str | None:
     return next((c.get("home") for c in plan.get("classes") or [] if c.get("code") == classes[0]), None) or None
 
 
+def _with_blocks_tag(out: dict, item: dict) -> dict:
+    """Option blocks (B2) tag what they write with the year key ("level:3", "classes:3A,3B") so a
+    later run finds and replaces its own output. The key is kept only when set, so an untagged plan
+    normalises exactly as before."""
+    if item.get("blocks"):
+        out["blocks"] = str(item["blocks"])
+    return out
+
+
 def _normalise_division(item: dict) -> dict:
     item = as_dict(item, "division item")
     div_id = _check_id(item.get("id"), "divisions")
-    return {"id": div_id, "classes": _as_list(item.get("classes"), "division classes")}
+    return _with_blocks_tag({"id": div_id, "classes": _as_list(item.get("classes"), "division classes")}, item)
 
 
 def normalise_lessons(raw) -> dict:
@@ -355,7 +364,7 @@ def _normalise_requirement(item: dict) -> dict:
     if not periods:
         periods = sum(int(k) * v for k, v in lessons.items())
     venue = as_dict(item.get("venue"), "requirement venue")
-    return {
+    return _with_blocks_tag({
         "id": req_id,
         "dept": item.get("dept", ""),
         "level": item.get("level", ""),
@@ -374,13 +383,14 @@ def _normalise_requirement(item: dict) -> dict:
         "source_hash": item.get("source_hash"),
         # the plan rev that last changed it (bump_rev): a board edit made from an older view is stale
         "rev_at": _rev(item.get("rev_at"), f"requirement {req_id} rev_at"),
-    }
+    }, item)
 
 
 def _normalise_band(item: dict) -> dict:
     item = as_dict(item, "band item")
     b_id = _check_id(item.get("id"), "bands")
-    return {"id": b_id, "division": item.get("division"), "options": _as_list(item.get("options"), "band options")}
+    return _with_blocks_tag({"id": b_id, "division": item.get("division"),
+                             "options": _as_list(item.get("options"), "band options")}, item)
 
 
 def _normalise_vocabulary(raw) -> dict:
@@ -809,6 +819,8 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
             r["sync_with"] = old["sync_with"]
             r["locked"] = old["locked"]
         _keep_uncarried(old, r, uncarried.get("requirements", ()))
+        if old.get("blocks"):           # no workbook carries the option-blocks tag (B2): the next Apply replaces it
+            r["blocks"] = old["blocks"]
 
     old_staff = {s["id"]: s for s in existing_n["staff"]}
     for s in out["staff"]:

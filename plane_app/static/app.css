@@ -1156,3 +1156,86 @@
       font-family: var(--mono); font-size: 11px; color: var(--muted); }
     table.students-table td.student-actions { text-align: left; padding-top: 4px; }
   }
+
+  /* ---------- the Option blocks card on the Requirements tab (blocks.js): admin only ---------- */
+  #option-blocks { margin-top: var(--space-6); }
+  #option-blocks .section-title .eyebrow { margin-left: 8px; }
+  #option-blocks .tab-note { margin-top: 0; }
+  .blocks-yearbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-bottom: 8px; }
+  .blocks-yearbar select { max-width: 100%; }
+  .blocks-classes-pick { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 260px; min-width: 0; }
+  .blocks-classes-pick[hidden] { display: none; }
+  .blocks-classes-pick input { flex: 1 1 160px; min-width: 0; }
+  .blocks-field { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; min-width: 0; }
+  .blocks-field-name { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .blocks-msg { margin: 0 0 8px; font-size: 13px; min-height: 1.2em; color: var(--ink-2); overflow-wrap: anywhere; }
+  .blocks-msg.ok { color: var(--good); }
+  .blocks-msg.bad { color: var(--bad); }
+  .blocks-setup[hidden] { display: none; }
+  .blocks-step { font-size: 13px; font-weight: 500; margin: var(--space-6) 0 6px; color: var(--ink); }
+  .blocks-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 8px 0; }
+  .blocks-actions .btn { margin-left: 0; }
+  .blocks-table input { width: 100%; min-width: 0; }
+  .blocks-table input[type=number] { max-width: 7em; }
+  .blocks-table td { vertical-align: top; }
+  .blocks-subj-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .blocks-subj-add { display: block; width: 100%; min-width: 0; max-width: 100%; font-size: 12px; }
+  .blocks-row-actions { text-align: right; }
+  .blocks-row-actions .btn, .blocks-override { padding: 2px 8px; font-size: 12px; }
+  .blocks-limits { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
+  .blocks-limits input, .blocks-time input { width: 7em; }
+  .blocks-empty { padding: 6px 0; font-size: 13px; color: var(--muted); text-align: left; caption-side: bottom; }
+  .blocks-hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+  .blocks-check-list, .blocks-reason-list, .blocks-unplaced-list, .blocks-warnings { list-style: none; margin: 0; padding: 0; }
+  .blocks-check-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+  .blocks-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 4px 8px;
+    border-left: 3px solid var(--loc-4); background: var(--surface-2); border-radius: 4px; overflow-wrap: anywhere; }
+  .blocks-check.blocking { border-left-color: var(--bad); }
+  .blocks-check-tag { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .blocks-check.blocking .blocks-check-tag { color: var(--bad); }
+  .blocks-lines td.blocks-line { white-space: normal; }
+  .blocks-lines tr.overridden td.blocks-line { color: var(--color-accent-300); }
+  .blocks-lines tr.overridden td.blocks-line::before { content: "\2022"; margin-right: 4px; color: var(--color-accent); }
+  #blocks-more { margin-top: 8px; }
+  .blocks-unplaced h4 { font-size: 12.5px; font-weight: 500; margin: 12px 0 6px; }
+  .blocks-unplaced-list { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 12px; }
+  .blocks-unplaced-list li { padding: 1px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line);
+    color: var(--ink-2); overflow-wrap: anywhere; }
+  @media (min-width: 641px) {
+    /* fixed columns: Code, Places and Remove stay narrow, Name and Subjects share the rest; a card narrower
+       than the table's min-width scrolls it inside its .tablewrap rather than letting cells overlap */
+    table#blocks-combinations { table-layout: fixed; min-width: 32rem; }
+    table#blocks-combinations td, table#blocks-combinations th { white-space: normal; overflow-wrap: anywhere; }
+    #blocks-combinations .blocks-c-code { width: 6em; }
+    #blocks-combinations .blocks-c-places { width: 6em; }
+    #blocks-combinations .blocks-c-act { width: 7em; }
+  }
+  .blocks-progress { font-size: 13px; color: var(--ink-2); align-self: center; }
+  .blocks-reason-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+  .blocks-reason-list li { padding: 4px 8px; border-left: 3px solid var(--bad); background: var(--surface-2); border-radius: 4px;
+    overflow-wrap: anywhere; }
+  .blocks-summary { margin: 8px 0; font-size: 13px; color: var(--ink-2); }
+  .blocks-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+  .blocks-column { min-width: 0; padding: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-md); }
+  .blocks-column h4 { font-size: 12.5px; font-weight: 500; margin: 0 0 8px; color: var(--ink); }
+  .blocks-set { display: flex; flex-direction: column; gap: 4px; padding: 8px; margin-top: 6px; font-size: 12.5px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+  .blocks-set-name { font-weight: 500; color: var(--ink); }
+  .blocks-teacher { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .blocks-teacher select { max-width: 100%; font-size: 12px; }
+  .blocks-suggested { font-size: 11px; color: var(--color-accent-300); }
+  .blocks-warning { font-size: 12px; color: var(--warn-ink); }
+  .blocks-warning::before { content: "\26A0"; margin-right: 4px; }
+  @media (max-width: 640px) {
+    .blocks-columns { grid-template-columns: 1fr; }
+    .blocks-yearbar select { flex: 1 1 100%; }
+    table.blocks-table, .blocks-table tbody, .blocks-table tr, table.blocks-table td { display: block; }
+    table.blocks-table thead { display: none; }
+    table.blocks-table tr { padding: 8px; border-bottom: 1px solid var(--line); }
+    table.blocks-table td { border-bottom: 0; padding: 2px 0; white-space: normal; overflow-wrap: anywhere; }
+    table.blocks-table th { display: none; }
+    table.blocks-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px;
+      font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    table.blocks-table td.blocks-row-actions { text-align: left; padding-top: 4px; }
+    .blocks-table input[type=number] { max-width: none; }
+  }

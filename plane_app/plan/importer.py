@@ -22,7 +22,7 @@ from .issues import Issue
 # always appends one (spec docs/superpowers/specs/2026-09-20-start-wizard-design.md §5), and it is
 # never a department, staff or duties sheet. Nor is Students (spec 2026-10-16-students-design.md): a
 # student list is read by `plan.reader.inbox`, never as a subject sheet.
-_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees", "readme", "students"}
+_SKIP_SHEETS = {"master", "upload", "overall", "level of prep setup", "cca", "committees", "readme", "students", "combinations"}
 _SPECIAL_SHEETS = {"groups", "control", "load"}
 
 _NEEDED_HEADERS = {"subject", "single", "double", "grouping", "class 1"}

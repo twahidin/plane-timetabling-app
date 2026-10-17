@@ -570,6 +570,8 @@ def confirm(db, events: list, session_id: str = "") -> str | None:
         return text + _week_text(out) + " It is the draft now: make the timetable from it."
     if out["reading"]["kind"] == "students":
         return text + " The Students page lists them."
+    if out["reading"]["kind"] == "combinations":
+        return text + " They are in the option-blocks setup for each year."
     if status["ready"]:
         return text + " Plan ready."
     return text + " Still to sort: " + ("; ".join(status["blocks"]) or "the plan has no requirements yet") + "."

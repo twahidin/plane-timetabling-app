@@ -112,6 +112,9 @@ def make_router(db) -> APIRouter:
         record = _checked(body, _plan(), [s for s in stored if s["id"] != student_id], student_id)
         taken = {t["grouping"] for t in record["takes"]}
         record["placed_by_app"] = [g for g in old.get("placed_by_app", []) if g in taken]
+        for k in ("merit", "choices"):          # the form doesn't edit these: an edit keeps what the file gave
+            if k in old and k not in body:
+                record[k] = old[k]
         db.set_value("students", [record if s["id"] == student_id else s for s in stored])
         return {"student": record}
 

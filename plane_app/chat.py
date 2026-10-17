@@ -143,6 +143,56 @@ def students_context(db: Db) -> str:
         line += " (kinds: " + ", ".join(sorted({p["kind"] for p in found})) + ")"
     return line
 
+
+def _blocks_line(key, entry: dict, run: dict) -> str:
+    """One year group's line for blocks_context; raises on a key or setup that does not read."""
+    kind, _, rest = str(key).partition(":")
+    if kind == "level":
+        label = f"Level {rest}"
+    elif kind == "classes":
+        label = f"chosen classes ({len([c for c in rest.split(',') if c])})"
+    else:
+        raise ValueError("year key")
+    placement = entry.get("placement")
+    if isinstance(placement, dict):
+        placed = f"{len(placement.get('placed') or {})} placed, {len(placement.get('unplaced') or [])} unplaced"
+    else:
+        placed = "not placed yet"
+    status = "none"
+    if run.get("year") == key:
+        state = run.get("status")
+        if run.get("applied"):
+            status = "applied"
+        elif state == "running":
+            status = "running"
+        elif state == "infeasible":
+            status = "infeasible"
+        elif state in ("optimal", "feasible") and run.get("proposal"):
+            status = "proposal ready"
+    return f"Option blocks ({label}): {len(entry['combinations'])} combinations, {placed}, {status}"
+
+
+def blocks_context(db: Db) -> str:
+    """Counts about the timetable's option blocks for the model: a line per year group set up (at most 3, in
+    key order): its combinations, how many students are placed and unplaced, and the run's state if the run
+    is this year's. "" with no setup. Never a name, an ID or a list of classes."""
+    try:            # a setup that no longer reads never stops a chat turn; only the kind of error is logged
+        setups = db.get_value("blocks_setup")
+        if not isinstance(setups, dict) or not setups:
+            return ""
+        run = db.get_value("blocks_run")
+        run = run if isinstance(run, dict) else {}
+        lines = []
+        for key in sorted(setups)[:3]:
+            try:        # one year that no longer reads is skipped; the others still tell the model their counts
+                lines.append(_blocks_line(key, setups[key], run))
+            except Exception as e:
+                _log.warning("blocks context skipped a year: %s", type(e).__name__)
+        return "\n".join(lines)
+    except Exception as e:
+        _log.warning("blocks context skipped: %s", type(e).__name__)
+        return ""
+
 _PATCH_DOC = ("JSON merge patch keyed by id, e.g. {\"persons\": {\"kumar\": {\"avail\": [0, 8]}}, "
               "\"locations\": {\"lab\": {\"cap\": 30}}}. avail may also be a list of windows, e.g. "
               "{\"persons\": {\"kumar\": {\"avail\": [[0, 3], [5, 8]]}}} for someone free only outside a midday gap. "
@@ -883,6 +933,9 @@ def run_chat(db: Db, session_id: str, provider: Provider, engine: EngineClient, 
     counts = students_context(db)
     if counts:
         prompt += "\n" + counts
+    blocks = blocks_context(db)
+    if blocks:
+        prompt += "\n" + blocks
     for _ in range(MAX_ROUNDS):
         try:
             turn = provider.complete(prompt, history_for_provider(db, session_id), TOOLS)
