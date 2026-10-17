@@ -574,6 +574,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             src_settings, src_org = db.get_settings(), (db.get_org("live") or db.get_org("draft"))
             src_students = db.get_value("students")
             src_blocks = db.get_value("blocks_setup")       # the year groups' setups; never a run, a proposal or an undo
+            src_ground = db.get_value("ground")             # the campus's Ground menu choice ("" or absent: the template's)
             cloned = source
         tid = db.create_timetable(name)
         if cloned:
@@ -584,6 +585,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 db.set_value("students", src_students)
             if src_blocks:
                 db.set_value("blocks_setup", src_blocks)
+            if src_ground:
+                db.set_value("ground", src_ground)
         return {"id": tid, "name": name, "cloned_from": cloned, **_timetables_payload()}
 
     @app.post("/api/timetables/{tid}/select")

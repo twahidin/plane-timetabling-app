@@ -3,13 +3,18 @@
    clashes pinned. campus-boot.js drives it (look, active, resize, reloads, grid selection).
    The setup tabs (spec 2026-10-13-setup-campus §1, §4): setMode(mode) — project | manpower | locations |
    requirements | constraints draws that tab's scene from /api/campus/setup (the school from doc.campus, then
-   setup.js's buildScene into scene.overlay()); 'build' is everything above, as it was. */
+   setup.js's buildScene into scene.overlay()); 'build' is everything above, as it was.
+   The Ground menu (ground-menu.js, #campus-ground beside the full-screen button): both documents carry the
+   ground, the template's kind and the override; a choice is PUT to /api/campus/ground and the shown scene redraws
+   with the new ground (one campus, moved between the docks, so every campus view of the timetable follows). */
 import { createScene } from 'campus/scene';
 import { buildScene, resetScenes } from 'campus/setup';
 import { colours } from 'campus/themes';
 import * as D from 'campus/data';
 import { createUI } from 'campus/ui';
 import { createStages } from 'campus/stages';
+import { createGroundMenu } from 'campus/ground-menu';
+import { GROUND_NAMES } from 'campus/grounds';
 
 export async function mount(el, opts) {
   const probe = document.createElement('canvas');
@@ -27,6 +32,23 @@ export async function mount(el, opts) {
   const ARIA = 'Campus view. Left and right arrows change the period; find a teacher or room below.';
   const SETUP_ARIA = 'Campus view of this tab. Click a figure, tower, building or tile for its facts and its row in the table.';
   stage.setAttribute('aria-label', mode === 'build' ? ARIA : SETUP_ARIA);   // mounted straight onto a setup tab: its label
+
+  /* ---- the Ground menu: the courtyard's ground for this timetable (admin only: the page and the route) ---- */
+  const groundSel = document.getElementById('campus-ground');
+  const ground = groundSel ? createGroundMenu(groundSel, {
+    names: GROUND_NAMES,
+    async save(g) {
+      const r = await fetch('/api/campus/ground', { method: 'PUT', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ground: g }) });
+      if (!r.ok) throw new Error('ground ' + r.status);
+      return r.json();
+    },
+    onSaved(g) {                                             // the new ground at once, in the scene on screen
+      if (doc) Object.assign(doc, g);                        // Build redraws from it now or when it shows again
+      if (mode === 'build') { if (doc && ui && !stages.busy()) drawBuild(); sStale = true; }   // a build replay reloads at its end
+      else refreshSetup().catch(() => {});                   // the tab's own document: its campus carries the ground
+    },
+  }) : { set() {} };
 
   const colourOf = (key) => palette[key] || '#9aa6b2';
   const deptColour = (p) => palette['d:' + p.dept] || '#9aa6b2';
@@ -118,6 +140,7 @@ export async function mount(el, opts) {
     if (n !== seq) return;                                   // a newer reload is on its way
     doc = next;
     stale = false;
+    ground.set(doc);
     palette = colours(doc.legend);
     const total = ((doc.time && doc.time.labels) || []).length || 1;
     if (t === null) t = D.currentSlot(doc.time, new Date());
@@ -161,6 +184,7 @@ export async function mount(el, opts) {
     sBusy = false;                                  // a newer load is on its way, or the tab changed to Build
     sStale = false;
     if (text !== sText) { const next = JSON.parse(text); sText = text; sdoc = next; sVer++; }
+    ground.set(sdoc);
     drawSetup();
   }
   function drawSetup(force) {
@@ -196,7 +220,13 @@ export async function mount(el, opts) {
   let switching = 0;
   const onPickTimetable = () => {
     forgetSetup(); timetable = null;
-    clearTimeout(switching); switching = setTimeout(() => { switching = 0; if (mode !== 'build') refreshSetup().catch(() => {}); }, 3000);
+    ground.set(null); ++seq;                                 // the old timetable's choice: hidden, and an old /api/campus answer dropped
+    // the page's own reload normally comes first (and clears this); else this loads the new timetable's document,
+    // which shows the menu again with its value
+    clearTimeout(switching); switching = setTimeout(() => {
+      switching = 0;
+      if (mode !== 'build') refreshSetup().catch(() => {}); else reload().catch(() => {});
+    }, 3000);
   };
   const switched = () => { clearTimeout(switching); switching = 0; };
   if (ttPick) ttPick.addEventListener('change', onPickTimetable);

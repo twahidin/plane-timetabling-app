@@ -14,6 +14,7 @@
   "campus/data": "{{ asset('campus/data.js') }}",
   "campus/themes": "{{ asset('campus/themes.js') }}",
   "campus/grounds": "{{ asset('campus/grounds.js') }}",
+  "campus/ground-menu": "{{ asset('campus/ground-menu.js') }}",
   "campus/scene": "{{ asset('campus/scene.js') }}",
   "campus/ui": "{{ asset('campus/ui.js') }}",
   "campus/stages": "{{ asset('campus/stages.js') }}",
@@ -301,6 +302,7 @@
           <button id="zoom-in" aria-label="Zoom in">+</button>
           <button id="zoom-out" aria-label="Zoom out">&minus;</button>
         </div>
+        <select class="campus-ground" id="campus-ground" aria-label="Ground" title="The ground in the campus's courtyard" hidden></select>
         <button class="btn icon" type="button" data-expand="model-view" title="Full screen" aria-label="Full screen"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"></path></svg></button>
       </div>
     </div>

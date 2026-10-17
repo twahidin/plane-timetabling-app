@@ -221,7 +221,8 @@ def make_router(db) -> APIRouter:
 
     @r.get("/api/campus/setup")
     def get_setup(sid: str = Depends(auth.require_session)):
-        return setup_view(db.get_value("plan"), db.get_org("live") or db.get_org("draft"), db.get_settings(), RR._stored(db),
-                          C.ground_of(db))
+        g = C.ground_info(db)
+        return {**setup_view(db.get_value("plan"), db.get_org("live") or db.get_org("draft"), db.get_settings(), RR._stored(db),
+                             g["ground"]), **g}
 
     return r

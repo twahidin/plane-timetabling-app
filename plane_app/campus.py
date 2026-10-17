@@ -5,8 +5,9 @@ the plan and the check; the layout and the route follow below."""
 from __future__ import annotations
 
 import re
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from . import auth, week
 from .learning import log as decisions
@@ -330,12 +331,37 @@ def ground_kind(record, db=None) -> str:
         return DEFAULT_GROUND
 
 
-def ground_of(db) -> str:
-    """The working timetable's ground."""
+GROUND_KEY = "ground"                                 # per-timetable kv: "" or absent follows the template; else a kind
+
+
+def ground_override(db) -> str:
+    """The admin's choice from the campus's Ground menu: one of GROUND_KINDS, or "" (follow the template)
+    for nothing stored, "" or anything odd. Never raises."""
+    try:
+        stored = db.get_value(GROUND_KEY)
+    except Exception:                                    # noqa: BLE001 - a failing db: no override
+        return ""
+    return stored if isinstance(stored, str) and stored in GROUND_KINDS else ""
+
+
+def ground_template(db) -> str:
+    """The ground of the template in the working timetable's wizard record (ground_kind)."""
     try:
         return ground_kind(db.get_value("wizard"), db)
     except Exception:                                    # noqa: BLE001 - a failing db: the field
         return DEFAULT_GROUND
+
+
+def ground_of(db) -> str:
+    """The working timetable's ground: the stored override, else its template's."""
+    return ground_override(db) or ground_template(db)
+
+
+def ground_info(db) -> dict:
+    """What the campus documents and the Ground menu need: the ground drawn, the template's own kind (the
+    menu's "From the template (…)") and the override ("" when it follows the template)."""
+    override, template = ground_override(db), ground_template(db)
+    return {"ground": override or template, "ground_template": template, "ground_override": override}
 
 
 def campus(org: dict, plan: dict | None, check: dict | None, settings: dict, source: str | None,
@@ -358,7 +384,19 @@ def make_router(db) -> APIRouter:
         live = db.get_org("live")
         org = live or db.get_org("draft")
         source = "live" if live else "draft" if org else None
-        return campus(org or {}, db.get_value("plan"), db.get_value("last_check") if live else None, db.get_settings(), source,
-                      ground_of(db))
+        g = ground_info(db)
+        return {**campus(org or {}, db.get_value("plan"), db.get_value("last_check") if live else None, db.get_settings(),
+                         source, g["ground"]), **g}
+
+    @r.put("/api/campus/ground")
+    def put_ground(body: Any = Body(None), sid: str = Depends(auth.require_session)):
+        """The Ground menu: "" follows the template again, or one of GROUND_KINDS. Writes only `ground`."""
+        if not isinstance(body, dict):
+            raise HTTPException(400, 'send {"ground": ""} or {"ground": kind}')
+        kind = body.get(GROUND_KEY)
+        if not isinstance(kind, str) or (kind and kind not in GROUND_KINDS):
+            raise HTTPException(400, f"ground must be \"\" or one of {', '.join(GROUND_KINDS)}")
+        db.set_value(GROUND_KEY, kind)
+        return ground_info(db)
 
     return r

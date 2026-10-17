@@ -740,6 +740,9 @@
   .journey-step.warn .dot { background: var(--warn-ink); }
   .journey-step:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: var(--radius-sm); }
   .campus-switch[hidden], .campus-view[hidden], .campus-note[hidden] { display: none; }
+  /* the Ground menu (campus/ground-menu.js): beside the full-screen button, only while the campus is on (never in Classic) */
+  .campus-ground { display: none; font-size: 12.5px; padding: 5px 8px; width: auto; max-width: min(22em, 100%); min-width: 0; text-overflow: ellipsis; }
+  #model-view.campus-on .campus-ground:not([hidden]) { display: inline-block; }
   .campus-view { position: relative; min-height: 360px; flex: 1; }
   .campus-view canvas { display: block; width: 100%; height: 100%; touch-action: none; }
   #model-view.campus-on #view, #model-view.campus-on #legend, #model-view.campus-on .planes-only { display: none; }
@@ -965,11 +968,13 @@
 
   /* ---------- the week editor (week-editor.js; spec 2026-10-15-week-shape-design.md §1) ---------- */
   .settings-grid > .form > .week-fieldset { grid-column: 1 / -1; }
-  .week-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+  /* a container: the rows reflow on the editor's own width (the wizard shows it in the Assistant panel, ¼ to ⅔ of the window) */
+  .week-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; container-type: inline-size; container-name: week; }
   .week-editor .we-top { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-4); }
   .week-editor .we-top label { flex: 0 1 200px; min-width: 0; }
   .week-editor .we-head, .week-editor .we-row { display: grid; grid-template-columns: 7.5em 9.5em 4.5em minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; }
-  .week-editor .we-head { font-size: 11px; color: var(--muted); padding: 0 9px; }
+  .week-editor .we-head { color: var(--muted); padding: 0 9px; }
+  .week-editor .we-head span { font-size: 11px; }             /* on the words: the columns' em stay the rows' */
   .week-editor .we-head span:last-child { grid-column: 4 / -1; }
   .week-editor .we-rows { display: flex; flex-direction: column; gap: 4px; }
   .week-editor .we-row { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
@@ -983,8 +988,9 @@
   .week-editor .we-strip:hover .gap, .week-editor .gap:focus-visible { opacity: 1; }
   .week-editor .gap:hover { border-color: var(--color-accent); color: var(--color-accent); }
   @media (hover: none) { .week-editor .gap { opacity: 1; } }
-  .week-editor .chip.brk { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 6px; background: var(--surface-2); border: 1px dashed var(--line); }
+  .week-editor .chip.brk { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 6px; background: var(--surface-2); border: 1px dashed var(--line); max-width: 100%; }
   .week-editor .chip.brk input { width: 9ch; padding: 1px 4px; font-size: 11px; border-radius: 4px; }
+  .week-editor .chip.brk input.we-brk-name { min-width: 0; flex: 0 1 9ch; }
   .week-editor .chip.brk input.we-brk-min { width: 5em; min-width: 4.5em; }
   .week-editor .we-start { min-width: 8.5em; }            /* room for the hour, minutes and AM/PM of a 12-hour clock */
   .week-editor .we-x { border: 0; background: none; color: var(--ink-2); font: inherit; font-size: 14px; line-height: 1; padding: 0 2px; cursor: pointer; }
@@ -997,11 +1003,23 @@
   .week-editor .week-problem { margin: 0; font-size: 13px; color: var(--bad); }
   .week-editor .week-preview { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
   .week-editor .week-totals { margin: 0; font-size: 12px; color: var(--muted); }
-  @media (max-width: 640px) {
+  /* The five columns need about 700px (more in Toy town's rounder font). Narrower, the chips' column shrank to
+     nothing: they stacked one a line (a tall row, empty above its inputs) and spilled past the panel. So in a
+     narrower editor the chips take a line of their own, full width, and the row's inputs keep their size. */
+  @container week (max-width: 760px) {
+    .week-editor .we-head, .week-editor .we-row { grid-template-columns: 7.5em 9.5em 4.5em minmax(0, 1fr); }
+    .week-editor .we-head span:last-child { display: none; }
+    .week-editor .we-strip { grid-column: 1 / -1; }
+    .week-editor .we-copy-btn { grid-row: 1; grid-column: 4; justify-self: end; }
+  }
+  @container week (max-width: 520px) {
     .week-editor .we-head { display: none; }
     .week-editor .we-row { grid-template-columns: minmax(0, 1fr) 9.5em 4.5em; }
-    .week-editor .we-strip { grid-column: 1 / -1; }
-    .week-editor .we-copy-btn { grid-column: 1 / -1; justify-self: start; }
+    .week-editor .we-copy-btn { grid-row: auto; grid-column: 1 / -1; justify-self: start; }
+  }
+  @container week (max-width: 340px) {
+    .week-editor .we-row { grid-template-columns: minmax(0, 1fr) 4.5em; }
+    .week-editor .we-name { grid-column: 1 / -1; }
   }
 
   /* ---------- the smart workbook reader's saved readers (spec 2026-10-08-smart-workbook-reader-design.md §5) ---------- */

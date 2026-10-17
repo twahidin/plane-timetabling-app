@@ -12,6 +12,8 @@
 
 export const KINDS = ['education', 'health', 'business', 'sports'];
 const LABELS = { education: 'Field', health: 'Garden', business: 'Plaza', sports: 'Track' };
+/* the Ground menu's names (ground-menu.js), each ending in its LABELS word */
+export const GROUND_NAMES = { education: 'School field', health: 'Hospital garden', business: 'Business plaza', sports: 'Sports track' };
 export const SHAPES = ['box', 'cyl', 'sphere', 'ico'];
 const ROLES_FIXED = { planter: '#c08a5c', bench: '#b07a52', benchLeg: '#8a5a3a', pad: '#d8d4cc', basin: '#d9d2c4', pot: '#c9a27e', leaves: '#6fcf6f', net: '#ffffff' };
 export const PALETTE = {
