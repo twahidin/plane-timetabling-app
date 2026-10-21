@@ -686,16 +686,19 @@ _PLAIN = re.compile(r"^(|p|jc)([1-9]\d*)$")        # a canonical level key that 
 
 
 def year_label(key, names=()) -> str:
-    """A stored or year key's level as the school writes it, for a card or a refusal: a plain level ("level:3",
-    "level:p4", "level:jc1") and a raw stored spelling ("level:Sec 3") stand as they are; a folded one
-    ("level:1styear", "level:3e") is the known name that gives it (`setup_key_for`; the first in `names`'
-    order, a set sorted), else the key's own text."""
+    """A stored or year key's level as the school writes it, for a card or a refusal: a plain number
+    ("level:3") and a raw stored spelling ("level:Sec 3") stand as they are; a folded one ("level:1styear",
+    "level:3e", "level:p4", "level:jc1") is the known name that gives it (`setup_key_for`; the first in
+    `names`' order, a set sorted), else the key's own text, a primary or JC stage in capitals ("P4", "JC1")."""
     kind, _, rest = str(key or "").partition(":")
-    if kind != "level" or not rest or _PLAIN.match(rest) or SP.stage_key(rest) != rest:
+    plain = _PLAIN.match(rest)
+    if kind != "level" or not rest or (plain and not plain.group(1)) or SP.stage_key(rest) != rest:
         return rest
     order = list(names) if isinstance(names, (list, tuple)) else sorted(names or ())
     found = next((n for n in order if setup_key_for(n) == f"level:{rest}"), None)
-    return " ".join(str(found).split()) if found else rest
+    if found:
+        return " ".join(str(found).split())
+    return rest.upper() if plain else rest
 
 
 def same_year(tag, year) -> bool:
