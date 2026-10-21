@@ -640,6 +640,12 @@
   .board-share input[type="text"], .board-reduction input[type="text"] { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 8px;
     border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
   .board-dialog input[type="number"]#board-staff-allowance { display: block; width: 120px; margin-top: 4px; }
+  .board-dialog #board-staff-subjects { min-width: 0; text-overflow: ellipsis; }
+  /* what the plan does not know of a teacher's subjects: a warning to read, never a refusal */
+  .board-hints { margin-top: 6px; padding: 7px 10px; border-radius: var(--radius-md); font-size: 12.5px; color: var(--warn-ink);
+    background: color-mix(in srgb, var(--warn-ink) 13%, transparent); overflow-wrap: anywhere; }
+  .board-hints[hidden] { display: none; }
+  .board-hints div + div { margin-top: 3px; }
   @media (max-width: 640px) {
     .board-actions { margin-left: 0; }
     .board-two { grid-template-columns: 1fr; }
@@ -1149,6 +1155,7 @@
   .student-pick:has(.student-option) { flex-direction: row; align-items: center; gap: 6px; }
   .student-form-actions { flex: 1 1 100%; display: flex; gap: 6px; }
   .students-table td.student-chips { white-space: normal; }
+  .students-table tr.students-group th { text-align: left; font-size: 12.5px; font-weight: 600; color: var(--ink-2); background: var(--surface-2); }
   .student-chip { display: inline-block; margin: 0 4px 3px 0; font-size: 11px; padding: 1px 8px; border-radius: 999px;
     background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line); }
   .student-chip.placed { border-style: dashed; border-color: var(--color-accent-700); color: var(--color-accent-300); }
@@ -1170,6 +1177,7 @@
     table.students-table tr { padding: 8px; border-bottom: 1px solid var(--line); }
     table.students-table td { border-bottom: 0; padding: 2px 0; white-space: normal; overflow-wrap: anywhere; }
     table.students-table th { display: none; }
+    table.students-table tr.students-group th { display: block; }
     table.students-table td[data-label]::before { content: attr(data-label); display: inline-block; min-width: 4.5em; margin-right: 6px;
       font-family: var(--mono); font-size: 11px; color: var(--muted); }
     table.students-table td.student-actions { text-align: left; padding-top: 4px; }
@@ -1189,6 +1197,15 @@
   .blocks-msg { margin: 0 0 8px; font-size: 13px; min-height: 1.2em; color: var(--ink-2); overflow-wrap: anywhere; }
   .blocks-msg.ok { color: var(--good); }
   .blocks-msg.bad { color: var(--bad); }
+  .blocks-clash { margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px; }
+  .blocks-clash[hidden] { display: none; }
+  .blocks-clash-item { padding: 6px 10px; border-left: 3px solid var(--bad); background: var(--surface-2); border-radius: 4px;
+    font-size: 12.5px; overflow-wrap: anywhere; }
+  .blocks-clash-text { margin: 0 0 4px; color: var(--ink); }
+  .blocks-clash-keys { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .blocks-clash-keys li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+  .blocks-clash-key { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); min-width: 0; }
+  .blocks-clash-keys .btn { margin-left: 0; padding: 2px 8px; font-size: 12px; }
   .blocks-setup[hidden] { display: none; }
   .blocks-step { font-size: 13px; font-weight: 500; margin: var(--space-6) 0 6px; color: var(--ink); }
   .blocks-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 8px 0; }
@@ -1256,4 +1273,53 @@
       font-family: var(--mono); font-size: 11px; color: var(--muted); }
     table.blocks-table td.blocks-row-actions { text-align: left; padding-top: 4px; }
     .blocks-table input[type=number] { max-width: none; }
+  }
+
+  /* ---------- the Classes card on the Requirements tab (classes.js): admin only ---------- */
+  #form-classes { margin-top: var(--space-6); }
+  #form-classes .section-title .eyebrow { margin-left: 8px; }
+  #form-classes .tab-note { margin-top: 0; }
+  .classes-levelbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-bottom: 8px; }
+  .classes-levelbar select { max-width: 100%; }
+  .classes-field { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; min-width: 0; }
+  .classes-field-name { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .classes-stale { margin: 0 0 8px; padding: 7px 10px; border-radius: var(--radius-md); font-size: 12.5px; color: var(--warn-ink);
+    background: color-mix(in srgb, var(--warn-ink) 13%, transparent); overflow-wrap: anywhere; }
+  .classes-stale[hidden] { display: none; }
+  .classes-msg { margin: 0 0 8px; font-size: 13px; min-height: 1.2em; color: var(--ink-2); overflow-wrap: anywhere; }
+  .classes-msg.ok { color: var(--good); }
+  .classes-msg.bad { color: var(--bad); }
+  .classes-setup[hidden], .classes-proposal[hidden] { display: none; }
+  .classes-fields { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 6px; }
+  .classes-fields input[type=number] { width: 7em; }
+  .classes-fields input[type=text] { width: 9em; }
+  .classes-hint { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .classes-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 8px 0; }
+  .classes-actions .btn { margin-left: 0; }
+  .classes-step { font-size: 13px; font-weight: 500; margin: var(--space-6) 0 6px; color: var(--ink); }
+  .classes-summary { margin: 8px 0; font-size: 13px; color: var(--ink-2); }
+  .classes-warnings, .classes-warning-list { list-style: none; margin: 0; padding: 0; }
+  .classes-warnings { display: flex; flex-direction: column; gap: 2px; }
+  .classes-warning { font-size: 12px; color: var(--warn-ink); overflow-wrap: anywhere; }
+  .classes-warning::before { content: "\26A0"; margin-right: 4px; }
+  .classes-empty { padding: 6px 0; font-size: 13px; color: var(--muted); text-align: left; caption-side: bottom; }
+  .classes-table td { vertical-align: top; }
+  .classes-table td.classes-req, .classes-table td.classes-notes, .classes-table td.classes-name { white-space: normal; overflow-wrap: anywhere; }
+  .classes-teacher { min-width: 0; }
+  .classes-teacher-pick { max-width: 100%; padding: 2px 8px; font-size: 12px; }
+  .classes-suggested { display: block; font-size: 11px; color: var(--color-accent-300); }
+  #classes-more, #classes-reqs-more { margin-top: 8px; }
+  #classes-roster { margin-top: 8px; }
+  @media (max-width: 640px) {
+    .classes-levelbar select { flex: 1 1 100%; }
+    .classes-fields input[type=number], .classes-fields input[type=text] { width: 100%; }
+    .classes-fields .classes-field { flex: 1 1 8em; }
+    table.classes-table, .classes-table tbody, .classes-table tr, table.classes-table td { display: block; }
+    table.classes-table thead { display: none; }
+    table.classes-table tr { padding: 8px; border-bottom: 1px solid var(--line); }
+    table.classes-table td { border-bottom: 0; padding: 2px 0; white-space: normal; overflow-wrap: anywhere; }
+    table.classes-table th { display: none; }
+    table.classes-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px;
+      font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .classes-teacher-pick { width: 100%; }
   }

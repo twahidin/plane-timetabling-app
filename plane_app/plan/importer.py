@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from .. import names as names_mod
 from .. import week
 from . import model as M
+from . import specialisation as SP
 from .issues import Issue
 
 #  README is skipped on both shapes of workbook: the start wizard's `wizard.instantiate.workbook_bytes`
@@ -255,10 +256,11 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None,
     reductions_col = header.get("reductions")
     provisional_col = header.get("provisional")
     shares_col = header.get("shares")
+    subjects_col = header.get("subjects")
     if carried is not None and shares_col is not None:
         carried.add("shares")
 
-    for row in rows[header_idx + 1:]:
+    for i, row in enumerate(rows[header_idx + 1:], header_idx + 2):
         name = _text(row, name_col)
         if not name:
             continue
@@ -284,7 +286,21 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None,
             "shares": _read_shares(_cell(row, shares_col), name, issues),
             "source_hash": _row_hash(row),
         })
+        if subjects_col is not None:
+            subjects = _read_subjects(_cell(row, subjects_col), f"{ws.title} row {i}: {name}", name, issues)
+            if subjects:
+                staff[-1]["subjects"] = subjects
     return staff
+
+
+def _read_subjects(raw, at: str, who: str, issues: list[Issue]) -> list[dict]:
+    """The optional Subjects column (spec 2026-10-20-csv-pack-design.md §1), in the text form
+    specialisation.parse_subjects reads: "Physics (Sec 1–2); Chemistry". An entry that does not read is
+    left out and is an issue naming the sheet's row (a reading's doubt)."""
+    entries, problems = SP.parse_subjects(raw if raw is not None else "")
+    for problem in problems:
+        issues.append(Issue("warn", who, f"{at}: {problem}, left out"))
+    return entries
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,9 @@ planning workbook or a class-sizes CSV → an exact plan reading (merged by the 
 stored; a drop's sizes CSVs go into the reading of its first planning workbook, applied on top); a
 student list → a students reading, read exactly by students.read_rows (one that cannot be read
 exactly is a failed card: a student list never reaches the AI); a workbook's Combinations sheet →
-its own combinations reading, read exactly (never by the AI) and applied into `blocks_setup`; any other .xlsx/.csv → the smart
+its own combinations reading, read exactly (never by the AI) and applied into `blocks_setup`; one of the five
+CSV files (staff, venues, requirements, combinations, the level students list: csv-pack spec) → its own exact
+reading, a drop's read in dependency order whatever the upload order; any other .xlsx/.csv → the smart
 reader; .docx and other PDFs → the document reader; anything else → a failed card that says why. A file the model could not read now (or read as nothing) is kept
 on disk for Try again. Nothing here writes the plan or the draft."""
 from __future__ import annotations
@@ -24,11 +26,14 @@ from ...extract import UnsupportedFile, extract
 from ...intake import IntakeError, apply_patch as apply_org_patch
 from ...llm import ProviderError
 from ... import week as W
+from ... import levels as LV
 from .. import importer as IMP
 from .. import model as M
-from . import document, routes as RR, sections as S, writer
+from .. import specialisation as SP
+from . import csvpack as CP, document, packmerge as PM, routes as RR, sections as S, writer
 from . import recipes as R
 from .render import WorkbookError
+from .tabular import cell as _cell, decoded as _decoded, delimiters as _delimiters, head as _head
 
 FILES_MAX = 10
 TYPES = (".pdf", ".docx", ".xlsx", ".csv")
@@ -423,7 +428,6 @@ _MERIT_HEADS = ("merit", "merit rank")      # never "rank" or "order": a B1 list
 _CHOICE_HEAD = re.compile(r"(?:choice|preference|combination) ?(\d+)")         # ranked combination choices, never takes
 _SUBJECT_LIST = "subjects"
 _LIST_SPLIT = re.compile(r"[,;]")
-_DELIMITERS = ",;\t|"
 _WANTED = {"id": "a student ID column (Student ID, Admission No, ID or Reg No)",
            "name": "a name column (Name, Student Name or Full Name)",
            "class": "a class column (Class, Form Class, Form or Class Code)",
@@ -437,11 +441,6 @@ _NOT_WHO = re.compile(r"\b(?:teachers?|staff|subjects?|rooms?|venues?|department
 _PLAN_ROW = re.compile(r"\b(?:periods?|lessons?|load|hours)\b")
 _PLAN_LINE = re.compile(r"\b(?:periods?|lessons?|load|hours|teachers?|staff|rooms?|venues?)\b")
 LINE_WORDS = 12             # a PDF line longer than this is prose, not a header
-
-
-def _head(cell) -> str:
-    """A header cell as it is compared: lower case, punctuation as spaces ("Admission No." is "admission no")."""
-    return " ".join(re.sub(r"[^0-9a-z]+", " ", str(cell if cell is not None else "").lower()).split())
 
 
 def _student_columns(header: list) -> dict | None:
@@ -481,12 +480,6 @@ def looks_like_students(cells: list, words: bool = False) -> bool:
     return any(i != j for i in klass for j in who)
 
 
-def _cell(v) -> str:
-    if isinstance(v, float) and v.is_integer():
-        v = int(v)                          # an ID or a code typed as a number: 1003, not 1003.0
-    return "" if v is None else " ".join(str(v).split())
-
-
 def _find(rows: list[list], named: bool) -> tuple | None:
     """In a sheet's or a CSV's rows (searched to the end: a school's export may open with a title block):
     ("table", header, [(file row number, row)] under it) at the first row naming the student-list
@@ -501,26 +494,11 @@ def _find(rows: list[list], named: bool) -> tuple | None:
     return ("loose",) if loose else None
 
 
-def _decoded(data: bytes) -> str:
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        text = data.decode("utf-16", errors="replace")
-    else:
-        try:
-            text = data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = data.decode("cp1252", errors="replace")
-    return text.replace("\x00", "")         # UTF-16 without its mark reads as text between NULs
-
-
 def _csv_table(data: bytes) -> tuple | None:
     """A CSV read with a comma, then the delimiter the sniffer sees, then each other common one, until
     one finds a student list; a CSV none of them can split is looked at line by line for the loose test."""
     text = _decoded(data)
-    try:
-        sniffed = csv.Sniffer().sniff(text[:4096], _DELIMITERS).delimiter
-    except csv.Error:
-        sniffed = ","
-    for delimiter in dict.fromkeys([",", sniffed, *_DELIMITERS]):
+    for delimiter in _delimiters(text):
         try:
             found = _find(list(csv.reader(io.StringIO(text), delimiter=delimiter)), False)
         except csv.Error:
@@ -833,6 +811,28 @@ def _places(text: str):
     return int(text) if text.isdigit() else text
 
 
+def _stored_students(db, tid: str | None) -> list:
+    stored = db.get_value("students", tid)
+    return stored if isinstance(stored, list) else []
+
+
+def _remap_doubts(setup: dict, combos: list, students: list, plan: dict, key: str) -> list[str]:
+    """A doubt for each stored code these combinations would make name other subjects while a student's
+    choices or an override use it (R23): Apply refuses it. Codes and counts, never a student."""
+    return [PM.remap_doubt(item) for item in PM.remapped_codes(
+        setup.get("combinations") or [], combos, students, plan, key, setup.get("overrides"))]
+
+
+def _stored_setup(stored: dict, key: str, doubts: list[str]) -> dict:
+    """The setup stored for year key `key`, under its canonical key or an old raw one (R15); when two stored
+    keys of the level differ (R20) the clash is added to `doubts` (Apply refuses it) and nothing is counted."""
+    try:
+        return BK.find_setup(stored, key)[1] or {}
+    except BK.SetupClash as e:
+        doubts.append(str(e))
+        return {}
+
+
 def _combination_rows(cols: dict, rows: list[tuple[int, list]], plan: dict) -> tuple[dict, list[str], int]:
     """({year key: [combination]} in sheet order, doubts, how many rows gave a doubt). A row is a doubt, with
     its row number, and is not kept, when its level is blank or not in the plan, or the setup's own
@@ -880,8 +880,11 @@ def _combinations(db, name: str, found: tuple, tid: str | None, plan: dict) -> d
     stored = stored if isinstance(stored, dict) else {}
     added = changed = removed = 0
     replaces = []
+    students = _stored_students(db, tid)
     for key, combos in read.items():
-        old = {c["code"]: c for c in ((stored.get(key) or {}).get("combinations") or []) if isinstance(c, dict)}
+        setup = _stored_setup(stored, key, replaces)
+        replaces += _remap_doubts(setup, combos, students, plan, key)
+        old = {c["code"]: c for c in (setup.get("combinations") or []) if isinstance(c, dict)}
         new = {c["code"]: c for c in combos}
         added += sum(1 for c in new if c not in old)
         changed += sum(1 for c in new if c in old and old[c] != new[c])
@@ -921,16 +924,293 @@ def _sheet_combinations_reading(db, name: str, data: bytes, tid: str | None, pla
 
 
 # ---------------------------------------------------------------------------
+# the five CSV files (csv-pack spec docs/superpowers/specs/2026-10-20-csv-pack-design.md §2 and its
+# "Calls made by the designer" §2-§4): staff, venues, requirements, combinations and the level students
+# list, each recognised by its headers and read exactly by csvpack, never by the AI. A drop's pack files
+# are read in dependency order (PACK_ORDER), each against what is stored overlaid with the pack files
+# read before it in the same drop, so the upload order does not matter. A card carries counts and the
+# readers' problems (file, row and header words; never a student's name), and "N rows not applied" for
+# the rows a structural problem left out. Logs carry type names only.
+# ---------------------------------------------------------------------------
+
+PACK_ORDER = ("requirements", "combinations", "staff", "venues", "level_students")
+PACK_NOT_AI = "These files are read exactly and never sent to the AI reader."
+_PACK_TITLE = {"staff": "Staff", "venues": "Rooms", "requirements": "Requirements", "combinations": "Combinations",
+               "level_students": "Students"}
+_PACK_READ = {"staff": CP.read_staff, "venues": CP.read_venues, "requirements": CP.read_requirements,
+              "combinations": CP.read_combinations, "level_students": CP.read_level_students}
+NOT_IN_FILE_SHOWN = 8       # names listed in a "not in this file" doubt
+
+
+def _new_drop() -> dict:
+    """What the pack files of one drop have read so far, for the files read after them."""
+    return {"levels": {}, "combinations": {}, "staff": []}
+
+
+def _pack_found(name: str, data: bytes) -> tuple | None:
+    """(kind, header, numbered rows) of a pack file; None for any other file. A workbook with a Students
+    or Combinations sheet is B1's or B2's, and a header with a Class column (B1's list, a home-room list, a
+    per-class table) is not one of the five: it keeps the route it had.
+    A classless header naming students that `detect` does not take is still the level students list
+    (refused with the column to add, never given to the AI)."""
+    lower = name.lower()
+    if not lower.endswith((".csv", ".xlsx")):
+        return None
+    if lower.endswith(".xlsx") and _names_students_sheet(data):
+        return None
+    found = CP.table(name, data)
+    if found is None:
+        return None
+    header, rows = found
+    if _student_columns(header) is not None or CP.names_a_class(header):
+        return None
+    kind = CP.detect(header) or ("level_students" if CP.names_students(header) else None)
+    return None if kind is None else (kind, header, rows)
+
+
+def _pack_kind(name: str, data: bytes) -> str | None:
+    """The pack kind of a file, for the order a drop is read in; None when it is none (or cannot be told)."""
+    try:
+        found = _pack_found(name, data)
+    except Exception:                       # its own card says what is wrong with it
+        return None
+    return found[0] if found else None
+
+
+def _stored_combinations(db, tid: str | None) -> dict:
+    """{level_key: [combination]} of each level's option-block setup stored. A level's own setup, the one
+    combinations.csv replaces ("level:3" or an old spelling of it, `blocks.find_setup`), comes before a
+    stream's ("level:3E", R26), which stands in only when the level has none."""
+    stored = db.get_value("blocks_setup", tid)
+    stored = stored if isinstance(stored, dict) else {}
+
+    def combos_of(setup) -> list:
+        return [c for c in (setup or {}).get("combinations") or [] if isinstance(c, dict) and c.get("code")]
+    out: dict = {}
+    for key in sorted(k for k in stored if isinstance(k, str)):
+        if key.startswith("level:") and isinstance(stored[key], dict) and combos_of(stored[key]):
+            out.setdefault(SP.level_key(key.partition(":")[2]), combos_of(stored[key]))
+    for level in out:
+        try:
+            own = combos_of(BK.find_setup(stored, f"level:{level}")[1])
+        except BK.SetupClash:               # the card says so (_stored_setup); Apply refuses it
+            continue
+        if own:
+            out[level] = own
+    return out
+
+
+def _pack_context(db, tid: str | None, drop: dict) -> dict:
+    """The facts a pack file is checked against: what is stored, overlaid with the drop's files read so far."""
+    context = {"levels": {**LV.get(db, tid), **drop["levels"]},
+               "combinations": {**_stored_combinations(db, tid), **drop["combinations"]},
+               "plan": _current(db, tid)}
+    if drop["staff"]:
+        context["staff"] = list(drop["staff"])
+    return context
+
+
+def _pack_failed(db, name: str, kind: str, message: str, tid: str | None) -> dict:
+    entry = _entry(db, name, {"kind": kind, "via": "exact", "status": "failed", "sections": {}, "doubts": [],
+                              "summary": _PACK_TITLE[kind], "error": message}, tid)
+    return {"name": name, "status": "failed", "id": entry["id"], "message": message}
+
+
+def _plural(n: int, word: str, many: str | None = None) -> str:
+    return f"{n:,} {word if n == 1 else many or word + 's'}"
+
+
+def _not_in_file(names: list, what: str) -> list[str]:
+    """The "not in this file" doubt of a staff or venues card: they are kept, never deleted (Calls §2)."""
+    if not names:
+        return []
+    shown = ", ".join(str(n) for n in names[:NOT_IN_FILE_SHOWN])
+    more = f" and {len(names) - NOT_IN_FILE_SHOWN} more" if len(names) > NOT_IN_FILE_SHOWN else ""
+    return [f"{_plural(len(names), what)} in the plan {'is' if len(names) == 1 else 'are'} not in this file "
+            f"and {'is' if len(names) == 1 else 'are'} kept: {shown}{more}"]
+
+
+def _pack_card(kind: str, items, context: dict, db, tid: str | None) -> tuple[dict, list[str], str, dict]:
+    """(sections, the doubts that come before the problems, the summary's count words, what the reading
+    keeps) of a pack file's items."""
+    plan = context["plan"]
+    if kind == "staff":
+        _, n = PM.merge_staff(plan["staff"], items)
+        sec = {"count": len(items), "added": n["added"], "changed": n["changed"]}
+        return {"staff": sec}, _not_in_file(n["missing"], "teacher"), _plural(len(items), "teacher"), \
+            {"items": items}
+    if kind == "venues":
+        _, n = PM.merge_venues(plan["venues"], items)
+        sec = {"count": len(items), "added": n["added"], "changed": n["changed"]}
+        return {"venues": sec}, _not_in_file(n["missing"], "room"), _plural(len(items), "room"), {"items": items}
+    if kind == "requirements":
+        _, n = PM.merge_levels(LV.get(db, tid), items)
+        rows = sum(len(lv["subjects"]) for lv in items.values())
+        sec = {"count": rows, "added": n["added"], "changed": n["changed"]}
+        return ({"subjects": sec}, [], f"{_plural(rows, 'subject')} at {_plural(len(items), 'level')}",
+                {"levels": items})
+    if kind == "combinations":
+        stored = db.get_value("blocks_setup", tid)
+        stored = stored if isinstance(stored, dict) else {}
+        found = {f"level:{key}": combos for key, combos in items.items()}
+        added = changed = removed = 0
+        replaces = []
+        students = _stored_students(db, tid)
+        for key, combos in found.items():
+            setup = _stored_setup(stored, key, replaces)
+            old = {c["code"]: c for c in (setup.get("combinations") or []) if isinstance(c, dict)}
+            new = {c["code"]: c for c in combos}
+            added += sum(1 for c in new if c not in old)
+            changed += sum(1 for c in new if c in old and old[c] != new[c])
+            removed += sum(1 for c in old if c not in new)
+            if old:
+                replaces.append(f"This replaces the {_plural(len(old), 'combination')} stored for "
+                                f"level {key.partition(':')[2]}")
+            replaces += _remap_doubts(setup, combos, students, plan, key)
+        total = sum(len(v) for v in found.values())
+        sec = {"count": total, "added": added, "changed": changed, "removed": removed}
+        return ({"combinations": sec}, replaces, f"{_plural(total, 'combination')} at {_plural(len(found), 'level')}",
+                {"combinations": found})
+    stored = _stored_students(db, tid)
+    _, n = PM.merge_students(stored, items, plan)
+    sec = {"count": len(items), "added": n["added"], "changed": n["changed"], "removed": n["removed"]}
+    replaces = ([f"This list replaces the students stored at its levels; {_plural(n['removed'], 'student')} "
+                 f"there {'isn' if n['removed'] == 1 else 'aren'}'t in this file"] if n["removed"] else [])
+    ids = {s["id"] for s in items}
+    classed = sum(1 for s in stored if isinstance(s, dict) and s.get("id") in ids and ST.has_class(s))
+    if classed:                             # R27(d): a count, never a name
+        replaces.append(f"{classed:,} of these students {'has' if classed == 1 else 'have'} a class now; "
+                        f"Apply removes it")
+    return {"students": sec}, replaces, _plural(len(items), "student"), {"students": items}
+
+
+def _pack(db, name: str, found: tuple, tid: str | None, drop: dict) -> dict:
+    kind, header, rows = found
+    lacking = CP.missing(kind, header)
+    if lacking:
+        return _pack_failed(db, name, kind, f"This looks like {CP.FILES[kind]} but it needs a "
+                            f"{' and a '.join(lacking)} column: add {'it' if len(lacking) == 1 else 'them'} "
+                            f"and give it again. {PACK_NOT_AI}", tid)
+    context = _pack_context(db, tid, drop)
+    items, problems = _PACK_READ[kind](rows, header, context, file=name)
+    if kind == "level_students":            # B1's shape: a student with a level and no class takes nothing yet
+        items = [{**s, "takes": [], "placed_by_app": []} for s in items]
+    if not items and not problems and not rows and getattr(rows, "examples", 0):
+        return _pack_failed(db, name, kind, f"{name} holds only the example row: add your rows and give it "
+                                            f"again. {PACK_NOT_AI}", tid)
+    if not items:
+        why = "; ".join(p["text"] for p in problems[:3]) or f"{name} has no rows under its header"
+        return _pack_failed(db, name, kind, f"Nothing in {name} could be read: {why}. {PACK_NOT_AI}", tid)
+    secs, before, counted, kept = _pack_card(kind, items, context, db, tid)
+    for s in secs.values():
+        s.update({"samples": [], "ticked": True})
+    dropped = {p["row"] for p in problems if p["dropped"] and p["row"] is not None}
+    check = {p["row"] for p in problems if not p["dropped"] and p["row"] is not None} - dropped
+    texts = list(dict.fromkeys(p["text"] for p in problems))
+    doubts = [*before, *texts]
+    if len(doubts) > document.DOUBTS_MAX:
+        doubts = [*doubts[:document.DOUBTS_MAX], f"and {len(doubts) - document.DOUBTS_MAX} more to check"]
+    examples = getattr(rows, "examples", 0)
+    summary = ", ".join([counted, *([f"{_plural(len(dropped), 'row')} not applied"] if dropped else []),
+                         *([f"{len(check):,} to check"] if check else []),
+                         *([f"{_plural(examples, 'example row')} skipped"] if examples else [])])
+    entry = _entry(db, name, {"kind": kind, "via": "exact", "status": "waiting", "sections": secs,
+                              "doubts": doubts, "summary": summary, **kept}, tid)
+    if kind == "requirements":              # the files read after it in the drop see these levels
+        drop["levels"].update(items)
+    elif kind == "combinations":
+        drop["combinations"].update(items)
+    elif kind == "staff":                   # read ahead already (_preread_staff) unless given on its own
+        known = {ST.norm(s["name"]) for s in drop["staff"]}
+        drop["staff"] += [s for s in items if ST.norm(s["name"]) not in known]
+    return {"name": name, "status": "read", "id": entry["id"], "message": f"{_PACK_TITLE[kind]}: {summary}"}
+
+
+SNIFF_LINES = 50            # rows looked at for a header naming students when a file cannot be checked
+
+
+def _sniffed_rows(name: str, data: bytes):
+    """The first rows of a .csv (split on any common delimiter) or of each sheet of an .xlsx, as cells."""
+    if name.lower().endswith(".csv"):
+        for line in _decoded(data).splitlines()[:SNIFF_LINES]:
+            yield re.split(r"[,;\t|]", line)
+        return
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(max_row=SNIFF_LINES, values_only=True):
+                yield ["" if v is None else str(v) for v in row]
+    finally:
+        wb.close()
+
+
+def _names_students(name: str, data: bytes) -> bool:
+    """Whether a file that could not be checked for a pack file has a row naming students (a Student ID
+    column, or a class beside a name or ID): such a file fails closed (R27(c)). True when even that cannot
+    be told."""
+    try:
+        return any(CP.names_students(cells) or looks_like_students(cells) for cells in _sniffed_rows(name, data))
+    except Exception:
+        return True
+
+
+def _pack_branch(db, name: str, data: bytes, tid: str | None, drop: dict | None = None) -> dict | None:
+    """A pack file read or refused (a stored reading's result); None for any other file. Whatever goes
+    wrong while reading it is its own failed card, logged by type name only: never the AI. A file that
+    cannot even be checked is a failed card too when it names students (R27(c)); any other goes on."""
+    try:
+        found = _pack_found(name, data)
+    except Exception as e:
+        _log.warning("checking %s for a pack file failed (%s)", name, type(e).__name__)
+        if _names_students(name, data):
+            return _pack_failed(db, name, "level_students", f"{name} names students but could not be checked "
+                                f"exactly, so it was not read; check its columns and give it again. {PACK_NOT_AI}",
+                                tid)
+        return None
+    if found is None:
+        return None
+    try:
+        return _pack(db, name, found, tid, drop if drop is not None else _new_drop())
+    except M.PlanError:
+        raise                               # the stored plan itself does not read: said as for any file
+    except Exception as e:
+        _log.warning("reading the %s file %s failed (%s)", found[0], name, type(e).__name__)
+        return _pack_failed(db, name, found[0], f"{name} could not be read exactly; check its columns and rows. "
+                                                f"{PACK_NOT_AI}", tid)
+
+
+def _preread_staff(items: list[tuple[str, bytes]], positions) -> list[dict]:
+    """The teachers of a drop's staff files, read before anything else: requirements.csv, read first,
+    takes a subject's department from the one department whose staff list it (Calls §6). A teacher's
+    fields do not depend on the other files; only their problems do, and those come when the file is read."""
+    out = []
+    for i in positions:
+        name, data = items[i][0] or "upload", items[i][1]
+        try:
+            found = _pack_found(name, data)
+            if found and found[0] == "staff" and not CP.missing("staff", found[1]):
+                out += CP.read_staff(found[2], found[1], {}, file=name)[0]
+        except Exception:                   # its own card says what is wrong with it
+            continue
+    return out
+
+
+# ---------------------------------------------------------------------------
 # a drop of files
 # ---------------------------------------------------------------------------
 
 def _one(db, provider_factory, i: int, name: str, data: bytes, tid: str | None, timetables: list,
-         sizes: list[tuple[str, bytes]] = (), alongside: list | None = None) -> dict | None:
+         sizes: list[tuple[str, bytes]] = (), alongside: list | None = None, drop: dict | None = None) -> dict | None:
     lower = name.lower()
     if is_planning(name, data):
         return _exact(db, name, data, tid, sizes=sizes, alongside=alongside)
     if sizes_text(name, data) is not None:  # class sizes: read exactly, as the plan upload once took them
         return _exact(db, name, data, tid, "Class sizes")
+    if lower.endswith((".xlsx", ".csv")):   # one of the five CSV files: read exactly or refused, never by the AI
+        pack = _pack_branch(db, name, data, tid, drop)
+        if pack is not None:
+            return pack
     if lower.endswith((".xlsx", ".csv")):   # a student list: read exactly or refused, never by the AI
         students = _students_branch(db, name, data, tid)
         if students is not None:
@@ -997,11 +1277,23 @@ def read_files(db, provider_factory, items: list[tuple[str, bytes]], tid: str | 
     except Exception:
         _log.exception("sweeping kept files failed")
     book, folded = _folding(items)
+    # the five CSV files first, in dependency order (each read against those before it), then the rest
+    # in upload order; the results still line up with the files
+    rank = {}
+    for i, (name, data) in enumerate(items[:FILES_MAX]):
+        if len(data) <= MAX_UPLOAD and i not in folded:
+            kind = _pack_kind(name or "upload", data)
+            if kind is not None:
+                rank[i] = PACK_ORDER.index(kind)
+    sequence = sorted(range(len(items)), key=lambda i: (0, rank[i], i) if i in rank else (1, 0, i))
+    drop = _new_drop()
+    drop["staff"] = _preread_staff(items, [i for i in rank if rank[i] == PACK_ORDER.index("staff")])
     results: dict[int, dict] = {}
     also: list[dict] = []                   # a planning workbook's Students sheet: after every file's own result
     asc: list[tuple[int, str, bytes]] = []
     timetables: list = []                   # ([positions], body) of timetable readings, stored last
-    for i, (name, data) in enumerate(items):
+    for i in sequence:
+        name, data = items[i]
         name = name or "upload"
         try:
             if i >= FILES_MAX:
@@ -1015,7 +1307,7 @@ def read_files(db, provider_factory, items: list[tuple[str, bytes]], tid: str | 
                 asc.append((i, name, data))
             else:
                 sizes = [(items[j][0] or "upload", items[j][1]) for j in folded] if i == book else []
-                out = _one(db, provider_factory, i, name, data, tid, timetables, sizes, also)
+                out = _one(db, provider_factory, i, name, data, tid, timetables, sizes, also, drop)
                 if out is not None:
                     results[i] = out
         except M.PlanError as e:            # the stored plan itself does not read

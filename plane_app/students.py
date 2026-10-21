@@ -35,6 +35,12 @@ def _id_key(student_id: str) -> tuple:
     return (parts, student_id)
 
 
+def has_class(student: dict) -> bool:
+    """Whether a student is in a class. A student read from a level-only file has a `level` and no class
+    yet; classes are formed later."""
+    return bool(str(student.get("class") or "").strip())
+
+
 def _natural(text) -> tuple:
     """`_id_key` for a class or a level, case and spaces aside: "9A" before "10A"."""
     return _id_key(norm(text))
@@ -300,14 +306,18 @@ def problems(students: list[dict], plan: dict, org: dict | None = None) -> list[
         if sid in seen:
             out.append({"kind": "duplicate_id", "student": sid, "text": f"ID {sid} appears twice"})
         seen.add(sid)
-        if s["class"] not in codes:
+        if not has_class(s):                # a level and no class yet is valid; neither is not
+            if not str(s.get("level") or "").strip():
+                out.append({"kind": "unknown_class", "student": sid, "text": f"{sid}: the class isn't known",
+                            "detail": ""})
+        elif s["class"] not in codes:
             out.append({"kind": "unknown_class", "student": sid, "text": f"{sid}: the class isn't known",
                         "detail": s["class"]})
         for t in s["takes"]:
             if group_id(t) not in groups:
                 out.append({"kind": "missing_group", "student": sid,
                             "text": f"{sid}: {t['grouping']} ({t['division']}) is no longer in the plan"})
-        if s["class"] in codes:             # an unknown class is already one problem
+        if has_class(s) and s["class"] in codes:             # an unknown class is already one problem
             out += _not_offered(s, groups)
         out += _same_band(s, groups)
     if org is not None:
@@ -317,10 +327,15 @@ def problems(students: list[dict], plan: dict, org: dict | None = None) -> list[
 
 def summary(students: list[dict], plan: dict, found: list[dict]) -> dict:
     """{count, patterns, to_check} for a stored list and its `problems`: to_check is the students with
-    a problem plus the groups too big for their room. Counts only."""
-    return {"count": len(students), "patterns": len(patterns(students, plan)),
-            "to_check": len({p["student"] for p in found if "student" in p})
-            + sum(1 for p in found if p["kind"] == "over_room")}
+    a problem plus the groups too big for their room. Counts only. `no_class` (the students with a level
+    and no class yet) is added only when there are any, so a list of classed students reads as before."""
+    out = {"count": len(students), "patterns": len(patterns(students, plan)),
+           "to_check": len({p["student"] for p in found if "student" in p})
+           + sum(1 for p in found if p["kind"] == "over_room")}
+    waiting = sum(1 for s in students if not has_class(s))
+    if waiting:
+        out["no_class"] = waiting
+    return out
 
 
 def _over_room(counts: dict[str, int], groups: dict[str, dict], org: dict) -> list[dict]:
@@ -346,14 +361,22 @@ def _over_room(counts: dict[str, int], groups: dict[str, dict], org: dict) -> li
 
 def ordered(students: list[dict], plan: dict | None = None) -> list[dict]:
     """Students by level (given the plan), then class, then ID, numbers in each compared as numbers ("9A"
-    before "10A", S2 before S10): the order of a printed pile."""
-    level = (lambda c: _natural(level_of(plan, c))) if plan is not None else (lambda c: ())
-    return sorted(students, key=lambda s: (level(s["class"]), _natural(s["class"]), _id_key(s["id"])))
+    before "10A", S2 before S10): the order of a printed pile. Levels are compared by `level_key`, so a
+    student with a level and no class yet ("Sec 3") sits with the classes of level "3", before them."""
+    from .plan.specialisation import level_key      # specialisation imports this module
+    level = (lambda s: _natural(level_key(level_of(plan, s)))) if plan is not None else (lambda s: ())
+    return sorted(students, key=lambda s: (level(s), _natural(s.get("class")), _id_key(s["id"])))
 
 
-def level_of(plan: dict, class_code: str) -> str:
-    """A class's level: the plan's own, else the digits its code starts with ("3A" -> "3"), else "".
-    For choosing a level's students to print."""
+def level_of(plan: dict, who) -> str:
+    """A level: given a class code, the class's: the plan's own, else the digits its code starts with
+    ("3A" -> "3"), else "". Given a student, their class's, or when they have no class yet their own
+    `level`. For choosing a level's students to print."""
+    if isinstance(who, dict):
+        if not has_class(who):
+            return str(who.get("level") or "").strip()
+        who = who["class"]
+    class_code = who
     c = next((c for c in plan.get("classes", []) if c["code"] == class_code), None)
     if c and str(c.get("level") or "").strip():
         return str(c["level"]).strip()
@@ -372,6 +395,8 @@ def _own_groups(student: dict) -> set[str]:
 def student_events(student: dict, org: dict) -> list[str]:
     """The ids of the events a student attends, in the organisation's order: their class's whole-class
     lessons and their own option groups' lessons, never another option of the same band."""
+    if not has_class(student):
+        return []                           # no class yet: no whole-class lessons, and no options placed
     own = _own_groups(student)
     mine = own | {class_group_id(student["class"])}
     org_groups = {g["id"]: g for g in org.get("groups", [])}
@@ -407,6 +432,8 @@ def clashes(students: list[dict], org: dict, plan: dict) -> list[dict]:
     by_choice: dict[tuple, set] = {}
     found: dict[tuple[int, tuple[str, ...]], list[str]] = {}
     for s in students:
+        if not has_class(s):
+            continue                        # a level and no class yet attends nothing placed
         key = (s["class"], frozenset(_own_groups(s)))
         if key not in by_choice:
             by_choice[key] = _student_clashes(s, org, events)

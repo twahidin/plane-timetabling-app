@@ -158,6 +158,13 @@ def make_router(db, templates, engine) -> APIRouter:
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": 'attachment; filename="template.xlsx"'})
 
+    @r.get("/api/wizard/csv-pack.zip")
+    def csv_pack(sid: str = Depends(auth.require_session)):
+        """The five blank CSV files (staff, venues, requirements, combinations, students), admin only. They
+        need no chosen template: the same files for every school."""
+        return Response(I.csv_pack_zip(), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="csv-files.zip"'})
+
     @r.get("/api/wizard/sample.pdf")
     def sample_pdf(sid: str = Depends(auth.require_session)):
         template, knobs = _chosen()

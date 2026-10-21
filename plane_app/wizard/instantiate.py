@@ -23,13 +23,16 @@ that does not is a library bug, and `sample_pdf` raises `WizardError` rather tha
 from __future__ import annotations
 
 import copy
+import csv
 import io
 import re
+import zipfile
 from datetime import date as _date
 
 from .. import blocks as BK, intake, students as ST, week
 from ..plan import model as M
 from ..plan.generate import generate
+from ..plan.reader import csvpack as CP
 from ..print import grid as G, pdf as P
 from .library import WizardError
 
@@ -714,7 +717,7 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                    "rows": groups_rows})
 
     staff_rows = [[float(i + 1), name, list(families)[i % len(families)][:2].upper(), "Full time",
-                   1.0 if i < len(teachers) - 1 else 0.5, _initials(name)]
+                   1.0 if i < len(teachers) - 1 else 0.5, _initials(name), None]
                   for i, name in enumerate(teachers)]
     sheets.append({"name": "Control", "purpose": f"One row per {v['person']}: who they are and how much they teach.",
                    "preamble": [["STAFF"]],
@@ -723,8 +726,12 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                                _column("Dept", "Which department they belong to", list(families)[0][:2].upper()),
                                _column("Profile", "Full time, part time, and so on", "Full time"),
                                _column("Teaching Load Factor", "1 for full time, 0.5 for half, and so on", 1.0),
-                               _column("Short", "A short form for the printed timetable", _initials(teachers[0]))],
-                   "head": ["S/N", "Staff", "Dept", "Profile", "Teaching Load Factor", "Short"],
+                               _column("Short", "A short form for the printed timetable", _initials(teachers[0])),
+                               _column("Subjects", f"Optional: what the {v['person']} teaches, separated by ';', "
+                                                   "each with its levels in brackets when not every level, e.g. "
+                                                   "Physics (Sec 1–2); Chemistry. An empty cell keeps the subjects "
+                                                   "the app has; remove them in the staff form", "")],
+                   "head": ["S/N", "Staff", "Dept", "Profile", "Teaching Load Factor", "Short", "Subjects"],
                    "rows": staff_rows})
 
     # one example student in the first class, taking the first option group of each banded subject: the
@@ -797,6 +804,29 @@ def chosen_knobs(template: dict, knobs: dict) -> list[dict]:
             value = "yes" if value else "no"
         out.append({"key": knob["key"], "label": knob["label"], "help": knob["help"], "value": value})
     return out
+
+
+def csv_pack_files() -> dict[str, bytes]:
+    """The five blank CSV files (csv-pack spec §4), {file name: bytes}: each has the exact headers the
+    readers detect and one example row, which the readers skip as an example, so a blank file reads as
+    nothing. UTF-8 with a byte-order mark, so a spreadsheet shows the en dash of a level range."""
+    out: dict[str, bytes] = {}
+    for kind in CP.KINDS:
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\r\n")
+        writer.writerow(CP.HEADERS[kind])
+        writer.writerow(CP.EXAMPLES[kind])
+        out[CP.FILES[kind]] = buf.getvalue().encode("utf-8-sig")
+    return out
+
+
+def csv_pack_zip() -> bytes:
+    """The five blank CSV files in one zip, built in memory."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in csv_pack_files().items():
+            z.writestr(name, data)
+    return buf.getvalue()
 
 
 def workbook_bytes(template: dict, knobs: dict, settings: dict | None = None) -> bytes:

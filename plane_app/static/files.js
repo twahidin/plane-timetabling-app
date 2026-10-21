@@ -25,7 +25,8 @@
   const SHOWN = new Set(['waiting', 'failed', 'retry']);   // and an applied reading that can still be undone
   const VIA = { exact: 'exact', saved: 'saved reader', ai: 'read by AI' };
   const TITLES = { staff: 'Staff', classes: 'Classes', rooms: 'Rooms', requirements: 'Requirements', rules: 'Rules',
-    notes: 'Notes', timetable: 'Timetable', students: 'Students', combinations: 'Combinations' };
+    notes: 'Notes', timetable: 'Timetable', students: 'Students', combinations: 'Combinations',
+    venues: 'Rooms', subjects: 'Subjects by level' };     // venues and subjects: staff.csv's siblings (venues.csv, requirements.csv)
   const NOUNS = { timetable: 'lessons' };
   const MODES = [['keep', 'Keep the existing placement, then check it'], ['rebuild', 'Start again: place everything afresh']];
 
@@ -248,8 +249,9 @@
     if (typeof window.loadBoard === 'function') Promise.resolve(window.loadBoard()).catch(() => {});
     if (typeof window.loadWizard === 'function') Promise.resolve(window.loadWizard()).catch(() => {});
     if (view.kind === 'timetable' && typeof window.loadDraft === 'function') Promise.resolve(window.loadDraft()).catch(() => {});
-    if (view.kind === 'combinations') return;   // blocks_setup moved, not the plan: no plan status to show
-    if (view.kind === 'students') {             // the students moved, not the plan: no plan status to show
+    // blocks_setup or the levels moved, not the plan: no plan status to show
+    if (view.kind === 'combinations' || view.kind === 'requirements') return;
+    if (view.kind === 'students' || view.kind === 'level_students') {   // the students moved, not the plan
       document.dispatchEvent(new CustomEvent('plane:students'));
       return;
     }

@@ -189,12 +189,32 @@ def _normalise_shares(raw, person_id: str) -> dict[str, int]:
     return dict(sorted(out.items()))
 
 
+def _normalise_subjects(raw, person_id: str) -> list[dict]:
+    """What a person can teach (spec 2026-10-20-csv-pack-design.md §1): [{subject, levels}], where
+    `levels` lists the levels the subject is taught at and [] means every level. Absent or empty
+    is [], and the caller then leaves the key out."""
+    out = []
+    for i, entry in enumerate(_as_list(raw, f"staff {person_id} subjects")):
+        where = f"staff {person_id} subjects[{i}]"
+        if not isinstance(entry, dict):
+            raise PlanError(f"{where}: must be an object with a subject and its levels")
+        subject = entry.get("subject")
+        if not isinstance(subject, str) or not subject.strip():
+            raise PlanError(f"{where}: subject {subject!r} must be a non-empty text")
+        levels = _as_list(entry.get("levels"), f"{where} levels")
+        for level in levels:
+            if not isinstance(level, str) or not level.strip():
+                raise PlanError(f"{where}: level {level!r} must be a non-empty text")
+        out.append({"subject": subject.strip(), "levels": [level.strip() for level in levels]})
+    return out
+
+
 def _normalise_staff(item: dict) -> dict:
     item = as_dict(item, "staff item")
     person_id = _check_id(item.get("id"), "staff")
     load_factor = item.get("load_factor", 1.0)
     allowance = item.get("allowance")
-    return {
+    out = {
         "id": person_id,
         "name": item.get("name", ""),
         "short": item.get("short", ""),
@@ -214,6 +234,11 @@ def _normalise_staff(item: dict) -> dict:
         # the plan rev that last changed the entry (bump_rev): a staff edit made from an older view is stale
         "rev_at": _rev(item.get("rev_at"), f"staff {person_id} rev_at"),
     }
+    # only while there is something to say, so a plan that never lists subjects reads exactly as before
+    subjects = _normalise_subjects(item.get("subjects"), person_id)
+    if subjects:
+        out["subjects"] = subjects
+    return out
 
 
 def _normalise_class(item: dict, venue_ids=frozenset()) -> dict:
@@ -230,7 +255,7 @@ def _normalise_class(item: dict, venue_ids=frozenset()) -> dict:
         if not isinstance(home, str) or home not in venue_ids:
             raise PlanError(f"class {code}: unknown home room {home!r}")
         out["home"] = home
-    return out
+    return _with_formed_tag(out, item)
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +347,15 @@ def _with_blocks_tag(out: dict, item: dict) -> dict:
     normalises exactly as before."""
     if item.get("blocks"):
         out["blocks"] = str(item["blocks"])
+    return _with_formed_tag(out, item)
+
+
+def _with_formed_tag(out: dict, item: dict) -> dict:
+    """Forming classes (classes.apply_proposal) tags the classes, division and requirements it writes
+    with the level key ("3", "p4") so forming the level again replaces its own output. Kept only when
+    set, so a plan without it normalises exactly as before."""
+    if item.get("formed"):
+        out["formed"] = str(item["formed"])
     return out
 
 
@@ -808,6 +842,14 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
             c["level"] = old.get("level", "")
         if not c.get("home") and old.get("home"):
             c["home"] = old["home"]
+        if old.get("formed"):           # no workbook carries the formed tag (classes.apply_proposal) either
+            c["formed"] = old["formed"]
+
+    old_divisions = {d["id"]: d for d in existing_n["divisions"]}
+    for d in out["divisions"]:
+        old = old_divisions.get(d["id"])
+        if old is not None and old.get("formed"):
+            d["formed"] = old["formed"]
 
     old_reqs = {r["id"]: r for r in existing_n["requirements"]}
     for r in out["requirements"]:
@@ -821,6 +863,8 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
         _keep_uncarried(old, r, uncarried.get("requirements", ()))
         if old.get("blocks"):           # no workbook carries the option-blocks tag (B2): the next Apply replaces it
             r["blocks"] = old["blocks"]
+        if old.get("formed"):           # nor the formed tag: forming the level again replaces it
+            r["formed"] = old["formed"]
 
     old_staff = {s["id"]: s for s in existing_n["staff"]}
     for s in out["staff"]:
@@ -835,6 +879,10 @@ def merge_import(existing: dict, imported: dict, kept: list | None = None, uncar
             s["provisional"] = old["provisional"]
             s["shares"] = old["shares"]
         _keep_uncarried(old, s, uncarried.get("staff", ()))
+        # a teacher's subjects (spec 2026-10-20 §1) come from a workbook only when its row lists some: a
+        # workbook without the Subjects column, or a row left empty, keeps those the plan has
+        if not s.get("subjects") and old.get("subjects"):
+            s["subjects"] = copy.deepcopy(old["subjects"])
 
     _keep_locked(existing_n, out, kept)
     return out

@@ -457,6 +457,119 @@ periods; and moving individual students inside the proposal (edit them in the St
 "The engine needs an update for option blocks"; placing, the checks and the Assistant's counts still work.
 Old timetables, and schools that do not use option blocks, are untouched.
 
+## Starting from five CSV files
+
+A school that has a few plain lists, not a planning workbook, can give the app five CSV files instead.
+You do not type the classes or a teacher for every class: the app forms the classes and suggests who
+teaches them, and you check it. This is a second way into the same plan; the workbook route above keeps
+working as it did.
+
+**The blank files.** In the Start wizard, once a template is chosen, **Download the five CSV files** gives
+a zip of `staff.csv`, `venues.csv`, `requirements.csv`, `combinations.csv` and `students.csv`. Each has its
+column headers and one example row. The example row starts with "e.g." in its first cell, and any row that
+does is ignored when the file is read, so it can stay; a file left with only that row adds nothing, and its
+card says it holds only the example row.
+An `.xlsx` with a single sheet and the same columns is read the same way.
+
+**What goes in each file.** One row per line below. A file is recognised by its columns, not its name,
+and a header may be spelt in capitals or with a plural ("Periods a week", "periods per week"); a few
+obvious alternatives are understood too ("Teacher" for Name, "Dept" for Department).
+
+- **staff.csv** (`Name, Short, Department, Load, Subjects`): one teacher a row. A Short left empty keeps
+  the teacher's own, and gives a teacher new to the plan their initials. Load is the whole periods a cycle
+  the teacher can take; a column called Load factor (1, 0.5) is used when Load is empty. Subjects are the
+  subjects the teacher teaches, separated by `;`.
+- **venues.csv** (`Room, Kind, Capacity`): one room a row. Kind is a word such as Classroom or Lab; use
+  the school's own words.
+- **requirements.csv** (`Level, Subject, Periods a week, Taught as, Room kind, Department`): one row
+  for each subject at each level. Room kind and Department can be left empty; when Department is empty
+  it is the one department whose teachers list that subject, and a subject that matches none or more than
+  one is listed as "say which department".
+- **combinations.csv** (`Level, Code, Name, Subject 1, Subject 2, Subject 3, Places`): one row for each
+  subject combination offered, from Sec 3 up. Add Subject 4 and on if a combination has more subjects.
+  Code can be left empty: a combination then keeps the code already stored at its level for the same
+  subjects, so giving the file again with a row added or moved leaves every student's choice where it was;
+  a new set of subjects is numbered C1, C2 and on, skipping the codes already in use. A code written in
+  the file is used as it is, but one that students' choices or an override use cannot be given to other
+  subjects: the card says so and Apply is refused. Each subject must be a Banded row of requirements.csv
+  at that level.
+- **students.csv** (`Student ID, Name, Level, Merit, Choice 1, Choice 2, Choice 3`): once the students
+  are known. Merit is the student's rank, 1 choosing first. Each Choice is written as the subjects of an offered combination, in any order ("Physics,
+  Chemistry, Biology" or "Chemistry; Physics; Biology"). The app matches it to the combination at that
+  level with exactly those subjects. A file with a Class column is the Students list described above, not
+  this one.
+
+**Taught as.** One word or phrase in requirements.csv: **Class** (each form class on its own, also what
+an empty cell means), **Combined 2** (two form classes together; any number from 2) or **Banded** (taken
+in option sets, built by Option blocks; the Classes step writes nothing for it). Combined classes are
+paired in code order, 1A with 1B, then 1C with 1D; a class left over is taught alone, and the proposal says
+so.
+
+**Subjects with levels.** A teacher who takes a subject only at some levels writes them in brackets:
+`Physics (Sec 1-2); Chemistry; Science (Sec 1, Sec 2)`. A subject with no brackets is taken at every
+level, and "Sec 1-2" means Sec 1 and Sec 2. "Sec 3", "S3" and "3" are the same level everywhere.
+Streamed levels ("3E", "3N") share their level's requirements and teachers' subjects, but each keeps its
+own option-block setup; combinations.csv for "Sec 3" is the setup of level 3 itself. A teacher placed on a
+subject or level outside what they list gets a warning that you can override; a teacher who lists no
+subjects gets none.
+
+**Read exactly, never by the AI.** These files are read row by row by the app. They are never sent to the AI
+reader, and a student's name never goes to the engine or a log. A file is taken for one of them by its
+columns: staff.csv by Name, Department and either Subjects or Load (Subjects may be left out); venues.csv
+by Room and either Kind or Capacity; requirements.csv by Level, Subject and Periods a week;
+combinations.csv by Level and Subject 1; students.csv by Student ID, Level and Choice 1. These near misses
+are refused, with the column to add, and never handed to the AI: a requirements.csv with Level, Subject
+and Taught as but no Periods a week column; a combinations.csv with no Places column; and a file with a
+Student ID column (or an ID column beside a Level), no Class column, and no Level or no Choice 1. Every other file
+keeps the route it had before: a plain list of names and departments, for instance, or any file with a
+Class column (the Students list above).
+
+**A row with a problem.** It is listed on the file's card with the file name and the row number ("students.csv
+row 88: Choice 1 (Physics, History, Art) isn't an offered combination for Sec 3"). Only rows that cannot
+be read are left out, and the card says "N rows not applied" for them: a row with no name, a load or
+periods cell that is not a whole number, a repeated ID, a combination with a subject that is not Banded. A row that reads
+but does not match something else is kept and listed under "to check": a teacher's subject the
+requirements do not have, or a requirement whose department you must say. A student's choice that matches
+no combination is left out of that student and listed; the student is kept. Staff subjects are
+checked against requirements.csv; a staff.csv given before any requirements says they are "not yet
+checked".
+
+**Dropping the files.** Give them to the Assistant or the Intake drop, together or one at a time. When
+several come in one drop the order does not matter: requirements are read first, then combinations, staff,
+rooms and students, because each is checked against the ones before it. Each file becomes a card with its
+counts and its problems, and nothing changes until you **Apply** that card; **Undo** puts it back.
+- staff.csv and venues.csv update a teacher by name and a room by room name. Staff or rooms already in
+  the plan but not in the file are kept and listed as "not in this file"; the file never deletes them.
+- requirements.csv and combinations.csv replace the rows of the levels they contain.
+- students.csv replaces the students of the levels it contains, and leaves other levels alone.
+
+**What is set in the app, not in a file.**
+- The **expected number of students** of a level, until you have its student list, and each level's
+  **class size**, 40 until you change it, and how its classes are named (3A, 3B by default). These are on
+  the Classes card.
+- The week (periods a day, breaks, the cycle) in Settings or the Start wizard.
+- Constraints such as a teacher's availability and a day's maximum, which stay in the app as before.
+
+**The order.**
+1. Drop the files and **Apply** each card. Apply requirements.csv first: the Classes card lists the levels it
+   brings.
+2. On the **Classes** card (Requirements tab), pick a level, check its expected students or the student
+   list it counts, the class size and the naming, and press **Propose**. The classes are the number of
+   students divided by the class size, rounded up (change the count if you want another), with sizes within
+   one of each other. Where a level has combinations and its students' choices, students of one
+   combination are kept together as far as even sizes allow. The proposal shows each class, the
+   requirements the Class and Combined subjects give it and a suggested teacher for each. The teacher
+   comes from the subject's department, prefers someone whose listed subjects and levels cover it and whose
+   allowance can hold it, and keeps one teacher with a class's periods of a subject. You can change
+   any teacher; over-allowance and outside-subject warnings are shown, never refused. **Apply** writes the
+   classes, the requirements and each student's class; **Undo** puts the plan and the students back
+   exactly, and is refused once either has changed since. Form each level in turn. Forming a level again
+   replaces what it formed before, and is refused, naming it, if one of those requirements is locked.
+   When the requirements change after the classes were formed, the card says to propose again.
+3. For Sec 3 and up, **Option blocks** (above) places students in their combinations, builds the blocks
+   and suggests a teacher for each set, as it does for a workbook.
+4. Build the timetable as usual.
+
 ## Appearance
 
 The app has three looks: **Classic** (the dark Nocturne look and its 3D planes view), **Toy town**

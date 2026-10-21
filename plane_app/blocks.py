@@ -12,7 +12,9 @@ import json
 import re
 import threading
 
+from . import levels as LV
 from .plan import model as M
+from .plan import specialisation as SP
 from .plan.generate import option_division, option_group_id
 from .students import _id_key, group_id as _group_id, level_of, norm
 
@@ -368,7 +370,7 @@ def _own_output(r: dict, year: str | None, year_classes) -> bool:
     """A requirement an earlier apply wrote for this year (its `blocks` tag is the year key; without a key,
     any blocks output for exactly these classes): the next apply replaces it."""
     if year is not None:
-        return r.get("blocks") == year
+        return same_year(r.get("blocks"), year)
     return bool(r.get("blocks")) and set(r.get("classes") or []) == set(year_classes)
 
 
@@ -400,6 +402,9 @@ def allowance_left(plan: dict, settings: dict, year: str) -> dict[str, float]:
     return {p["id"]: M.effective_allowance(p, settings) - load.get(p["id"], 0) for p in plan.get("staff") or []}
 
 
+_FIT = {True: 0, None: 1, False: 2}           # specialisation.covers: covers, lists nothing, outside
+
+
 def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes: list[str],
                      subjects_meta: dict, year: str | None = None) -> dict[tuple[str, int], str | None]:
     """A teacher for each set, {(subject, set): staff id or None}, the school to confirm.
@@ -412,8 +417,14 @@ def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes:
     set order. A teacher's current load is the periods of every requirement that lists them, in full,
     except this year's own earlier blocks output (`year`, the year key), which an apply replaces; that
     output still counts as teaching the subject, so a re-run prefers the teachers confirmed last time.
-    None when no one fits, and for a set of size 0, which apply skips."""
+    None when no one fits, and for a set of size 0, which apply skips.
+
+    Subject specialisation (spec 2026-10-20-csv-pack-design.md §1) goes before all of that, once anyone in
+    the department lists subjects: a teacher whose subjects cover the set's subject (its name) at the year's
+    level (`students.level_of` of its first class) first, then one who lists none, then one placed outside
+    their list. While nobody in the department lists subjects the order is the one above, unchanged."""
     load, teaching = _loads(plan, year, year_classes)
+    level = level_of(plan, year_classes[0]) if year_classes else ""
     staff = sorted(plan.get("staff") or [], key=lambda p: p["id"])
     allowance = {p["id"]: M.effective_allowance(p, settings) for p in staff}
     given: dict[str, float] = {}
@@ -427,10 +438,13 @@ def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes:
         meta = _meta(subjects_meta, code)
         dept, periods, name = _dept_of(plan, code, subjects_meta), meta.get("periods") or 0, norm(meta.get("name") or code)
         free = [p["id"] for p in staff if dept and p.get("dept") == dept and (p["id"], block) not in busy]
+        listing = bool(dept) and any(p.get("subjects") for p in staff if p.get("dept") == dept)
+        subject = meta.get("name") or code
+        fit = {p["id"]: _FIT[SP.covers(p, subject, level)] for p in staff if listing and p["id"] in free}
 
         def rank(pid: str):
             left = allowance[pid] - load.get(pid, 0) - given.get(pid, 0)
-            return (left < periods, (pid, name) not in teaching, -left, pid)
+            return (fit.get(pid, 0), left < periods, (pid, name) not in teaching, -left, pid)
 
         pick = min(free, key=rank) if free else None
         out[code, int(st["set"])] = pick
@@ -486,7 +500,7 @@ def takes_for(new_plan: dict, year: str, split_result: dict[str, list[dict]]) ->
     belongs to (`generate.option_division`, the first division covering its classes, which may be wider
     than the year's), so it is exactly the group the plan has. The groupings are rebuilt from the sets the
     split uses and the level apply wrote; ValueError (codes only) when a set has no requirement."""
-    mine = {r["grouping"]: r for r in new_plan.get("requirements") or [] if r.get("blocks") == year}
+    mine = {r["grouping"]: r for r in new_plan.get("requirements") or [] if same_year(r.get("blocks"), year)}
     pairs = {(e["subject"], e["set"]) for entries in split_result.values() for e in entries}
     if not pairs:
         return {sid: [] for sid in split_result}
@@ -513,7 +527,7 @@ def _check_groupings(plan: dict, year: str) -> None:
         if r["grouping"] == "class":
             continue
         gid = option_group_id(plan, r)
-        if r.get("blocks") != year:
+        if not same_year(r.get("blocks"), year):
             others.add(gid)
         elif gid in seen:
             raise ValueError(f"{r['grouping']} and {seen[gid]} would be one option group in this division")
@@ -540,14 +554,14 @@ def apply_plan(plan: dict, year: str, year_classes: list[str], answer: dict,
     if not year_classes:
         raise ValueError("a year needs at least one class")
     locked = sorted({str(r.get("grouping")) for r in plan.get("requirements") or []
-                     if r.get("blocks") == year and r.get("locked")})
+                     if same_year(r.get("blocks"), year) and r.get("locked")})
     if locked:                          # an apply replaces this year's sets: never past a lock
         one = len(locked) == 1
         raise ValueError(f"{', '.join(locked)} {'is' if one else 'are'} locked: unlock {'it' if one else 'them'} first")
     out = copy.deepcopy(plan)
-    removed = {r["id"] for r in out.get("requirements") or [] if r.get("blocks") == year}
+    removed = {r["id"] for r in out.get("requirements") or [] if same_year(r.get("blocks"), year)}
     for section in ("requirements", "bands", "divisions"):
-        out[section] = [x for x in out.get(section) or [] if x.get("blocks") != year]
+        out[section] = [x for x in out.get(section) or [] if not same_year(x.get("blocks"), year)]
     # a workbook round trip regroups the sets into untagged bands per subject: the old sets leave every band,
     # and an untagged band they leave empty goes
     bands = []
@@ -607,12 +621,95 @@ def apply_plan(plan: dict, year: str, year_classes: list[str], answer: dict,
 # ---------------------------------------------------------------------------
 
 def _level_classes(plan: dict, level: str) -> list[str]:
-    return [c["code"] for c in plan.get("classes") or [] if level_of(plan, c["code"]) == level]
+    """The codes of level `level`'s classes, in plan order: those whose level has the same
+    `specialisation.stage_key` (R15, R26: "Sec 3", "S3" and "3" are one level; "3E" and "3N" are two)."""
+    key = SP.stage_key(level)
+    return [c["code"] for c in plan.get("classes") or [] if SP.stage_key(level_of(plan, c["code"])) == key]
+
+
+def canonical_key(key) -> str:
+    """A year key with its level part as `specialisation.stage_key` ("level:Sec 3" -> "level:3", "level:3E"
+    -> "level:3e": the stage spelling folded, a stream kept, R26); a "classes:" key, or one that does not
+    read, as it is. The keys `year_key` gives are already canonical; this reads the raw ones stored before
+    (R15)."""
+    kind, _, rest = str(key or "").partition(":")
+    if kind == "level" and rest.strip():
+        return f"level:{SP.stage_key(rest)}"
+    return str(key or "")
+
+
+def same_year(tag, year) -> bool:
+    """Whether a `blocks` tag (or a stored year key) names year key `year`, either written raw or canonical."""
+    return bool(tag) and canonical_key(tag) == canonical_key(year)
+
+
+class SetupClash(ValueError):
+    """Two or more stored setups fold into one year key and say different things (R20): never merged or deleted
+    silently. The message names the level and the stored spellings, nothing else."""
+
+
+_SAME = ("combinations", "limits", "subjects", "overrides")      # what makes two stored setups one setup
+
+
+def _aliases(setups: dict, want: str) -> list[str]:
+    """The stored keys of canonical year key `want` that hold a setup: the canonical one first, then the old raw
+    ones in sorted order."""
+    found = [k for k in sorted(k for k in setups if isinstance(k, str))
+             if canonical_key(k) == want and isinstance(setups[k], dict) and setups[k]]
+    return sorted(found, key=lambda k: k != want)
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def find_setup(setups: dict, key: str) -> tuple[str | None, dict | None]:
+    """(the stored key, the setup) of year key `key` in `blocks_setup`: under its canonical key, else under an
+    old raw key that canonicalises to it (the first in sorted order); (None, None) when there is none.
+
+    SetupClash (R20) when two or more stored keys fold into it ("level:Sec 3" and "level:S3" are both level 3;
+    since R26 "level:3E" and "level:3N" are two years and never clash) and their combinations, limits, subjects or overrides differ: the school keeps one. Copies that agree on
+    those are one setup (their placements are placed again)."""
+    setups = setups if isinstance(setups, dict) else {}
+    want = canonical_key(key)
+    found = _aliases(setups, want)
+    if not found:
+        return None, None
+    first = setups[found[0]]
+    if any(any(setups[k].get(f) != first.get(f) for f in _SAME) for k in found[1:]):
+        spelt = [k.partition(":")[2] for k in found]
+        raise SetupClash(f"level {want.partition(':')[2]} has option-block setups stored for {_and(spelt)}; "
+                         f"keep one and delete the {'other' if len(found) == 2 else 'others'} first")
+    return found[0], first
+
+
+def clash_keys(setups: dict, key: str) -> list[str]:
+    """The stored keys of year key `key` when they clash (`find_setup` refuses them), in its order; else []."""
+    setups = setups if isinstance(setups, dict) else {}
+    try:
+        find_setup(setups, key)
+    except SetupClash:
+        return _aliases(setups, canonical_key(key))
+    return []
+
+
+def put_setup(setups: dict, key: str, setup: dict) -> dict:
+    """`setups` with `setup` stored under the canonical key of `key`, and the old raw key it was found under
+    gone (R15: moved on the next write), with any identical copy of it. SetupClash, changing nothing, when the
+    stored keys of the year differ (`find_setup`). A new dict; the one given is not changed."""
+    setups = setups if isinstance(setups, dict) else {}
+    want = canonical_key(key)
+    find_setup(setups, want)                        # refuses to write over setups that differ
+    gone = set(_aliases(setups, want))              # the one found, and copies identical to it
+    out = {k: v for k, v in setups.items() if k not in gone}
+    out[want] = setup
+    return out
 
 
 def year_key(plan: dict, spec) -> str:
     """The canonical key of a year group: "level:X" when the classes are exactly level X's classes in the
-    plan, else "classes:<codes sorted, comma-joined>". `spec` is {"level": X} or {"classes": [...]}.
+    plan, else "classes:<codes sorted, comma-joined>". X is the level's `specialisation.stage_key` (R15:
+    "Sec 3" and "3" both give "level:3"; R26: "3E" gives "level:3e", its own year). `spec` is {"level": X} or {"classes": [...]}.
     ValueError (codes only) for an unknown level or class, or a spec that is neither."""
     if not isinstance(spec, dict) or set(spec) not in ({"level"}, {"classes"}):
         raise ValueError("choose a level or a list of classes")
@@ -620,7 +717,7 @@ def year_key(plan: dict, spec) -> str:
         level = str(spec["level"] or "").strip()
         if not level or not _level_classes(plan, level):
             raise ValueError(f"the plan has no classes at level {level or '(none)'}")
-        return f"level:{level}"
+        return f"level:{SP.stage_key(level)}"
     given = spec["classes"]
     if not isinstance(given, list) or not given or not all(isinstance(c, str) for c in given):
         raise ValueError("choose at least one class")
@@ -629,7 +726,7 @@ def year_key(plan: dict, spec) -> str:
     for c in classes:
         if c not in known or "," in c:
             raise ValueError(f"the class {c} isn't known")
-    levels = {level_of(plan, c) for c in classes}
+    levels = {SP.stage_key(level_of(plan, c)) for c in classes}
     if len(levels) == 1:
         (level,) = levels
         if level and set(_level_classes(plan, level)) == set(classes):
@@ -665,14 +762,27 @@ def _plan_requirement(plan: dict, code: str, name: str) -> dict | None:
     return min(found, key=lambda r: (bool(r.get("blocks")), r["id"])) if found else None
 
 
-def subjects_meta(plan: dict, setup: dict) -> tuple[dict[str, dict], list[dict]]:
+def _setup_level(plan: dict, setup: dict) -> str:
+    """The level of a setup's year group: its "level", else the one level all its classes share, else ""."""
+    spec = setup.get("year") if isinstance(setup.get("year"), dict) else {}
+    if spec.get("level"):
+        return str(spec["level"])
+    keys = {SP.level_key(level_of(plan, c)) for c in spec.get("classes") or []}
+    return keys.pop() if len(keys) == 1 else ""
+
+
+def subjects_meta(plan: dict, setup: dict, levels: dict | None = None) -> tuple[dict[str, dict], list[dict]]:
     """Each combination subject's {name, dept, periods, room_kind}, and the blocking checks it raises.
 
-    The setup's own value first; else, from the plan requirement that matches (`_plan_requirement`), its
-    dept, periods and venue kind; the name defaults to the code. A subject with no periods a cycle either way
-    is a blocking `periods_missing` check naming the code, and one with no department either way a blocking
+    The setup's own value first; then, given the timetable's `levels` store, the year's level's Banded row for
+    the subject (`levels.banded_meta`, matched on the code or the name by `students.norm`), its dept, periods
+    and room kind (csv-pack Calls §1); else, from the plan requirement that matches (`_plan_requirement`),
+    its dept, periods and venue kind; the name defaults to the code. A subject with no periods a cycle any
+    way is a blocking `periods_missing` check naming the code, and one with no department any way a blocking
     `dept_missing` (no teacher could be counted or suggested for it)."""
     given_all = setup.get("subjects") or {}
+    level = _setup_level(plan, setup) if levels else ""
+    banded = {norm(k): v for k, v in LV.banded_meta(levels, level).items()} if level else {}
     out: dict[str, dict] = {}
     found: list[dict] = []
     for c in setup.get("combinations") or []:
@@ -681,10 +791,12 @@ def subjects_meta(plan: dict, setup: dict) -> tuple[dict[str, dict], list[dict]]
                 continue
             given = given_all.get(code) or {}
             name = given.get("name") or code
+            b = banded.get(norm(code)) or banded.get(norm(name)) or {}
             r = _plan_requirement(plan, code, name) or {}
-            out[code] = {"name": name, "dept": given.get("dept") or r.get("dept") or "",
-                         "periods": given.get("periods") or r.get("periods") or None,
-                         "room_kind": given.get("room_kind") or (r.get("venue") or {}).get("kind") or None}
+            out[code] = {"name": name, "dept": given.get("dept") or b.get("dept") or r.get("dept") or "",
+                         "periods": given.get("periods") or b.get("periods") or r.get("periods") or None,
+                         "room_kind": given.get("room_kind") or b.get("room_kind")
+                         or (r.get("venue") or {}).get("kind") or None}
             if out[code]["periods"] is None:
                 found.append({"kind": "periods_missing", "text": f"{code} has no periods a cycle", "blocking": True})
             if not out[code]["dept"]:
@@ -789,11 +901,26 @@ def _num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else f"{x:g}"
 
 
+def _year_classes_or_none(plan: dict, year: str) -> list[str]:
+    try:
+        return year_classes(plan, year)
+    except ValueError:
+        return []
+
+
 def rewarn(prop: dict, plan: dict, settings: dict, meta: dict[str, dict], year: str) -> dict:
     """The proposal with each set's teacher name and warnings worked out again: a teacher in two sets of one
-    block, and a teacher whose allowance left (`allowance_left`) the proposal's sets go past."""
+    block, a teacher whose allowance left (`allowance_left`) the proposal's sets go past, and a teacher who
+    lists subjects placed outside them (`specialisation.outside`, the set's subject by name at the year's
+    level; the option blocks' own subjects count as subjects, not as names that match nothing)."""
     out = copy.deepcopy(prop)
     names = {p["id"]: p.get("name") or p["id"] for p in plan.get("staff") or []}
+    staff_by_id = {p["id"]: p for p in plan.get("staff") or []}
+    specialists = any(p.get("subjects") for p in staff_by_id.values())
+    classes = _year_classes_or_none(plan, year) if specialists else []
+    level = level_of(plan, classes[0]) if classes else ""
+    known = (SP.plan_subjects(plan) | {norm(m.get("name") or c) for c, m in meta.items()} | {norm(c) for c in meta}
+             if specialists else set())
     left = allowance_left(plan, settings, year)
     given: dict[str, float] = {}
     for column in out["blocks"]:
@@ -813,13 +940,17 @@ def rewarn(prop: dict, plan: dict, settings: dict, meta: dict[str, dict], year: 
             over = given[t] - left.get(t, 0)
             if over > 0:
                 s["warnings"].append(f"{s['teacher_name']} would be {_num(over)} periods over allowance")
+            if specialists:
+                as_req = {"subject": (meta.get(s["subject"]) or {}).get("name") or s["subject"], "level": level,
+                          "classes": classes, "teachers": [t]}
+                s["warnings"] += SP.outside(plan, as_req, staff_by_id=staff_by_id, known_subjects=known)
     return out
 
 
 def old_groups(plan: dict, year: str) -> set[str]:
     """The option group ids of this year's blocks requirements in `plan` (an earlier apply's output)."""
     return {option_group_id(plan, r) for r in plan.get("requirements") or []
-            if r.get("blocks") == year and r.get("grouping") != "class"}
+            if same_year(r.get("blocks"), year) and r.get("grouping") != "class"}
 
 
 def rebuild_takes(students: list[dict], year_classes, old: set[str], new_takes: dict[str, list[dict]],

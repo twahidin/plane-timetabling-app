@@ -143,6 +143,44 @@
         <button class="btn" id="students-more" type="button" hidden></button>
         <div class="students-problems" id="students-problems"></div>
       </section>
+      <section id="form-classes" class="card" hidden>
+        <div class="section-title"><span>Classes <span class="eyebrow" id="classes-head"></span></span></div>
+        <p class="tab-note">Form each <strong>level</strong>’s classes from its student list or an expected number, check the classes and the teachers suggested for their requirements, then <strong>Apply</strong>. Nothing changes until Apply.</p>
+        <div class="classes-levelbar">
+          <label class="classes-field"><span class="classes-field-name">Level</span>
+            <select id="classes-level" aria-label="Level"></select></label>
+        </div>
+        <p class="classes-stale" id="classes-stale" role="status" hidden></p>
+        <p class="classes-msg" id="classes-msg" role="status"></p>
+        <div class="classes-setup" id="classes-setup" hidden>
+          <div class="classes-fields">
+            <label class="classes-field"><span class="classes-field-name">Expected students</span><input type="number" id="classes-expected" min="0" step="1" placeholder="from the list"></label>
+            <label class="classes-field"><span class="classes-field-name">Class size</span><input type="number" id="classes-size" min="1" step="1"></label>
+            <label class="classes-field"><span class="classes-field-name">Naming</span><input type="text" id="classes-naming" maxlength="40" placeholder="{n}{x}" autocomplete="off" title="{n} is the level’s number, {x} the letters A, B, C…"></label>
+            <label class="classes-field"><span class="classes-field-name">Classes</span><input type="number" id="classes-count" min="1" max="100" step="1" placeholder="auto" title="Leave blank for students ÷ class size, rounded up"></label>
+          </div>
+          <p class="classes-hint" id="classes-students"></p>
+          <div class="classes-actions">
+            <button class="btn" id="classes-save" type="button">Save</button>
+            <button class="btn primary" id="classes-propose" type="button" title="Form the classes and suggest teachers; nothing is written until Apply">Propose</button>
+          </div>
+          <div class="classes-proposal" id="classes-proposal" hidden>
+            <p class="classes-summary" id="classes-summary"></p>
+            <ul class="classes-warnings" id="classes-warnings"></ul>
+            <h3 class="classes-step">Classes</h3>
+            <div class="tablewrap"><table class="grid classes-table" id="classes-classes"></table></div>
+            <div class="tablewrap"><table class="grid classes-table" id="classes-roster"></table></div>
+            <button class="btn" id="classes-more" type="button" hidden></button>
+            <h3 class="classes-step">Requirements and teachers</h3>
+            <div class="tablewrap"><table class="grid classes-table" id="classes-reqs"></table></div>
+            <button class="btn" id="classes-reqs-more" type="button" hidden></button>
+          </div>
+          <div class="classes-actions">
+            <button class="btn primary" id="classes-apply" type="button" hidden>Apply</button>
+            <button class="btn" id="classes-undo" type="button" hidden>Undo</button>
+          </div>
+        </div>
+      </section>
       <section id="option-blocks" class="card" hidden>
         <div class="section-title"><span>Option blocks <span class="eyebrow" id="blocks-head"></span></span></div>
         <p class="tab-note">Subject <strong>combinations</strong> for a year group: students are placed by merit and their ranked choices, then the engine builds the option blocks. Nothing changes until <strong>Apply</strong>.</p>
@@ -154,6 +192,7 @@
             <button class="btn" id="blocks-classes-use" type="button">Use these classes</button>
           </span>
         </div>
+        <div class="blocks-clash" id="blocks-clash" role="status" hidden></div>
         <p class="blocks-msg" id="blocks-msg" role="status"></p>
         <div class="blocks-setup" id="blocks-setup" hidden>
           <h3 class="blocks-step">1. Combinations</h3>
@@ -568,6 +607,7 @@
 <script src="{{ asset('files.js') }}"></script>
 <script src="{{ asset('plan.js') }}"></script>
 <script src="{{ asset('students.js') }}"></script>
+<script src="{{ asset('classes.js') }}"></script>
 <script src="{{ asset('blocks.js') }}"></script>
 <script src="{{ asset('board-tray.js') }}"></script>
 <script src="{{ asset('board-forms.js') }}"></script>

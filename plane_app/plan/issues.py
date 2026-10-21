@@ -35,6 +35,7 @@ class Issue:
     where: str   # id of the plan item the issue concerns
     text: str
     dept: str | None = None    # the department it is about, when that is not `where`'s (a share issue)
+    kind: str | None = None    # set where a caller tells issues apart ("outside_specialisation", "staff_subjects")
 
 
 def has_blocks(issues: list[Issue]) -> bool:
@@ -69,7 +70,9 @@ def _share_issues(s: dict, who: str, loads: dict[str, int], total: int, settings
     return out
 
 
-def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
+def plan_issues(plan: dict, org: dict | None, settings: dict, levels: dict | None = None) -> list[Issue]:
+    """The plan's issues. `levels`, the timetable's levels store (`levels.get`), makes the subjects and
+    levels known only there known to the specialisation checks (R27(e))."""
     issues: list[Issue] = []
 
     staff_ids = {s["id"] for s in plan["staff"]}
@@ -177,4 +180,22 @@ def plan_issues(plan: dict, org: dict | None, settings: dict) -> list[Issue]:
         if uses_shares:
             issues.extend(_share_issues(s, who, in_dept.get(s["id"], {}), load, settings, unit))
 
+    issues.extend(_specialisation_issues(plan, levels))
     return issues
+
+
+def _specialisation_issues(plan: dict, levels: dict | None = None) -> list[Issue]:
+    """Subject specialisation (spec 2026-10-20-csv-pack-design.md §1), warnings only: a teacher placed
+    outside the subjects or levels they list, once per teacher per requirement, and what a teacher lists
+    that the plan does not know. Nothing at all while nobody lists subjects."""
+    # here, not at the top: specialisation reads students, which reads generate, which reads this module
+    from . import specialisation as SP
+    if not any(s.get("subjects") for s in plan["staff"]):
+        return []
+    staff_by_id = {s["id"]: s for s in plan["staff"]}
+    known = SP.plan_subjects(plan) | SP.level_subjects(levels)
+    out = [Issue("warn", r["id"], text, kind="outside_specialisation")
+           for r in plan["requirements"]
+           for text in SP.outside(plan, r, staff_by_id=staff_by_id, known_subjects=known)]
+    out += [Issue("warn", p["staff"], p["text"], kind="staff_subjects") for p in SP.staff_problems(plan, levels)]
+    return out

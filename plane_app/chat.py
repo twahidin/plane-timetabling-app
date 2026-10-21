@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from urllib.parse import quote
 
+from . import blocks
 from . import bookings
 from . import chat_readings
 from . import calendar as cal_mod
@@ -21,6 +22,7 @@ from .db import Db
 from .engine_client import EngineClient, EngineError
 from .intake import IntakeError, apply_patch, empty_organisation, summarise
 from .llm import Provider, ProviderError, ToolCall, ToolSpec
+from . import levels as levels_mod
 from . import students as students_mod
 from .plan import generate as plan_generate_mod
 from .plan.issues import ISSUE_LIMIT, Issue, capped, has_blocks, plan_issues
@@ -159,7 +161,7 @@ def _blocks_line(key, entry: dict, run: dict) -> str:
     else:
         placed = "not placed yet"
     status = "none"
-    if run.get("year") == key:
+    if blocks.same_year(run.get("year"), key):          # a run stored under an old raw key is its year's (R15)
         state = run.get("status")
         if run.get("applied"):
             status = "applied"
@@ -543,8 +545,13 @@ def _plan_issue_dict(i: Issue) -> dict:
     return {"level": i.level, "where": i.where, "text": i.text}
 
 
+def _levels(db: Db) -> dict:
+    """The working timetable's levels store, for the plan's specialisation checks (R27(e))."""
+    return levels_mod.get(db)
+
+
 def _plan_issues_for(db: Db, plan: dict) -> list[Issue]:
-    return plan_issues(plan, db.get_org("live"), db.get_settings())
+    return plan_issues(plan, db.get_org("live"), db.get_settings(), _levels(db))
 
 
 def _plan_summary_dict(db: Db, plan: dict, issues: list[Issue] | None = None) -> dict:
@@ -757,7 +764,7 @@ def _run_tool(call: ToolCall, db: Db, engine: EngineClient, events: list[dict],
             p = plan or empty_plan()
             settings = db.get_settings()
             base_org = db.get_org("live")
-            issues = plan_issues(p, base_org, settings)
+            issues = plan_issues(p, base_org, settings, _levels(db))
             if has_blocks(issues):
                 blocks = [i.text for i in issues if i.level == "block"]
                 return json.dumps({"error": f"{len(blocks)} blocking issues: " + "; ".join(capped(blocks))})

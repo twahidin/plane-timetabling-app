@@ -12,12 +12,13 @@ import re
 
 from . import importer as I
 from . import model as M
+from . import specialisation as SP
 
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 EXAMPLE_NOTE = "example: replace or delete"
 
 _LESSON_COLS = (("Single", "1"), ("Double", "2"), ("Triple", "3"), ("Quadruple", "4"))
-_STAFF_HEAD = ["Staff", "Short", "Dept", "Teaching Load Factor", "Allowance", "Reductions", "Provisional", "Shares"]
+_STAFF_HEAD = ["Staff", "Short", "Dept", "Teaching Load Factor", "Allowance", "Reductions", "Provisional", "Shares", "Subjects"]
 _BAD_TITLE = re.compile(r"[\[\]:*?/\\]")
 # the importer's own sheet names, and "History", which Excel keeps for itself
 _RESERVED_TITLES = I._SKIP_SHEETS | I._SPECIAL_SHEETS | {"history"}
@@ -339,8 +340,14 @@ def _write_control(ws, staff: list[dict], notes: list[str], example: bool = Fals
         if I._read_shares(shares, name, []) != dict(sorted((s.get("shares") or {}).items())):
             notes.append(f"{name}: shares {shares!r} do not read back as written (a department name holding ';' "
                          f"or ','); check them after importing this workbook")
+        subjects = SP.format_subjects(s.get("subjects"))
+        as_keys = [{"subject": e["subject"], "levels": list(dict.fromkeys(SP.level_key(x) for x in e["levels"]))}
+                   for e in s.get("subjects") or []]
+        if SP.parse_subjects(subjects) != (as_keys, []):
+            notes.append(f"{name}: subjects {subjects!r} do not read back as written (a subject holding ';' or a "
+                         f"bracket, or a level holding a dash); check them after importing this workbook")
         ws.append([name, _text(s["short"]) or None, _text(s["dept"]) or None, s["load_factor"], s["allowance"],
-                   text or None, "yes" if s["provisional"] else None, shares or None,
+                   text or None, "yes" if s["provisional"] else None, shares or None, subjects or None,
                    *([s.get("note")] if example else [])])
 
 
@@ -396,7 +403,10 @@ def _readme_lines(plan: dict, settings: dict, notes: list[str], example: bool) -
         "Reductions: each role and its periods, separated by ';', e.g. HOD 8; CCA 2. "
         f"Provisional: yes for a placeholder {person} still to be named. "
         f"Shares: periods a cycle the {person} gives other departments, e.g. MATH 10; SCI 6 (a department "
-        f"named here may assign them).",
+        f"named here may assign them). "
+        f"Subjects: optional, what the {person} teaches, separated by ';', each with its levels in brackets when "
+        f"not every level, e.g. Physics (Sec 1–2); Chemistry. An empty cell keeps the subjects the app has; "
+        f"remove them in the staff form.",
     ]
     if example:
         lines += ["", f"Rows whose Note says '{EXAMPLE_NOTE}' show the shape: replace them with your own or delete them."]

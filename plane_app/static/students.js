@@ -1,7 +1,8 @@
 // The Students section on the Requirements tab (spec docs/superpowers/specs/2026-10-16-students-design.md
 // §1): the timetable's students with a search and a class filter, each with the subjects they take as
 // chips; add, edit and remove; Import (the Intake drop does the reading); Remove all; and the "To check"
-// list. Admin only: /api/me says who is asking, a department account never has the section shown nor a
+// list. A student with a level and no class yet (from a level-only file) is listed after the classes, under
+// a heading "<level> · no class yet", with a class-filter choice of its own. Admin only: /api/me says who is asking, a department account never has the section shown nor a
 // student route called. Every name, ID and subject is set with textContent, never as HTML. A message
 // names a student by ID, never by name. Loads on the Requirements tab (shell.js's plane:tab event) and
 // after a reading is applied (plane:readings) or a students reading is applied or undone (plane:students).
@@ -50,6 +51,11 @@
   };
   const same = (a, b) => String(a).replace(/\s+/g, '').toLowerCase() === String(b).replace(/\s+/g, '').toLowerCase();
   const takeKey = (t) => t.division + '|' + t.grouping;
+  const NO_CLASS = ' · no class yet';                       // "Sec 3 · no class yet"
+  const LEVEL_PREFIX = 'level:';                            // the class filter's value for one level's class-less students
+  const noClass = (s) => !String(s.class || '').trim();
+  const levelOf = (s) => String(s.level || '').trim();
+  const byLevel = (a, b) => levelOf(a).localeCompare(levelOf(b), undefined, { numeric: true, sensitivity: 'base' });
 
   // "Physics 3SCIA": the subject beside the option code, once the options are known
   function chipText(t) {
@@ -64,7 +70,8 @@
   // ---------- the list ----------
   function matching() {
     const q = query.trim().toLowerCase();
-    return students.filter((s) => (!klass || s.class === klass)
+    const level = klass.indexOf(LEVEL_PREFIX) === 0 ? klass.slice(LEVEL_PREFIX.length) : null;
+    return students.filter((s) => (!klass || (level !== null ? noClass(s) && levelOf(s) === level : s.class === klass))
       && (!q || s.name.toLowerCase().indexOf(q) !== -1 || s.id.toLowerCase().indexOf(q) !== -1));
   }
 
@@ -84,7 +91,7 @@
 
   function row(s) {
     const tr = node('tr');
-    [['ID', s.id, 'id'], ['Name', s.name, 'student-name-cell'], ['Class', s.class, '']].forEach(([label, text, cls]) => {
+    [['ID', s.id, 'id'], ['Name', s.name, 'student-name-cell'], ['Class', noClass(s) ? '' : s.class, '']].forEach(([label, text, cls]) => {
       const td = node('td', cls, text);
       td.setAttribute('data-label', label);
       tr.appendChild(td);
@@ -98,6 +105,15 @@
     act.appendChild(edit1);
     act.appendChild(remove1);
     tr.appendChild(act);
+    return tr;
+  }
+
+  // The heading above one level's students who have no class yet
+  function groupHead(level) {
+    const tr = node('tr', 'students-group');
+    const th = node('th', '', (level || 'No level') + NO_CLASS);
+    th.colSpan = 5;
+    tr.appendChild(th);
     return tr;
   }
 
@@ -121,7 +137,8 @@
   }
 
   function render() {
-    el('students-head').textContent = `${plural(summary.count, 'student', 'students')} · ${plural(summary.patterns, 'choice pattern', 'choice patterns')} · ${fmt(summary.to_check)} to check`;
+    el('students-head').textContent = `${plural(summary.count, 'student', 'students')} · ${plural(summary.patterns, 'choice pattern', 'choice patterns')} · ${fmt(summary.to_check)} to check`
+      + (summary.no_class ? ` · ${fmt(summary.no_class)} with no class yet` : '');
     const table = el('students-table');
     table.textContent = '';
     const found = matching();
@@ -134,7 +151,16 @@
       thead.appendChild(head);
       table.appendChild(thead);
       const body = node('tbody');
-      found.slice(0, shown).forEach((s) => body.appendChild(row(s)));
+      // the classes first, then each level's students with no class yet under their own heading
+      const ordered = found.filter((s) => !noClass(s)).concat(found.filter(noClass).sort(byLevel));
+      let heading = null;
+      ordered.slice(0, shown).forEach((s) => {
+        if (noClass(s) && heading !== levelOf(s)) {
+          heading = levelOf(s);
+          body.appendChild(groupHead(heading));
+        }
+        body.appendChild(row(s));
+      });
       table.appendChild(body);
     }
     const more = el('students-more');
@@ -148,12 +174,14 @@
   function fillClassFilter() {
     const sel = el('students-class');
     const all = Array.from(new Set(classes.concat(students.map((s) => s.class)))).filter(Boolean);
+    const waiting = Array.from(new Set(students.filter(noClass).map(levelOf))).sort((a, b) => byLevel({ level: a }, { level: b }));
     sel.textContent = '';
     const first = node('option', '', 'All classes');
     first.value = '';
     sel.appendChild(first);
     all.forEach((c) => { const o = node('option', '', c); o.value = c; sel.appendChild(o); });
-    if (klass && all.indexOf(klass) === -1) klass = '';
+    waiting.forEach((lv) => { const o = node('option', '', (lv || 'No level') + NO_CLASS); o.value = LEVEL_PREFIX + lv; sel.appendChild(o); });
+    if (klass && all.indexOf(klass) === -1 && !waiting.some((lv) => LEVEL_PREFIX + lv === klass)) klass = '';
     sel.value = klass;
   }
 
@@ -303,7 +331,7 @@
 
   async function openForm(student) {
     const s = student || { id: '', name: '', class: classes[0] || '', takes: [] };
-    formState = { isNew: !student, pickable: new Map() };
+    formState = { isNew: !student, pickable: new Map(), level: levelOf(s) };   // a level with no class yet is kept until a class is chosen
     const f = el('students-form');
     f.textContent = '';
     f.hidden = false;
@@ -326,14 +354,14 @@
     blank.value = '';
     clsSel.appendChild(blank);
     known.forEach((c) => { const o = node('option', '', c); o.value = c; clsSel.appendChild(o); });
-    clsSel.value = s.class;
+    clsSel.value = s.class || '';
     f.appendChild(node('div', 'student-picker'));
     const actions = node('div', 'student-form-actions');
     actions.appendChild(button('btn primary', student ? 'Save' : 'Add student', () => { save().catch(swallow); }));
     actions.appendChild(button('btn ghost', 'Cancel', closeForm));
     f.appendChild(actions);
     clsSel.addEventListener('change', () => { fillPicker(clsSel.value, collectTakes()).catch(swallow); });
-    await fillPicker(s.class, s.takes);
+    await fillPicker(s.class || '', s.takes);
     if (f.scrollIntoView) f.scrollIntoView({ block: 'nearest' });
   }
 
@@ -348,6 +376,7 @@
     const f = el('students-form');
     const record = { id: f.querySelector('.student-id').value.trim(), name: f.querySelector('.student-name').value.trim(),
       class: f.querySelector('.student-class').value, takes: collectTakes() };
+    if (!record.class && formState.level) record.level = formState.level;
     if (formState.isNew) await add(record); else await update(record.id, record);
     closeForm();
   }

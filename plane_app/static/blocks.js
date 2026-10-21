@@ -2,7 +2,8 @@
 // §1): per year group (a level, or chosen classes) the subject combinations with their places, the limits and
 // each subject's periods and room kind; the checks; placing the students by merit and choice, with overrides;
 // building the blocks on the engine (progress, Stop, a time limit); the proposal, one column per block, with a
-// teacher picker per set; Apply and Undo, each asked first in words that say what changes. Admin only:
+// teacher picker per set; Apply and Undo, each asked first in words that say what changes; a level whose stored
+// setups clash said, with a Delete for each stored key (R21). Admin only:
 // /api/me says who is asking, a department account never has the card shown nor a blocks route called.
 // Every code, name, line, reason, warning and teacher is set with textContent, never as HTML. Loads on the
 // Requirements tab (shell.js's plane:tab event); the run is polled only while that tab and the card show.
@@ -115,6 +116,38 @@
     const level = years.levels.find((l) => (l.classes || []).length === picked.length
       && picked.every((c) => l.classes.indexOf(c) !== -1));
     return selectYear(level ? level.key : 'classes:' + picked.join(','));
+  }
+
+  // A level whose stored setups differ (R20) is said, with each stored key and a button to delete that one (R21):
+  // the school keeps the other. Shown for every clashing year the list gives, whichever year is showing.
+  function renderClash() {
+    const box = el('blocks-clash');
+    box.textContent = '';
+    const clashing = years.stored.filter((s) => s.clash && (s.clash_keys || []).length);
+    box.hidden = !clashing.length;
+    clashing.forEach((s) => {
+      const item = node('div', 'blocks-clash-item');
+      item.appendChild(node('p', 'blocks-clash-text', s.clash));
+      const list = node('ul', 'blocks-clash-keys');
+      s.clash_keys.forEach((key) => {
+        const li = node('li');
+        li.appendChild(node('span', 'blocks-clash-key', key));
+        const del = button('btn ghost', 'Delete this setup', () => { deleteSetup(key).catch(swallow); });
+        del.setAttribute('aria-label', 'Delete the setup stored for ' + key);
+        li.appendChild(del);
+        list.appendChild(li);
+      });
+      item.appendChild(list);
+      box.appendChild(item);
+    });
+  }
+
+  async function deleteSetup(key) {
+    if (!confirm(`Delete the option-block setup stored for ${key}? The other one stays.`)) return;
+    if (dirty && !confirm('Leave this year group without saving its changes?')) return;     // the reload below drops them
+    await send('/api/blocks/setup?key=' + enc(key), 'DELETE');
+    say(`Deleted the setup stored for ${key}.`, 'ok');
+    await load();                            // the years list (and the year showing) read again
   }
 
   // ---------- the setup editor ----------
@@ -536,6 +569,7 @@
       const y = await api('/api/blocks/years');
       years = { levels: y.levels || [], stored: y.stored || [] };
     } catch (e) { /* the button follows the run's own word until the next load */ }
+    renderClash();
     renderRun();
   }
 
@@ -732,6 +766,7 @@
       planClasses = (p.classes || []).map((c) => c.code);
       planSubjects = Array.from(new Set((p.requirements || []).map((r) => String(r.subject || '').trim())
         .filter((s) => s && s.indexOf(',') === -1 && s.length <= 40))).sort(natural);
+      renderClash();
       fillYears();
       if (!year) {
         renderSetup();

@@ -18,7 +18,8 @@
 </style></head><body>
 {% for g in grids %}
 <section class="grid">
-  <h1>{{ g.title }}</h1><p class="sub">{{ g.subtitle }}{% if timetable %} · {{ timetable }}{% endif %}</p>
+  <h1>{{ g.title }}</h1><p class="sub">{{ g.subtitle }}{% if timetable %} · {{ timetable }}{% endif %}</p>{% if g.note %}
+  <p class="sub">{{ g.note }}</p>{% endif %}
   <table>
     {% if g.uniform %}<thead><tr><th class="day"></th>{% for s in g.slots %}<th>{{ s }}</th>{% endfor %}</tr></thead>
     {% else %}<colgroup><col style="width: 7em">{% for _ in range(g.columns) %}<col>{% endfor %}</colgroup>{% endif %}

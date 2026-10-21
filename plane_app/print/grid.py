@@ -37,6 +37,7 @@ class Grid:
     days: list[DayRow]
     kind: str
     id: str
+    note: str = ""      # a line under the subtitle, e.g. how many students a pile left out
 
     @property
     def columns(self) -> int:

@@ -111,6 +111,8 @@ def render(grids: list[Grid], generated: str, timetable: str) -> bytes:
             story.append(PageBreak())
         story.append(Paragraph(escape(g.title), _H))
         story.append(Paragraph(escape(" · ".join(x for x in (g.subtitle, timetable) if x)), _S))
+        if g.note:
+            story.append(Paragraph(escape(g.note), _S))
         story.append(Spacer(1, 6))
         story.append(_table(g, width))
         story.append(Spacer(1, 6))

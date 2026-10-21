@@ -186,6 +186,20 @@
   let allowanceStart = '';  // the allowance field as the editor opened it
   let sharesStart = '';     // the shares field as the editor opened it
   let start = {};           // the other fields as the editor opened them: an edit sends only what changed
+  // What the plan does not know of a teacher's subjects, under the Subjects field: text only, one line each.
+  // `saved` leads with a line saying so, for a save that is kept open to show them.
+  function showHints(list, saved) {
+    const box = el('board-staff-subjects-hints');
+    box.textContent = '';
+    const lines = (list || []).filter((x) => typeof x === 'string' && x);
+    if (lines.length && saved) box.appendChild(node('div', null, 'Saved. The plan does not know all of these yet:'));
+    lines.forEach((text) => box.appendChild(node('div', 'board-hint', text)));
+    box.hidden = !lines.length;
+  }
+  const hintsOf = (id) => {
+    const t = ((board && board.tray) || []).find((x) => x.id === id);
+    return (t && t.subject_hints) || [];
+  };
   function reductionRow(r) {
     const row = node('div', 'board-reduction');
     const reason = node('input');
@@ -207,6 +221,8 @@
     el('board-staff-title').textContent = t ? `Edit ${t.name || t.id}` : `New ${word('person')}`;
     el('board-staff-name').value = t ? t.name : '';
     el('board-staff-short').value = t ? t.short : '';
+    el('board-staff-subjects').value = t ? (t.subjects || '') : '';
+    showHints(t ? t.subject_hints : [], false);
     if (!DEPT) {
       el('board-staff-dept').value = t ? t.dept : ((board && board.dept) || '');
       // `allowance` is the base figure, given or worked out; `allowance_given` is the stored one.
@@ -243,6 +259,7 @@
     const fields = {
       name: el('board-staff-name').value.trim() || null,
       short: el('board-staff-short').value.trim(),
+      subjects: el('board-staff-subjects').value.trim(),       // text: the server reads it (blank: none listed)
       reductions,
       provisional: el('board-staff-provisional').checked,
     };
@@ -259,6 +276,7 @@
     if (!editing) {
       Object.assign(body, fields);
       if (DEPT) body.dept = (board && board.dept) || '';
+      if (!body.subjects) delete body.subjects;
     } else {
       Object.keys(fields).forEach((k) => {
         if (JSON.stringify(fields[k]) !== JSON.stringify(start[k])) body[k] = fields[k];
@@ -313,7 +331,14 @@
       el('board-staff-ok').disabled = true;
       try {
         const res = await ctx.mutate('staff', body, { quiet: true });
-        if (res.ok) closeStaff(); else { err.textContent = res.message; err.hidden = false; }
+        if (!res.ok) { err.textContent = res.message; err.hidden = false; return; }
+        const hints = editing ? hintsOf(editing) : [];
+        if (!hints.length) { closeStaff(); return; }
+        // saved, but the plan does not know some of it: stay on the form to show what, and what is
+        // on the form now counts as saved (a second Save with nothing changed just closes)
+        showHints(hints, true);
+        start = staffFields();
+        if (!DEPT) { allowanceStart = el('board-staff-allowance').value.trim(); sharesStart = el('board-staff-shares').value.trim(); }
       } finally { el('board-staff-ok').disabled = false; }
     });
   }

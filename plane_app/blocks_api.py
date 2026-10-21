@@ -15,9 +15,10 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import auth, blocks as K, students as S
+from . import auth, blocks as K, levels as LV, students as S
 from .engine_client import EngineError
 from .plan import model as M
+from .plan import specialisation as SP
 from .plan.reader import applying
 
 SETUP, RUN = "blocks_setup", "blocks_run"
@@ -115,7 +116,7 @@ def make_router(db, engine) -> APIRouter:
         if not isinstance(year, str) or not year:
             raise HTTPException(400, "give the year group")
         try:
-            return year, K.year_classes(plan, year)
+            return K.canonical_key(year), K.year_classes(plan, year)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -123,8 +124,22 @@ def make_router(db, engine) -> APIRouter:
         stored = db.get_value(SETUP, tid)
         return dict(stored) if isinstance(stored, dict) else {}
 
+    def _find(tid: str, key: str, setups: dict | None = None) -> dict | None:
+        """The year's stored setup, under its canonical key or an old raw one (R15); 409 when two stored keys
+        of the year differ (R20)."""
+        try:
+            return K.find_setup(_setups(tid) if setups is None else setups, key)[1]
+        except K.SetupClash as e:
+            raise HTTPException(409, str(e))
+
+    def _put(setups: dict, key: str, setup: dict) -> dict:
+        try:
+            return K.put_setup(setups, key, setup)
+        except K.SetupClash as e:
+            raise HTTPException(409, str(e))
+
     def _setup(tid: str, key: str) -> dict:
-        found = _setups(tid).get(key)
+        found = _find(tid, key)
         if not found:
             raise HTTPException(409, "Set up the combinations for this year group first.")
         return found
@@ -135,7 +150,7 @@ def make_router(db, engine) -> APIRouter:
 
     def _record(tid: str, key: str) -> dict:
         record = db.get_value(RUN, tid)
-        if not isinstance(record, dict) or record.get("year") != key:
+        if not isinstance(record, dict) or not K.same_year(record.get("year"), key):
             raise HTTPException(404, "No blocks run for this year group.")
         return record
 
@@ -151,10 +166,10 @@ def make_router(db, engine) -> APIRouter:
         return {"year": record["year"], "status": status, "reasons": list(record.get("reasons") or []),
                 "time_limit": record.get("time_limit"), "started": record.get("started"), "proposal": proposal,
                 "can_apply": ok and not record.get("applied"),
-                "can_undo": bool(undo) and undo.get("year") == record["year"]}
+                "can_undo": bool(undo) and K.same_year(undo.get("year"), record["year"])}
 
     def _fingerprint(tid: str, key: str, classes: list[str]) -> str:
-        return K.year_fingerprint(_students(tid, classes), (_setups(tid).get(key) or {}).get("overrides"))
+        return K.year_fingerprint(_students(tid, classes), (_find(tid, key) or {}).get("overrides"))
 
     def _engine_error(e: EngineError) -> HTTPException:
         return HTTPException(502 if e.status in (0, 500) else e.status, e.detail)
@@ -164,19 +179,33 @@ def make_router(db, engine) -> APIRouter:
         """The plan's levels and the year keys with a stored setup, for the picker."""
         tid = db.working_timetable()
         plan = _plan(tid)
-        levels = sorted({S.level_of(plan, c["code"]) for c in plan["classes"]} - {""}, key=S._natural)
+        # one entry per year key (R15, R26: a stream is its own year), named as the plan writes its first
+        # class's level
+        named: dict[str, str] = {}
+        for c in plan["classes"]:
+            lv = S.level_of(plan, c["code"])
+            if lv:
+                named.setdefault(SP.stage_key(lv), lv)
+        levels = sorted(named, key=lambda k: S._natural(named[k]))
         # the last Apply's Undo outlives a run for another year, which the run's own view cannot show: each
         # year says whether the stored Undo is its own
         record = db.get_value(RUN, tid)
         undo = record.get("undo") if isinstance(record, dict) else None
-        undo_year = undo.get("year") if isinstance(undo, dict) else None
+        undo_year = K.canonical_key(undo.get("year")) if isinstance(undo, dict) else None
         stored = []
-        for key in sorted(_setups(tid)):
+        setups = _setups(tid)
+        for key in sorted({K.canonical_key(k) for k in setups if isinstance(k, str)}):
             try:
-                stored.append({"key": key, "classes": K.year_classes(plan, key), "can_undo": key == undo_year})
+                item = {"key": key, "classes": K.year_classes(plan, key), "can_undo": key == undo_year}
             except ValueError:
-                stored.append({"key": key, "classes": [], "can_undo": key == undo_year})   # its classes are gone
-        return {"levels": [{"level": lv, "key": f"level:{lv}", "classes": K.year_classes(plan, f"level:{lv}"),
+                item = {"key": key, "classes": [], "can_undo": key == undo_year}   # its classes are gone
+            try:
+                K.find_setup(setups, key)
+            except K.SetupClash as e:                   # two stored keys of this year differ: said, never hidden,
+                item["clash"] = str(e)                  # with the keys the page offers to delete (R21)
+                item["clash_keys"] = K.clash_keys(setups, key)
+            stored.append(item)
+        return {"levels": [{"level": named[lv], "key": f"level:{lv}", "classes": K.year_classes(plan, f"level:{lv}"),
                             "can_undo": f"level:{lv}" == undo_year}
                            for lv in levels],
                 "stored": stored}
@@ -186,10 +215,10 @@ def make_router(db, engine) -> APIRouter:
         tid = db.working_timetable()
         plan = _plan(tid)
         key, classes = _year(plan, year)
-        setup = _setups(tid).get(key) or {"year": _spec(key, classes), "combinations": [],
+        setup = _find(tid, key) or {"year": _spec(key, classes), "combinations": [],
                                           "limits": dict(DEFAULT_LIMITS), "subjects": {}, "overrides": {},
                                           "placement": None}
-        meta, found = K.subjects_meta(plan, setup)
+        meta, found = K.subjects_meta(plan, setup, LV.get(db, tid))
         return {"year": key, "classes": classes, "setup": setup, "subjects": meta, "checks": found}
 
     @r.put("/api/blocks/setup")
@@ -212,11 +241,25 @@ def make_router(db, engine) -> APIRouter:
                  "subjects": _subjects(body.get("subjects")),
                  "overrides": _overrides(body.get("overrides"), combinations), "placement": None}
         with lock:
-            setups = _setups(tid)
-            setups[key] = setup
-            db.set_value(SETUP, setups, tid)
-        meta, found = K.subjects_meta(plan, setup)
+            db.set_value(SETUP, _put(_setups(tid), key, setup), tid)
+        meta, found = K.subjects_meta(plan, setup, LV.get(db, tid))
         return {"year": key, "classes": classes, "setup": setup, "subjects": meta, "checks": found}
+
+    @r.delete("/api/blocks/setup")
+    def delete_setup(key: str = Query(""), sid: str = Depends(auth.require_session)):
+        """One stored setup of a clash (R20/R21) deleted by its exact stored key, so the school keeps the other.
+        Any key not in a clash is refused, so a setup in use is never deleted here. Nothing else is written: a
+        run or an Undo naming that year stays as it is. The keys the level still has are returned."""
+        tid = db.working_timetable()
+        with db.plan_lock(tid), lock:
+            setups = _setups(tid)
+            clashing = K.clash_keys(setups, key) if key in setups else []
+            if key not in clashing:
+                raise HTTPException(409, "only a setup in a clash can be deleted here")
+            setups.pop(key)
+            db.set_value(SETUP, setups, tid)
+        log.info("blocks setup deleted from a clash: %d left for the level", len(clashing) - 1)
+        return {"deleted": key, "remaining": [k for k in clashing if k != key]}
 
     @r.get("/api/blocks/place")
     def stored_placement(year: str = Query(""), sid: str = Depends(auth.require_session)):
@@ -226,12 +269,12 @@ def make_router(db, engine) -> APIRouter:
         tid = db.working_timetable()
         plan = _plan(tid)
         key, classes = _year(plan, year)
-        setup = _setups(tid).get(key)
+        setup = _find(tid, key)
         result = (setup or {}).get("placement")
         if not result:
             raise HTTPException(404, "No placement for this year group.")
         students = _students(tid, classes)
-        _meta, missing = K.subjects_meta(plan, setup)
+        _meta, missing = K.subjects_meta(plan, setup, LV.get(db, tid))
         found = K.checks(setup["combinations"], students, setup["limits"]) + missing
         return {**result, "checks": found, "names": {s["id"]: s.get("name") or "" for s in students}}
 
@@ -244,14 +287,14 @@ def make_router(db, engine) -> APIRouter:
         key, classes = _year(plan, body.get("year"))
         setup = _setup(tid, key)
         students = _students(tid, classes)
-        _meta, missing = K.subjects_meta(plan, setup)
+        _meta, missing = K.subjects_meta(plan, setup, LV.get(db, tid))
         found = K.checks(setup["combinations"], students, setup["limits"]) + missing
         result = K.place(students, setup["combinations"], setup.get("overrides"))
         with lock:
             setups = _setups(tid)
-            if key in setups:
-                setups[key] = {**setups[key], "placement": result}
-                db.set_value(SETUP, setups, tid)
+            now = _find(tid, key, setups)
+            if now:                                     # stored under an old raw key: moved (R15)
+                db.set_value(SETUP, _put(setups, key, {**now, "placement": result}), tid)
         log.info("blocks placement: %d students, %d placed, %d unplaced", len(students), len(result["placed"]),
                  len(result["unplaced"]))
         return {**result, "checks": found, "names": {s["id"]: s.get("name") or "" for s in students}}
@@ -268,7 +311,7 @@ def make_router(db, engine) -> APIRouter:
         time_limit = body.get("time_limit", DEFAULT_TIME_LIMIT)
         time_limit = _int(time_limit, "the time limit", 1, MAX_TIME_LIMIT)
         students = _students(tid, classes)
-        meta, missing = K.subjects_meta(plan, setup)
+        meta, missing = K.subjects_meta(plan, setup, LV.get(db, tid))
         blocking = [c["text"] for c in K.checks(setup["combinations"], students, setup["limits"]) + missing
                     if c["blocking"]]
         if blocking:
@@ -378,7 +421,7 @@ def make_router(db, engine) -> APIRouter:
         tid = db.working_timetable()
         key, _classes = _year(_plan(tid), body.get("year"))
         record = db.get_value(RUN, tid)
-        if not isinstance(record, dict) or record.get("year") != key or record.get("status") != "running":
+        if not isinstance(record, dict) or not K.same_year(record.get("year"), key) or record.get("status") != "running":
             raise HTTPException(409, "No blocks run is running for this year group.")
         try:
             engine().cancel_job(record["job"])
@@ -427,7 +470,7 @@ def make_router(db, engine) -> APIRouter:
             plan = M.normalise(raw or M.empty_plan())
             key, classes = _year(plan, body.get("year"))
             record = db.get_value(RUN, tid)
-            if not isinstance(record, dict) or record.get("year") != key or record.get("status") not in DONE:
+            if not isinstance(record, dict) or not K.same_year(record.get("year"), key) or record.get("status") not in DONE:
                 raise HTTPException(409, "Nothing to apply: build the blocks first.")
             if record.get("applied"):
                 raise HTTPException(409, "Already applied.")
@@ -435,7 +478,7 @@ def make_router(db, engine) -> APIRouter:
                 raise HTTPException(409, "The year group's classes have changed since this run; build again.")
             if _fingerprint(tid, key, classes) != record.get("fingerprint"):
                 raise HTTPException(409, STUDENTS_CHANGED)
-            if K.setup_digest(_setups(tid).get(key)) != record.get("setup_digest"):
+            if K.setup_digest(_find(tid, key)) != record.get("setup_digest"):
                 raise HTTPException(409, SETUP_CHANGED)
             # each chosen teacher checked against the plan as it is now: one gone, or moved out of the
             # subject's department, is dropped (the set gets no teacher) and named in the answer
@@ -477,7 +520,7 @@ def make_router(db, engine) -> APIRouter:
             key, _classes = _year(_plan(tid), body.get("year"))
             record = db.get_value(RUN, tid)
             done = record.get("undo") if isinstance(record, dict) else None
-            if not isinstance(done, dict) or done.get("year") != key:
+            if not isinstance(done, dict) or not K.same_year(done.get("year"), key):
                 raise HTTPException(409, "Nothing to undo.")
             if not applying.plan_as_written(db.get_value("plan", tid), done):
                 raise HTTPException(409, applying.PLAN_CHANGED)

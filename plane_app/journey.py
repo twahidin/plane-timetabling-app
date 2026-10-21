@@ -7,7 +7,7 @@ import time
 
 from fastapi import APIRouter, Depends
 
-from . import auth
+from . import auth, levels as LV
 from .plan import issues as I
 
 STEPS = (("files", "Files read", "project"), ("plan", "Plan ready", "requirements"), ("draft", "Draft", "build"),
@@ -34,7 +34,8 @@ def reached(db, tid=None) -> dict[str, bool]:
     check = _d(db.get_value("last_check", tid)) if live else {}
     files = bool(plan.get("staff")) and bool(plan.get("requirements"))
     try:                                    # judged against the live timetable only, as the Plan tab and Generate do
-        blocks = sum(1 for i in I.plan_issues(plan, live or None, db.get_settings(tid)) if getattr(i, "level", "") == "block")
+        blocks = sum(1 for i in I.plan_issues(plan, live or None, db.get_settings(tid), LV.get(db, tid))
+                     if getattr(i, "level", "") == "block")
     except Exception:                       # an odd plan is "not ready", never a 500
         blocks = 1
     return {"files": files, "plan": files and blocks == 0, "draft": bool(draft or live), "timetable": bool(live),

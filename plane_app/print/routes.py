@@ -54,6 +54,8 @@ def student_grid_for(db, student_id: str, view: str = "cycle") -> G.Grid:
     student = next((s for s in db.get_value("students") or [] if s["id"] == student_id), None)
     if student is None:
         raise HTTPException(404, f"no student {student_id}")
+    if not S.has_class(student):
+        raise HTTPException(400, f"{student_id} has no class yet, so there is no timetable to print")
     return G.student_grid(org, _plan(db), student, *settings_week(db))
 
 
@@ -61,23 +63,38 @@ def _plan(db) -> dict:
     return plan_model.normalise(db.get_value("plan") or plan_model.empty_plan())
 
 
-def students_for(db, class_: str | None, level: str | None, all_: str | None) -> tuple[list[dict], str]:
-    """(the students to print, a file stem): a class's, a level's or everyone's, ordered by class then
-    ID. Exactly one choice (400), and someone to print (404). `all` counts as chosen only when it says
-    yes ("1", "true", "yes"): `?all=0` prints nobody's pile, never everyone's."""
+def students_for(db, class_: str | None, level: str | None, all_: str | None) -> tuple[list[dict], str, int]:
+    """(the students to print, a file stem, how many were skipped): a class's, a level's or everyone's,
+    ordered by level, class then ID. Exactly one choice (400), and someone to print (404). `all` counts
+    as chosen only when it says yes ("1", "true", "yes"): `?all=0` prints nobody's pile, never everyone's.
+
+    A student with a level and no class yet has no timetable to print: they are left out, and counted for
+    a level (by `level_key`: "Sec 3" and a class at level "3" are one level) or for everyone."""
+    from ..plan.specialisation import level_key
     all_ = str(all_ or "").strip().casefold() in ("1", "true", "yes")
     if sum(bool(x) for x in (class_, level, all_)) != 1:
         raise HTTPException(400, "choose a class, a level or all")
     stored, plan = list(db.get_value("students") or []), _plan(db)
+    waiting = [s for s in stored if not S.has_class(s)]
+    stored = [s for s in stored if S.has_class(s)]
+    skipped = 0
     if class_:
         found, stem = [s for s in stored if S.norm(s["class"]) == S.norm(class_)], f"students-{class_}"
     elif level:
-        found, stem = [s for s in stored if S.level_of(plan, s["class"]) == level.strip()], f"students-level-{level}"
+        found, stem = [s for s in stored if S.level_of(plan, s) == level.strip()], f"students-level-{level}"
+        skipped = sum(1 for s in waiting if level_key(S.level_of(plan, s)) == level_key(level))
     else:
-        found, stem = stored, "students-all"
+        found, stem, skipped = stored, "students-all", len(waiting)
     if not found:
-        raise HTTPException(404, "no students to print")
-    return S.ordered(found, plan), re.sub(r"[^A-Za-z0-9._-]", "_", stem)
+        raise HTTPException(404, "no students to print" + (f"; {skipped} have no class yet" if skipped else ""))
+    return S.ordered(found, plan), re.sub(r"[^A-Za-z0-9._-]", "_", stem), skipped
+
+
+def skipped_note(printed: int, skipped: int) -> str:
+    """The print's count line: "12 students · 3 with no class yet skipped", "" when none were skipped."""
+    if not skipped:
+        return ""
+    return f"{printed:,} student{'' if printed == 1 else 's'} \u00b7 {skipped:,} with no class yet skipped"
 
 
 def apply_week(db, org: dict, grids: list[G.Grid], view: str, date: str | None) -> list[G.Grid]:
@@ -244,9 +261,11 @@ def make_router(db, templates) -> APIRouter:
             return db.working_timetable(), apply_week(db, org, grids, view, date)
         return grids_for_view(db, kind, id, view, date)
 
-    def respond(tid_grids: tuple[str, list[G.Grid]], as_pdf: bool, filename: str):
+    def respond(tid_grids: tuple[str, list[G.Grid]], as_pdf: bool, filename: str, note: str = ""):
         tid, grids = tid_grids                          # named after the timetable the grids were read from
         generated, name = meta(tid)
+        if note and grids:                              # the count line, on the pile's first page
+            grids[0].note = note
         if name:                                        # a period's week subtitle already ends with its name: once is enough
             for g in grids:
                 if g.subtitle.endswith(f" · {name}"):
@@ -290,14 +309,14 @@ def make_router(db, templates) -> APIRouter:
     @r.get("/print/students.pdf")
     def students_pdf(class_: str | None = Query(None, alias="class"), level: str | None = None, all_: str | None = Query(None, alias="all"),
                      sid: str = Depends(auth.require_session)):
-        found, stem = students_for(db, class_, level, all_)
-        return respond((db.working_timetable(), student_grids(found)), True, stem)
+        found, stem, skipped = students_for(db, class_, level, all_)
+        return respond((db.working_timetable(), student_grids(found)), True, stem, skipped_note(len(found), skipped))
 
     @r.get("/print/students")
     def students_html(class_: str | None = Query(None, alias="class"), level: str | None = None, all_: str | None = Query(None, alias="all"),
                       sid: str = Depends(auth.require_session)):
-        found, stem = students_for(db, class_, level, all_)
-        return respond((db.working_timetable(), student_grids(found)), False, stem)
+        found, stem, skipped = students_for(db, class_, level, all_)
+        return respond((db.working_timetable(), student_grids(found)), False, stem, skipped_note(len(found), skipped))
 
     @r.get("/print/all/{kind}.pdf")
     def all_pdf(kind: str, view: str = "cycle", date: str | None = None, who: auth.Principal = Depends(auth.require_user)):
@@ -325,8 +344,8 @@ def make_router(db, templates) -> APIRouter:
                 "rooms": [{"id": l["id"], "name": l["name"]} for l in sorted(org["locations"], key=lambda l: l["name"]) if not l.get("rest")]}
         if who.is_admin:                                # a department account never sees a student, not even a count
             plan = _plan(db)
-            out["students"] = [{"id": s["id"], "name": s["name"], "class": s["class"], "level": S.level_of(plan, s["class"])}
-                               for s in S.ordered(list(db.get_value("students") or []), plan)]
+            out["students"] = [{"id": s["id"], "name": s["name"], "class": s["class"], "level": S.level_of(plan, s)}
+                               for s in S.ordered([s for s in db.get_value("students") or [] if S.has_class(s)], plan)]
         return out
 
     @r.post("/api/print/custom")

@@ -40,13 +40,20 @@ def make_router(db) -> APIRouter:
                 for t in takes_in):
             raise HTTPException(400, f"{sid}: takes must be a list of {{division, grouping}}")
         cls = str(body.get("class") or "").strip()
+        level = str(body.get("level") or "").strip() if not cls else ""     # a class decides the level
         takes: list[dict] = []
         for t in takes_in:
             t = {"division": t["division"], "grouping": t["grouping"]}
             if t not in takes:
                 takes.append(t)
-        record = {"id": sid, "name": str(body.get("name") or "").strip(), "class": cls, "takes": takes,
-                  "placed_by_app": []}
+        if not cls and level:               # a level and no class yet: classes are formed later, so no takes
+            if takes:
+                raise HTTPException(400, f"{sid}: choose a class to give subjects, or leave them out until classes are formed")
+            record = {"id": sid, "name": str(body.get("name") or "").strip(), "level": level, "takes": [],
+                      "placed_by_app": []}
+        else:
+            record = {"id": sid, "name": str(body.get("name") or "").strip(), "class": cls, "takes": takes,
+                      "placed_by_app": []}
         found = [p for p in S.problems([record], plan) if p["kind"] != "duplicate_id"]
         for p in found:
             if p["kind"] == "unknown_class":

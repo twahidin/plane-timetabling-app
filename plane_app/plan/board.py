@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from . import generate as G
 from . import importer as IMP
 from . import model as M
+from . import specialisation as SP
 
 
 class BoardError(Exception):
@@ -130,7 +131,9 @@ def _plain(number):
 # ---------------------------------------------------------------------------
 
 def _cell_view(key: str, reqs: list[dict], col_of: dict[str, int], plan: dict | None = None,
-               student_counts: dict[str, int] | None = None) -> dict:
+               student_counts: dict[str, int] | None = None, outside=None) -> dict:
+    """One cell of the board. `outside`, when given, is req -> its specialisation warnings
+    (specialisation.outside): the cell then carries `warnings` when it has any, and no key otherwise."""
     reqs = sorted(reqs, key=lambda r: r["id"])
     classes = list(reqs[0].get("classes") or [])
     cols = sorted(col_of[c] for c in classes if c in col_of)
@@ -159,6 +162,10 @@ def _cell_view(key: str, reqs: list[dict], col_of: dict[str, int], plan: dict | 
         if taking:
             cell["students"] = taking
             cell["size"] = next((r["size"] for r in reqs if r.get("size")), None)
+    if outside is not None:
+        warnings = list(dict.fromkeys(text for r in reqs for text in outside(r)))
+        if warnings:
+            cell.setdefault("warnings", []).extend(warnings)
     return cell
 
 
@@ -174,14 +181,16 @@ def _part_time(staff: dict, n_slots: int) -> bool:
 
 
 def view(plan: dict, settings: dict, dept: str | None = None, level: str | None = None,
-         principal=None, student_counts: dict[str, int] | None = None) -> dict:
+         principal=None, student_counts: dict[str, int] | None = None,
+         level_store: dict | None = None) -> dict:
     """The board JSON of spec §4 for one department and level tab (default: the first of each).
     `level` may be a tab ("1") or a full level ("1G3", read as its tab). BoardError 404 for a
     department or level the plan does not have. For a head of department (`principal`) the
     department is always theirs, and the tray lists only the teachers available to it. `student_counts`
     (option group id -> students taking it, from students.sizes) puts `students` and the stated `size`
     on the option cells that have any: counts for every account, never a name; without it the board
-    is as it was."""
+    is as it was. `level_store`, the timetable's levels store, makes its subjects and levels known to the
+    staff form's hints and the specialisation warnings (R27(e))."""
     index: dict[str, dict[str, dict[str, dict[str, list]]]] = {}
     tab_classes: dict[str, set] = {}
     load: Counter = Counter()
@@ -239,10 +248,24 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
                 tags[c].append(label)
     classes = [{"code": c, "divisions": tags[c]} for c in columns]
 
+    # subject specialisation (spec 2026-10-20-csv-pack-design.md §1): only once someone lists subjects,
+    # so a plan where nobody does has the board it had
+    outside = None
+    if any(s.get("subjects") for s in staff):
+        staff_by_id, known = {s["id"]: s for s in staff}, SP.plan_subjects(plan) | SP.level_subjects(level_store)
+
+        def outside(r):
+            return SP.outside(plan, r, staff_by_id=staff_by_id, known_subjects=known)
+
+    # what each teacher lists that the plan does not know, to show under the staff form's Subjects field
+    hints: dict[str, list[str]] = {}
+    for problem in SP.staff_problems(plan, level_store) if any(s.get("subjects") for s in staff) else ():
+        hints.setdefault(problem["staff"], []).append(problem["text"])
+
     rows = []
     for rk, cells in (tabs.get(level) or {}).items():
         first = next(iter(cells.values()))[0]
-        cell_views = sorted((_cell_view(k, reqs, col_of, plan, student_counts) for k, reqs in cells.items()),
+        cell_views = sorted((_cell_view(k, reqs, col_of, plan, student_counts, outside) for k, reqs in cells.items()),
                             key=lambda c: (c["col"], c["grouping"], c["key"]))
         (periods, pattern), _ = Counter((c["needed"], c["pattern"]) for c in cell_views).most_common(1)[0]
         stream = _stream(first.get("level"))
@@ -285,6 +308,9 @@ def view(plan: dict, settings: dict, dept: str | None = None, level: str | None 
                      "available": available,
                      # periods a cycle this teacher may be given in the department on screen
                      "capacity_here": _plain(M.capacity_in(s, dept, settings)) if dept is not None else 0})
+        if s.get("subjects"):         # only a teacher who lists some, so a plan that never does has the tray it had
+            tray[-1]["subjects"] = SP.format_subjects(s["subjects"])
+            tray[-1]["subject_hints"] = hints.get(s["id"], [])
     tray.sort(key=lambda t: (not t["home"], t["dept"] if not t["home"] else "", t["name"].lower(), t["id"]))
 
     # every requirement of the department locked, whichever level is on screen: "Unlock department"
@@ -341,8 +367,8 @@ def department_of(plan: dict, body: dict) -> str | None:
 # ---------------------------------------------------------------------------
 
 # what a head of department may change about a teacher of their own department ("provisional" only
-# from yes to no: naming a placeholder)
-HOD_STAFF_FIELDS = ("name", "short", "reductions", "provisional")
+# from yes to no: naming a placeholder; "subjects" is what the teacher can teach, not a figure)
+HOD_STAFF_FIELDS = ("name", "short", "reductions", "provisional", "subjects")
 
 
 def _not_submitted(plan: dict, dept) -> None:
@@ -1023,6 +1049,25 @@ def _initials(name: str) -> str:
     return "".join(w[0] for w in name.split() if w[:1].isalnum()).upper()
 
 
+def _subjects(value) -> list[dict]:
+    """A teacher's subjects from the form's text: BoardError 400 with every problem in it, and
+    nothing saved, when any entry cannot be read. Empty text is no subjects (the key is dropped)."""
+    if not isinstance(value, str):
+        raise BoardError(400, "subjects must be text, for example Physics (Sec 1–2); Chemistry")
+    entries, problems = SP.parse_subjects(value)
+    if problems:
+        raise BoardError(400, "; ".join(problems))
+    return entries
+
+
+def _set_subjects(person: dict, value) -> None:
+    entries = _subjects(value)
+    if entries:
+        person["subjects"] = entries
+    else:
+        person.pop("subjects", None)
+
+
 def _staff_text(body: dict, field: str, required: bool) -> str:
     """A teacher's name, short name or department: text (a number is refused, not turned into one);
     a department becomes part of the board's keys, so it may not hold their separators."""
@@ -1049,6 +1094,8 @@ def save_staff(work: dict, settings: dict, /, **body) -> None:
             if field in body:
                 person[field] = (_staff_text(body, field, field != "short") if field in ("name", "short", "dept")
                                  else body[field])
+        if "subjects" in body:
+            _set_subjects(person, body["subjects"])
         return
     dept = _staff_text(body, "dept", True)
     names = {s["name"] for s in work["staff"]}
@@ -1065,6 +1112,8 @@ def save_staff(work: dict, settings: dict, /, **body) -> None:
               "short": _staff_text(body, "short", False) or _initials(name), "dept": dept,
               "allowance": body.get("allowance"), "reductions": body.get("reductions"),
               "provisional": body.get("provisional"), "shares": body.get("shares")}
+    if "subjects" in body:
+        _set_subjects(person, body["subjects"])
     work["staff"].append(person)
 
 

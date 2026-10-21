@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import auth, journey, users
+from .. import levels as LV
 from .. import students as S
 from ..learning import sharing
 from . import board as B
@@ -52,7 +53,7 @@ def _issues_for(db, plan: dict, who: auth.Principal | None = None) -> list[Issue
     departments with an account have not submitted; a head of department hears only about their
     own department's requirements and teachers, and of a teacher shared in from another department
     only their share issues in this one (spec 2026-09-27 §4): nothing else of theirs is the head's."""
-    issues = plan_issues(plan, db.get_org("live"), db.get_settings())
+    issues = plan_issues(plan, db.get_org("live"), db.get_settings(), LV.get(db))
     if who is None or who.is_admin:
         return issues + _unsubmitted(db, plan)
     dept = who.dept
@@ -166,7 +167,7 @@ def make_router(db) -> APIRouter:
         plan = _current_plan(db)
         settings = db.get_settings()
         base_org = db.get_org("live")
-        issues = plan_issues(plan, base_org, settings)
+        issues = plan_issues(plan, base_org, settings, LV.get(db))
         if has_blocks(issues):
             blocks = [i.text for i in issues if i.level == "block"]
             return JSONResponse({"detail": f"{len(blocks)} blocking issues", "blocks": capped(blocks)}, status_code=409)
@@ -208,14 +209,14 @@ def make_router(db) -> APIRouter:
     def _board(plan: dict, dept, level, who: auth.Principal | None = None) -> dict:
         """The board for (dept, level), or the first department and level when an edit or undo
         took that one away; with the plan's issues."""
-        settings, counts = db.get_settings(), _counts(plan)
+        settings, counts, levels = db.get_settings(), _counts(plan), LV.get(db)
         try:
-            out = B.view(plan, settings, dept, level, principal=who, student_counts=counts)
+            out = B.view(plan, settings, dept, level, principal=who, student_counts=counts, level_store=levels)
         except B.BoardError:
             try:
-                out = B.view(plan, settings, dept, principal=who, student_counts=counts)
+                out = B.view(plan, settings, dept, principal=who, student_counts=counts, level_store=levels)
             except B.BoardError:
-                out = B.view(plan, settings, principal=who, student_counts=counts)
+                out = B.view(plan, settings, principal=who, student_counts=counts, level_store=levels)
         out.update(_board_issues(_issues_for(db, plan, who)))
         return out
 
@@ -229,7 +230,7 @@ def make_router(db) -> APIRouter:
         plan = _current_plan(db)
         try:
             out = B.view(plan, db.get_settings(), dept or None, level or None, principal=who,
-                         student_counts=_counts(plan))
+                         student_counts=_counts(plan), level_store=LV.get(db))
         except B.BoardError as e:
             raise HTTPException(e.status, e.message)
         out.update(_board_issues(_issues_for(db, plan, who)))

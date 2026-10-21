@@ -1,7 +1,9 @@
 """Apply a reading by section, and undo it (spec docs/superpowers/specs/2026-10-12-assistant-files-design.md
 §3.3–3.4). Under the plan lock: the reading is merged into the plan as it is now and only the ticked
 sections are taken; a timetable reading becomes the draft; a student list replaces the timetable's
-students; a combinations reading replaces each level's combinations in `blocks_setup`. Undo puts back what was there when nothing has changed it since."""
+students; a combinations reading replaces each level's combinations in `blocks_setup`; the five CSV files
+write the plan's staff and rooms by key, the levels store and the students of their levels. Undo puts back
+what was there when nothing has changed it since."""
 from __future__ import annotations
 
 import copy
@@ -10,11 +12,11 @@ import json
 import time
 from pathlib import Path
 
-from ... import asc_import, blocks as BK, journey, students as ST, week as W, week_apply, week_save
+from ... import asc_import, blocks as BK, journey, levels as LV, students as ST, week as W, week_apply, week_save
 from ...intake import IntakeError
 from .. import model as M
 from ..issues import plan_issues
-from . import inbox, readers, routes as RR, sections as S
+from . import inbox, packmerge as PM, readers, routes as RR, sections as S
 from . import recipes as R
 
 
@@ -67,7 +69,7 @@ def reading_view(db, rid: str, tid: str | None = None) -> dict:
 def plan_status(db, tid: str | None = None) -> dict:
     """Where the plan stands, in a few plain lines: ready to build, or what blocks it."""
     plan = M.normalise(db.get_value("plan", tid) or M.empty_plan())
-    issues = plan_issues(plan, db.get_org("live", tid) or None, db.get_settings(tid))
+    issues = plan_issues(plan, db.get_org("live", tid) or None, db.get_settings(tid), LV.get(db, tid))
     blocks = [i.text for i in issues if i.level == "block"]
     return {"ready": not blocks and bool(plan["requirements"]), "blocks": blocks[:5], "block_count": len(blocks),
             "warn_count": sum(1 for i in issues if i.level == "warn")}
@@ -229,19 +231,104 @@ def _apply_combinations(db, reading: dict, tid: str | None) -> dict:
     with BK.SETUP_LOCK:                     # the setup route's read-modify-write lock, taken after the plan lock
         before = db.get_value("blocks_setup", tid)
         setups = copy.deepcopy(before) if isinstance(before, dict) else {}
+        stored = db.get_value("students", tid)
+        students, plan = (stored if isinstance(stored, list) else []), None
         for key, combinations in found.items():
-            have = setups.get(key)
+            key = BK.canonical_key(key)
+            try:                                            # under an old raw key it is moved to this one (R15)
+                _stored, have = BK.find_setup(setups, key)
+            except BK.SetupClash as e:                      # two stored setups of the level differ (R20): nothing written
+                raise ApplyError(409, str(e))
+            if isinstance(have, dict) and have.get("combinations"):
+                plan = plan if plan is not None else _stored_plan(db, tid)
+                remapped = PM.remapped_codes(have.get("combinations") or [], combinations, students, plan, key,
+                                             have.get("overrides"))
+                if remapped:                                # a code in use would name other subjects (R23): nothing written
+                    raise ApplyError(409, PM.remap_refusal(remapped))
             if isinstance(have, dict) and have:
                 offered = {ST.norm(c["code"]): c["code"] for c in combinations}
                 kept = {sid: offered[ST.norm(code)] for sid, code in (have.get("overrides") or {}).items()
                         if isinstance(code, str) and ST.norm(code) in offered}      # as PUT does: only codes still offered
-                setups[key] = {**have, "combinations": copy.deepcopy(combinations), "overrides": kept,
-                               "placement": None}      # a placement made before is dropped (place again)
+                setups = BK.put_setup(setups, key, {**have, "combinations": copy.deepcopy(combinations),
+                                                    "overrides": kept, "placement": None})   # place again
             else:
-                setups[key] = {"year": {"level": key.partition(":")[2]}, "combinations": copy.deepcopy(combinations),
-                               "limits": dict(BK.DEFAULT_LIMITS), "subjects": {}, "overrides": {}, "placement": None}
+                setups = BK.put_setup(setups, key, {
+                    "year": {"level": key.partition(":")[2]}, "combinations": copy.deepcopy(combinations),
+                    "limits": dict(BK.DEFAULT_LIMITS), "subjects": {}, "overrides": {}, "placement": None})
         db.set_value("blocks_setup", setups, tid)
         return {"before": before, "after_hash": _hash(db.get_value("blocks_setup", tid) or {})}
+
+
+# ---------------------------------------------------------------------------
+# the five CSV files (csv-pack spec docs/superpowers/specs/2026-10-20-csv-pack-design.md, Calls §2 and
+# §4): staff and venues update the plan by key, requirements the levels store, the level students list
+# the students of its levels; combinations go through _apply_combinations. What each writes is
+# packmerge's, the card's counts the same; undo is exact and refused once its target changed.
+# ---------------------------------------------------------------------------
+
+LEVELS_CHANGED = "The levels have changed since this was applied; undo left them as they are."
+PACK_CLEARED = "This reading was cleared; give the file again."
+
+
+def _stored_plan(db, tid: str | None) -> dict:
+    try:
+        return M.normalise(db.get_value("plan", tid) or M.empty_plan())
+    except M.PlanError:
+        raise ApplyError(422, RR.PLAN_UNREADABLE)
+
+
+def _apply_pack_plan(db, reading: dict, kind: str, tid: str | None) -> dict:
+    """staff.csv or venues.csv merged into the plan by key (nobody and no room removed), written as
+    _apply_plan writes: one write that moves the rev, locks checked. What undo needs, as _apply_plan's."""
+    items = reading.get("items")
+    if not isinstance(items, list):
+        raise ApplyError(409, PACK_CLEARED)
+    current = _stored_plan(db, tid)
+    before = db.get_value("plan", tid)
+    new = copy.deepcopy(current)
+    if kind == "staff":
+        new["staff"] = PM.merge_staff(current["staff"], items)[0]
+    else:
+        new["venues"] = PM.merge_venues(current["venues"], items)[0]
+    try:
+        new = M.normalise(new)
+        M.check_locks(current, new)
+    except M.PlanError as e:
+        raise ApplyError(409, f"the plan has changed and this file no longer fits it: {e}")
+    db.set_value("plan", new, tid)
+    journey.stamp(db, "files", tid)
+    after = db.get_value("plan", tid) or {}
+    return {"plan_before": before, "rev_after": int(after.get("rev") or 0), "content_after": _content(after)}
+
+
+def levels_as_written(db, undo: dict, tid: str | None = None) -> bool:
+    """Whether the stored levels are still those an apply wrote (`undo`'s after_hash)."""
+    return _hash(db.get_value(LV.KEY, tid)) == undo.get("after_hash")
+
+
+def _apply_levels(db, reading: dict, tid: str | None) -> dict:
+    """requirements.csv: each of its levels' subject rows replacing that level's in the levels store."""
+    found = reading.get("levels")
+    if not isinstance(found, dict) or not found:
+        raise ApplyError(409, PACK_CLEARED)
+    before = db.get_value(LV.KEY, tid)
+    try:
+        LV.put(db, tid, PM.merge_levels(LV.get(db, tid), found)[0])
+    except ValueError as e:                 # a code, never a value
+        raise ApplyError(409, f"These levels could not be stored ({e}); give the file again.")
+    return {"before": before, "after_hash": _hash(db.get_value(LV.KEY, tid))}
+
+
+def _apply_level_students(db, reading: dict, tid: str | None) -> dict:
+    """The level students list: the students of its levels (and any with one of its IDs) replaced by its
+    own; students of other levels untouched. What undo needs, as _apply_students's."""
+    if "students" not in reading:
+        raise ApplyError(409, "This student list was cleared; give the file again.")
+    plan = _stored_plan(db, tid)
+    before = db.get_value("students", tid)
+    stored = before if isinstance(before, list) else []
+    db.set_value("students", PM.merge_students(stored, reading.get("students") or [], plan)[0], tid)
+    return {"before": before, "after_hash": _hash(db.get_value("students", tid) or [])}
 
 
 def forget_students(db, tid: str | None = None) -> int:
@@ -253,7 +340,7 @@ def forget_students(db, tid: str | None = None) -> int:
         stored = RR._stored(db, tid)
         for e in stored:
             r = e["reading"]
-            if r.get("kind") != "students" or not ("students" in r or "undo" in r):
+            if r.get("kind") not in ("students", "level_students") or not ("students" in r or "undo" in r):
                 continue
             r = {k: v for k, v in r.items() if k not in ("students", "undo")}
             r["removed"] = True
@@ -320,6 +407,12 @@ def apply(db, rid: str, ticked: list[str] | None, options: dict | None = None, t
             undo = {"kind": "students", **_apply_students(db, reading, tid)}
         elif view["kind"] == "combinations":
             undo = {"kind": "combinations", **_apply_combinations(db, reading, tid)}
+        elif view["kind"] in ("staff", "venues"):
+            undo = {"kind": "plan", **_apply_pack_plan(db, reading, view["kind"], tid)}
+        elif view["kind"] == "requirements":
+            undo = {"kind": "levels", **_apply_levels(db, reading, tid)}
+        elif view["kind"] == "level_students":
+            undo = {"kind": "students", **_apply_level_students(db, reading, tid)}
         else:
             undo = {"kind": "plan", **_apply_plan(db, entry, names, tid)}
         applied = {n: int(secs[n].get("count") or 0) for n in names}
@@ -373,6 +466,10 @@ def undo(db, rid: str, tid: str | None = None) -> dict:
                 if not setup_as_written(db, undo, tid):
                     raise ApplyError(409, SETUP_CHANGED)
                 db.set_value("blocks_setup", undo.get("before"), tid)      # None: there was none
+        elif undo.get("kind") == "levels":
+            if not levels_as_written(db, undo, tid):
+                raise ApplyError(409, LEVELS_CHANGED)
+            db.set_value(LV.KEY, undo.get("before"), tid)                  # None: there were none
         else:
             if not plan_as_written(db.get_value("plan", tid), undo):
                 raise ApplyError(409, PLAN_CHANGED)

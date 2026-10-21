@@ -49,6 +49,7 @@ from .promote import promote_build
 from .relief_api import make_router as relief_router
 from .students_api import make_router as students_router
 from .blocks_api import make_router as blocks_router
+from .classes_api import make_router as classes_router
 from .wizard.routes import make_router as wizard_router
 
 HERE = Path(__file__).parent
@@ -575,6 +576,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
             src_students = db.get_value("students")
             src_blocks = db.get_value("blocks_setup")       # the year groups' setups; never a run, a proposal or an undo
             src_ground = db.get_value("ground")             # the campus's Ground menu choice ("" or absent: the template's)
+            src_levels = db.get_value("levels")             # expected students, class size, subject rows; never the classes_run record
             cloned = source
         tid = db.create_timetable(name)
         if cloned:
@@ -587,6 +589,8 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
                 db.set_value("blocks_setup", src_blocks)
             if src_ground:
                 db.set_value("ground", src_ground)
+            if src_levels:
+                db.set_value("levels", src_levels)
         return {"id": tid, "name": name, "cloned_from": cloned, **_timetables_payload()}
 
     @app.post("/api/timetables/{tid}/select")
@@ -643,6 +647,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     app.include_router(relief_router(db))
     app.include_router(students_router(db))
     app.include_router(blocks_router(db, engine))
+    app.include_router(classes_router(db))
 
     @app.get("/api/draft")
     def get_draft(sid: str = Depends(auth.require_session)):

@@ -34,6 +34,8 @@ TARGETS_OF = {"rooms": ("venues",), "classes": ("classes", "homes"), "staff": ("
 _NOUN = {"timetable": "lessons"}
 STUDENTS_UNSHOWN = ("a student list is never shown record by record (no names reach the Assistant): "
                     "its counts and doubts are in readings_list, and the admin sees the students on the Students page")
+PACK_UNSHOWN = ("this file was read exactly and is not shown record by record: its counts and doubts are in "
+                "readings_list")
 _NEGATION = re.compile(r"\b(?:no|not|dont|don't|do not|wait|stop|cancel|never|but)\b")
 NAME_SHOWN = 80             # a file name in the system prompt is cut to this
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -182,8 +184,10 @@ def _show(db, args: dict, tid: str) -> dict:
     entry = _entry(db, rid, tid)
     if entry is None:
         return {"error": "no such reading: readings_list names them"}
-    if entry["reading"].get("kind") == "students":    # counts only, before anything merges it into the plan
+    if entry["reading"].get("kind") in ("students", "level_students"):    # counts only, never a name
         return {"error": STUDENTS_UNSHOWN, "sections": _counts(inbox.view(entry))}
+    if entry["reading"].get("kind") not in (None, "plan", "timetable"):  # a CSV pack file or a Combinations sheet
+        return {"error": PACK_UNSHOWN, "sections": _counts(inbox.view(entry))}
     if section not in SHOWN:
         return {"error": f"section must be one of {', '.join(SHOWN)}"}
     reading = entry["reading"]
@@ -568,8 +572,10 @@ def confirm(db, events: list, session_id: str = "") -> str | None:
     text = f"Applied {name}: {_counts_text(out['applied'])}."
     if out["reading"]["kind"] == "timetable":
         return text + _week_text(out) + " It is the draft now: make the timetable from it."
-    if out["reading"]["kind"] == "students":
+    if out["reading"]["kind"] in ("students", "level_students"):
         return text + " The Students page lists them."
+    if out["reading"]["kind"] == "requirements":
+        return text + " They are each level's subjects now, ready for forming classes."
     if out["reading"]["kind"] == "combinations":
         return text + " They are in the option-blocks setup for each year."
     if status["ready"]:
