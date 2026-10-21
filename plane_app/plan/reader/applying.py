@@ -233,10 +233,15 @@ def _apply_combinations(db, reading: dict, tid: str | None) -> dict:
         setups = copy.deepcopy(before) if isinstance(before, dict) else {}
         stored = db.get_value("students", tid)
         students, plan = (stored if isinstance(stored, list) else []), None
+        try:
+            plan = _stored_plan(db, tid)
+        except ApplyError:                                  # refused below only if a remap needs the plan
+            pass
+        names = BK.level_names(plan, LV.get(db, tid))       # whose an old "level:<level_key>" key is
         for key, combinations in found.items():
-            key = BK.canonical_key(key)
+            key = BK.setup_key_for(key.partition(":")[2])   # the reading's year key ("level:1styear"), or a raw old one
             try:                                            # under an old raw key it is moved to this one (R15)
-                _stored, have = BK.find_setup(setups, key)
+                _stored, have = BK.find_setup(setups, key, names)
             except BK.SetupClash as e:                      # two stored setups of the level differ (R20): nothing written
                 raise ApplyError(409, str(e))
             if isinstance(have, dict) and have.get("combinations"):
@@ -250,11 +255,11 @@ def _apply_combinations(db, reading: dict, tid: str | None) -> dict:
                 kept = {sid: offered[ST.norm(code)] for sid, code in (have.get("overrides") or {}).items()
                         if isinstance(code, str) and ST.norm(code) in offered}      # as PUT does: only codes still offered
                 setups = BK.put_setup(setups, key, {**have, "combinations": copy.deepcopy(combinations),
-                                                    "overrides": kept, "placement": None})   # place again
+                                                    "overrides": kept, "placement": None}, names)   # place again
             else:
                 setups = BK.put_setup(setups, key, {
                     "year": {"level": key.partition(":")[2]}, "combinations": copy.deepcopy(combinations),
-                    "limits": dict(BK.DEFAULT_LIMITS), "subjects": {}, "overrides": {}, "placement": None})
+                    "limits": dict(BK.DEFAULT_LIMITS), "subjects": {}, "overrides": {}, "placement": None}, names)
         db.set_value("blocks_setup", setups, tid)
         return {"before": before, "after_hash": _hash(db.get_value("blocks_setup", tid) or {})}
 

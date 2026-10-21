@@ -823,11 +823,13 @@ def _remap_doubts(setup: dict, combos: list, students: list, plan: dict, key: st
         setup.get("combinations") or [], combos, students, plan, key, setup.get("overrides"))]
 
 
-def _stored_setup(stored: dict, key: str, doubts: list[str]) -> dict:
-    """The setup stored for year key `key`, under its canonical key or an old raw one (R15); when two stored
-    keys of the level differ (R20) the clash is added to `doubts` (Apply refuses it) and nothing is counted."""
+def _stored_setup(stored: dict, key: str, doubts: list[str], names) -> dict:
+    """The setup stored for year key `key`, under its canonical key or an old raw one (R15), or the old
+    "level:<level_key>" key when the level adopts it (`blocks.find_setup` with the level names `names`); when
+    two stored keys of the level differ (R20) the clash is added to `doubts` (Apply refuses it) and nothing is
+    counted."""
     try:
-        return BK.find_setup(stored, key)[1] or {}
+        return BK.find_setup(stored, key, names)[1] or {}
     except BK.SetupClash as e:
         doubts.append(str(e))
         return {}
@@ -854,7 +856,7 @@ def _combination_rows(cols: dict, rows: list[tuple[int, list]], plan: dict) -> t
         elif level not in levels:
             why = f"level {_shown(level)} isn't in the plan (the plan's levels: {known})"
         else:
-            key = f"level:{level}"
+            key = BK.setup_key_for(level)
             try:
                 BK.check_combinations([*kept.get(key, []), candidate])
             except ValueError as e:
@@ -881,8 +883,9 @@ def _combinations(db, name: str, found: tuple, tid: str | None, plan: dict) -> d
     added = changed = removed = 0
     replaces = []
     students = _stored_students(db, tid)
+    names = BK.level_names(plan, LV.get(db, tid))
     for key, combos in read.items():
-        setup = _stored_setup(stored, key, replaces)
+        setup = _stored_setup(stored, key, replaces, names)
         replaces += _remap_doubts(setup, combos, students, plan, key)
         old = {c["code"]: c for c in (setup.get("combinations") or []) if isinstance(c, dict)}
         new = {c["code"]: c for c in combos}
@@ -891,7 +894,7 @@ def _combinations(db, name: str, found: tuple, tid: str | None, plan: dict) -> d
         removed += sum(1 for c in old if c not in new)
         if old:
             replaces.append(f"This replaces the {len(old):,} combination{'' if len(old) == 1 else 's'} stored for "
-                            f"level {key.partition(':')[2]}")
+                            f"level {BK.year_label(key, names)}")
     doubts = [*replaces, *doubts]
     if len(doubts) > document.DOUBTS_MAX:
         doubts = [*doubts[:document.DOUBTS_MAX], f"and {len(doubts) - document.DOUBTS_MAX} more to check"]
@@ -977,22 +980,41 @@ def _pack_kind(name: str, data: bytes) -> str | None:
     return found[0] if found else None
 
 
-def _stored_combinations(db, tid: str | None) -> dict:
+def _combos_of(setup) -> list:
+    return [c for c in (setup or {}).get("combinations") or [] if isinstance(c, dict) and c.get("code")]
+
+
+def _by_level(found: dict, levels: dict) -> dict:
+    """{level_key: [combination]} of combinations keyed by year ("1styear", "3", "3e": `read_combinations`).
+    A level's own year, the one its levels entry's name gives (`blocks.setup_key_for`; the plain number
+    without one), comes before a stream's (R26), which stands in only when the level has none."""
+    out: dict = {}
+    for year in sorted(found):
+        if found[year]:
+            out.setdefault(SP.level_key(year), found[year])
+    for level in out:
+        own = BK.setup_key_for((levels.get(level) or {}).get("name") or level).partition(":")[2]
+        if found.get(own):
+            out[level] = found[own]
+    return out
+
+
+def _stored_combinations(db, tid: str | None, levels: dict, plan: dict) -> dict:
     """{level_key: [combination]} of each level's option-block setup stored. A level's own setup, the one
-    combinations.csv replaces ("level:3" or an old spelling of it, `blocks.find_setup`), comes before a
-    stream's ("level:3E", R26), which stands in only when the level has none."""
+    combinations.csv for its levels entry's name replaces (`blocks.setup_key_for`, or an old spelling of it,
+    `blocks.find_setup`), comes before a stream's ("level:3E", R26), which stands in only when the level has
+    none."""
     stored = db.get_value("blocks_setup", tid)
     stored = stored if isinstance(stored, dict) else {}
-
-    def combos_of(setup) -> list:
-        return [c for c in (setup or {}).get("combinations") or [] if isinstance(c, dict) and c.get("code")]
+    names = BK.level_names(plan, levels)
     out: dict = {}
     for key in sorted(k for k in stored if isinstance(k, str)):
-        if key.startswith("level:") and isinstance(stored[key], dict) and combos_of(stored[key]):
-            out.setdefault(SP.level_key(key.partition(":")[2]), combos_of(stored[key]))
+        if key.startswith("level:") and isinstance(stored[key], dict) and _combos_of(stored[key]):
+            out.setdefault(SP.level_key(key.partition(":")[2]), _combos_of(stored[key]))
     for level in out:
         try:
-            own = combos_of(BK.find_setup(stored, f"level:{level}")[1])
+            own = _combos_of(BK.find_setup(stored, BK.setup_key_for((levels.get(level) or {}).get("name") or level),
+                                           names)[1])
         except BK.SetupClash:               # the card says so (_stored_setup); Apply refuses it
             continue
         if own:
@@ -1001,10 +1023,14 @@ def _stored_combinations(db, tid: str | None) -> dict:
 
 
 def _pack_context(db, tid: str | None, drop: dict) -> dict:
-    """The facts a pack file is checked against: what is stored, overlaid with the drop's files read so far."""
-    context = {"levels": {**LV.get(db, tid), **drop["levels"]},
-               "combinations": {**_stored_combinations(db, tid), **drop["combinations"]},
-               "plan": _current(db, tid)}
+    """The facts a pack file is checked against: what is stored, overlaid with the drop's files read so far.
+    Combinations are by `level_key`, as the levels store and students' choices are matched."""
+    levels, plan = {**LV.get(db, tid), **drop["levels"]}, _current(db, tid)
+    combinations = {**_stored_combinations(db, tid, levels, plan), **_by_level(drop["combinations"], levels)}
+    setups = db.get_value("blocks_setup", tid)
+    context = {"levels": levels, "combinations": combinations, "plan": plan,
+               "setups": setups if isinstance(setups, dict) else {}, "names": BK.level_names(plan, levels),
+               "year_combinations": dict(drop["combinations"])}
     if drop["staff"]:
         context["staff"] = list(drop["staff"])
     return context
@@ -1052,12 +1078,14 @@ def _pack_card(kind: str, items, context: dict, db, tid: str | None) -> tuple[di
     if kind == "combinations":
         stored = db.get_value("blocks_setup", tid)
         stored = stored if isinstance(stored, dict) else {}
-        found = {f"level:{key}": combos for key, combos in items.items()}
+        found = {BK.setup_key_for(year): combos for year, combos in items.items()}
         added = changed = removed = 0
         replaces = []
         students = _stored_students(db, tid)
+        names = BK.level_names(plan, context.get("levels"))
+        shown = [*(context.get("written") or ()), *sorted(names)]       # the file's own spelling first
         for key, combos in found.items():
-            setup = _stored_setup(stored, key, replaces)
+            setup = _stored_setup(stored, key, replaces, names)
             old = {c["code"]: c for c in (setup.get("combinations") or []) if isinstance(c, dict)}
             new = {c["code"]: c for c in combos}
             added += sum(1 for c in new if c not in old)
@@ -1065,7 +1093,7 @@ def _pack_card(kind: str, items, context: dict, db, tid: str | None) -> tuple[di
             removed += sum(1 for c in old if c not in new)
             if old:
                 replaces.append(f"This replaces the {_plural(len(old), 'combination')} stored for "
-                                f"level {key.partition(':')[2]}")
+                                f"level {BK.year_label(key, shown)}")
             replaces += _remap_doubts(setup, combos, students, plan, key)
         total = sum(len(v) for v in found.values())
         sec = {"count": total, "added": added, "changed": changed, "removed": removed}
@@ -1101,6 +1129,8 @@ def _pack(db, name: str, found: tuple, tid: str | None, drop: dict) -> dict:
     if not items:
         why = "; ".join(p["text"] for p in problems[:3]) or f"{name} has no rows under its header"
         return _pack_failed(db, name, kind, f"Nothing in {name} could be read: {why}. {PACK_NOT_AI}", tid)
+    if kind == "combinations":              # the levels as the file writes them, for the card's words
+        context = {**context, "written": CP.combination_levels(rows, header)}
     secs, before, counted, kept = _pack_card(kind, items, context, db, tid)
     for s in secs.values():
         s.update({"samples": [], "ticked": True})

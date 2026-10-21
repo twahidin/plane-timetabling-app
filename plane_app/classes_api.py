@@ -89,10 +89,14 @@ def make_router(db) -> APIRouter:
         stored = db.get_value(RUN, tid)
         return dict(stored) if isinstance(stored, dict) else {}
 
-    def _setup(tid: str, key: str) -> dict | None:
-        """The level's option-block setup; 409 when two stored setups of the level differ (R20)."""
+    def _setup(tid: str, key: str, plan: dict, levels: dict) -> dict | None:
+        """The level's option-block setup, under the key option blocks gives its formed classes (the levels
+        entry's name, `K.setup_key_for`) or the old "level:<level_key>" one; 409 when two stored setups of the
+        level differ (R20)."""
+        name = (levels.get(key) or {}).get("name") or key
         try:
-            return K.find_setup(db.get_value("blocks_setup", tid), f"level:{key}")[1]
+            return K.find_setup(db.get_value("blocks_setup", tid), K.setup_key_for(name),
+                                K.level_names(plan, levels))[1]
         except K.SetupClash as e:
             raise HTTPException(409, str(e))
 
@@ -183,7 +187,7 @@ def make_router(db) -> APIRouter:
         key, entry = _entry(levels, (body or {}).get("level"))
         count = body.get("count")
         count = None if count in (None, "") else _int(count, "the number of classes", 1, MAX_CLASSES)
-        setup = _setup(tid, key)
+        setup = _setup(tid, key, plan, levels)
         prop = C.propose(plan, db.get_settings(tid), key, entry, students, setup, count=count)
         record = {"level": key, "proposal": prop, "count": count, "applied": False,
                   "digest": _digest(entry, C._level_students(plan, key, students), setup)}
@@ -250,9 +254,11 @@ def make_router(db) -> APIRouter:
                 raise HTTPException(409, "Nothing to apply: propose first.")
             if record.get("applied"):
                 raise HTTPException(409, "Already applied.")
-            entry = LV.get(db, tid).get(key)
+            levels = LV.get(db, tid)
+            entry = levels.get(key)
             stored = _students(tid)
-            if entry is None or _digest(entry, C._level_students(plan, key, stored), _setup(tid, key)) != record["digest"]:
+            if entry is None or _digest(entry, C._level_students(plan, key, stored),
+                                        _setup(tid, key, plan, levels)) != record["digest"]:
                 raise HTTPException(409, CHANGED)
             # each chosen teacher checked against the plan as it is now, as option blocks' Apply does: one gone,
             # or moved out of the requirement's department, is dropped (no teacher) and named in the answer

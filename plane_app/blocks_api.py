@@ -124,17 +124,21 @@ def make_router(db, engine) -> APIRouter:
         stored = db.get_value(SETUP, tid)
         return dict(stored) if isinstance(stored, dict) else {}
 
+    def _names(tid: str, plan: dict | None = None) -> set[str]:
+        """The timetable's level names, which say whose an old "level:<level_key>" setup key is (`K.find_setup`)."""
+        return K.level_names(_plan(tid) if plan is None else plan, LV.get(db, tid))
+
     def _find(tid: str, key: str, setups: dict | None = None) -> dict | None:
-        """The year's stored setup, under its canonical key or an old raw one (R15); 409 when two stored keys
-        of the year differ (R20)."""
+        """The year's stored setup, under its canonical key or an old raw one (R15), or the old
+        "level:<level_key>" key combinations.csv stored it under; 409 when two stored keys of the year differ (R20)."""
         try:
-            return K.find_setup(_setups(tid) if setups is None else setups, key)[1]
+            return K.find_setup(_setups(tid) if setups is None else setups, key, _names(tid))[1]
         except K.SetupClash as e:
             raise HTTPException(409, str(e))
 
-    def _put(setups: dict, key: str, setup: dict) -> dict:
+    def _put(tid: str, setups: dict, key: str, setup: dict) -> dict:
         try:
-            return K.put_setup(setups, key, setup)
+            return K.put_setup(setups, key, setup, _names(tid))
         except K.SetupClash as e:
             raise HTTPException(409, str(e))
 
@@ -194,16 +198,17 @@ def make_router(db, engine) -> APIRouter:
         undo_year = K.canonical_key(undo.get("year")) if isinstance(undo, dict) else None
         stored = []
         setups = _setups(tid)
-        for key in sorted({K.canonical_key(k) for k in setups if isinstance(k, str)}):
+        names = _names(tid, plan)
+        for key in sorted({K.stored_year(k, names) for k in setups if isinstance(k, str)}):
             try:
                 item = {"key": key, "classes": K.year_classes(plan, key), "can_undo": key == undo_year}
             except ValueError:
                 item = {"key": key, "classes": [], "can_undo": key == undo_year}   # its classes are gone
             try:
-                K.find_setup(setups, key)
+                K.find_setup(setups, key, names)
             except K.SetupClash as e:                   # two stored keys of this year differ: said, never hidden,
                 item["clash"] = str(e)                  # with the keys the page offers to delete (R21)
-                item["clash_keys"] = K.clash_keys(setups, key)
+                item["clash_keys"] = K.clash_keys(setups, key, names)
             stored.append(item)
         return {"levels": [{"level": named[lv], "key": f"level:{lv}", "classes": K.year_classes(plan, f"level:{lv}"),
                             "can_undo": f"level:{lv}" == undo_year}
@@ -241,7 +246,7 @@ def make_router(db, engine) -> APIRouter:
                  "subjects": _subjects(body.get("subjects")),
                  "overrides": _overrides(body.get("overrides"), combinations), "placement": None}
         with lock:
-            db.set_value(SETUP, _put(_setups(tid), key, setup), tid)
+            db.set_value(SETUP, _put(tid, _setups(tid), key, setup), tid)
         meta, found = K.subjects_meta(plan, setup, LV.get(db, tid))
         return {"year": key, "classes": classes, "setup": setup, "subjects": meta, "checks": found}
 
@@ -253,7 +258,8 @@ def make_router(db, engine) -> APIRouter:
         tid = db.working_timetable()
         with db.plan_lock(tid), lock:
             setups = _setups(tid)
-            clashing = K.clash_keys(setups, key) if key in setups else []
+            names = _names(tid)
+            clashing = K.clash_keys(setups, K.stored_year(key, names), names) if key in setups else []
             if key not in clashing:
                 raise HTTPException(409, "only a setup in a clash can be deleted here")
             setups.pop(key)
@@ -294,7 +300,7 @@ def make_router(db, engine) -> APIRouter:
             setups = _setups(tid)
             now = _find(tid, key, setups)
             if now:                                     # stored under an old raw key: moved (R15)
-                db.set_value(SETUP, _put(setups, key, {**now, "placement": result}), tid)
+                db.set_value(SETUP, _put(tid, setups, key, {**now, "placement": result}), tid)
         log.info("blocks placement: %d students, %d placed, %d unplaced", len(students), len(result["placed"]),
                  len(result["unplaced"]))
         return {**result, "checks": found, "names": {s["id"]: s.get("name") or "" for s in students}}

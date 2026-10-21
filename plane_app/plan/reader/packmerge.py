@@ -164,7 +164,7 @@ def _in_year(plan: dict, student: dict, key: str) -> bool:
     kind, _, rest = BK.canonical_key(key).partition(":")
     if kind == "classes":
         return str(student.get("class") or "") in rest.split(",")
-    return BK.canonical_key(f"level:{ST.level_of(plan, student)}") == f"level:{rest}"
+    return BK.setup_key_for(ST.level_of(plan, student)) == f"level:{rest}"
 
 
 def remapped_codes(old: list, new: list, students: list, plan: dict, key: str, overrides) -> list[dict]:

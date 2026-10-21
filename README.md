@@ -509,7 +509,10 @@ so.
 `Physics (Sec 1-2); Chemistry; Science (Sec 1, Sec 2)`. A subject with no brackets is taken at every
 level, and "Sec 1-2" means Sec 1 and Sec 2. "Sec 3", "S3" and "3" are the same level everywhere.
 Streamed levels ("3E", "3N") share their level's requirements and teachers' subjects, but each keeps its
-own option-block setup; combinations.csv for "Sec 3" is the setup of level 3 itself. A teacher placed on a
+own option-block setup; combinations.csv for "Sec 3" is the setup of level 3 itself, and for "3E" the setup
+of 3E. A level named "1st Year" or "3Sci" keeps its setup under that name, where Option blocks looks for its
+formed classes; a setup stored before under the level's number alone is still found, and moved on the next
+change, unless another level ("Sec 1" beside "1st Year") also has that number. A teacher placed on a
 subject or level outside what they list gets a warning that you can override; a teacher who lists no
 subjects gets none.
 

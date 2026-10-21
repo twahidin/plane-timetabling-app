@@ -638,6 +638,66 @@ def canonical_key(key) -> str:
     return str(key or "")
 
 
+def setup_key_for(level_name) -> str:
+    """The `blocks_setup` key of a level, from its name as the school writes it ("1st Year", "Sec 3", "3E") or
+    the levels store entry's "name": "level:" + `specialisation.stage_key`, the year key option blocks computes
+    for the classes formed for that level ("1st Year" -> "level:1styear", "Sec 3" -> "level:3", "3E" ->
+    "level:3e"). Imported combinations are stored under it and class forming looks it up."""
+    return canonical_key(f"level:{level_name}")
+
+
+def level_names(plan: dict | None, levels: dict | None = None) -> set[str]:
+    """Every level name the timetable knows: its classes' levels and the levels store entries' names. Says
+    which level an old "level:<level_key>" setup key can belong to (`find_setup`)."""
+    out = {level_of(plan, c["code"]) for c in (plan or {}).get("classes") or [] if c.get("code")}
+    out |= {e.get("name") for e in (levels or {}).values() if isinstance(e, dict)}
+    return {str(n) for n in out if n and str(n).strip()}
+
+
+def _old_key(want: str, names) -> str | None:
+    """The key combinations.csv stored level year key `want` under before (the level's `level_key`:
+    "level:1styear" -> "level:1", "level:3e" -> "level:3"), when it differs from `want` and no other level
+    name in `names` folds to it: every known name with that `level_key` must have `want`'s stage spelling.
+    Otherwise ("Sec 1" or "1E" beside "1st Year") the old key is not this level's to take. None without
+    `names`."""
+    kind, _, rest = want.partition(":")
+    if kind != "level" or not rest or names is None:
+        return None
+    old = SP.level_key(rest)
+    if not old or old == rest:
+        return None
+    if any(SP.level_key(n) == old and SP.stage_key(n) != rest for n in names):
+        return None
+    return f"level:{old}"
+
+
+def stored_year(key, names=None) -> str:
+    """The canonical year key a stored `blocks_setup` key belongs to: its own canonical key, or, for an old
+    "level:<level_key>" key that one level name in `names` adopts (`_old_key`), that level's key."""
+    want = canonical_key(key)
+    for name in sorted(names or ()):
+        mine = setup_key_for(name)
+        if mine != want and _old_key(mine, names) == want:
+            return mine
+    return want
+
+
+_PLAIN = re.compile(r"^(|p|jc)([1-9]\d*)$")        # a canonical level key that is only a stage and a number
+
+
+def year_label(key, names=()) -> str:
+    """A stored or year key's level as the school writes it, for a card or a refusal: a plain level ("level:3",
+    "level:p4", "level:jc1") and a raw stored spelling ("level:Sec 3") stand as they are; a folded one
+    ("level:1styear", "level:3e") is the known name that gives it (`setup_key_for`; the first in `names`'
+    order, a set sorted), else the key's own text."""
+    kind, _, rest = str(key or "").partition(":")
+    if kind != "level" or not rest or _PLAIN.match(rest) or SP.stage_key(rest) != rest:
+        return rest
+    order = list(names) if isinstance(names, (list, tuple)) else sorted(names or ())
+    found = next((n for n in order if setup_key_for(n) == f"level:{rest}"), None)
+    return " ".join(str(found).split()) if found else rest
+
+
 def same_year(tag, year) -> bool:
     """Whether a `blocks` tag (or a stored year key) names year key `year`, either written raw or canonical."""
     return bool(tag) and canonical_key(tag) == canonical_key(year)
@@ -651,11 +711,12 @@ class SetupClash(ValueError):
 _SAME = ("combinations", "limits", "subjects", "overrides")      # what makes two stored setups one setup
 
 
-def _aliases(setups: dict, want: str) -> list[str]:
+def _aliases(setups: dict, want: str, names=None) -> list[str]:
     """The stored keys of canonical year key `want` that hold a setup: the canonical one first, then the old raw
-    ones in sorted order."""
+    ones in sorted order, among them the old "level:<level_key>" key when the level adopts it (`_old_key`)."""
+    old = _old_key(want, names)
     found = [k for k in sorted(k for k in setups if isinstance(k, str))
-             if canonical_key(k) == want and isinstance(setups[k], dict) and setups[k]]
+             if canonical_key(k) in (want, old) and isinstance(setups[k], dict) and setups[k]]
     return sorted(found, key=lambda k: k != want)
 
 
@@ -663,44 +724,48 @@ def _and(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def find_setup(setups: dict, key: str) -> tuple[str | None, dict | None]:
+def find_setup(setups: dict, key: str, names=None) -> tuple[str | None, dict | None]:
     """(the stored key, the setup) of year key `key` in `blocks_setup`: under its canonical key, else under an
-    old raw key that canonicalises to it (the first in sorted order); (None, None) when there is none.
+    old raw key that canonicalises to it (the first in sorted order); (None, None) when there is none. Given
+    the timetable's level names (`level_names`), a level whose stage spelling differs from its `level_key`
+    ("1st Year", "3Sci", "3E") also finds a setup stored under "level:<level_key>" the way combinations.csv
+    stored it before, unless another level name folds to that key (`_old_key`); the next write moves it.
 
     SetupClash (R20) when two or more stored keys fold into it ("level:Sec 3" and "level:S3" are both level 3;
     since R26 "level:3E" and "level:3N" are two years and never clash) and their combinations, limits, subjects or overrides differ: the school keeps one. Copies that agree on
     those are one setup (their placements are placed again)."""
     setups = setups if isinstance(setups, dict) else {}
     want = canonical_key(key)
-    found = _aliases(setups, want)
+    found = _aliases(setups, want, names)
     if not found:
         return None, None
     first = setups[found[0]]
     if any(any(setups[k].get(f) != first.get(f) for f in _SAME) for k in found[1:]):
-        spelt = [k.partition(":")[2] for k in found]
-        raise SetupClash(f"level {want.partition(':')[2]} has option-block setups stored for {_and(spelt)}; "
+        spelt = [year_label(k, names) for k in found]
+        raise SetupClash(f"level {year_label(want, names)} has option-block setups stored for {_and(spelt)}; "
                          f"keep one and delete the {'other' if len(found) == 2 else 'others'} first")
     return found[0], first
 
 
-def clash_keys(setups: dict, key: str) -> list[str]:
+def clash_keys(setups: dict, key: str, names=None) -> list[str]:
     """The stored keys of year key `key` when they clash (`find_setup` refuses them), in its order; else []."""
     setups = setups if isinstance(setups, dict) else {}
     try:
-        find_setup(setups, key)
+        find_setup(setups, key, names)
     except SetupClash:
-        return _aliases(setups, canonical_key(key))
+        return _aliases(setups, canonical_key(key), names)
     return []
 
 
-def put_setup(setups: dict, key: str, setup: dict) -> dict:
+def put_setup(setups: dict, key: str, setup: dict, names=None) -> dict:
     """`setups` with `setup` stored under the canonical key of `key`, and the old raw key it was found under
-    gone (R15: moved on the next write), with any identical copy of it. SetupClash, changing nothing, when the
-    stored keys of the year differ (`find_setup`). A new dict; the one given is not changed."""
+    gone (R15: moved on the next write; with `names`, an adopted old "level:<level_key>" key too, `find_setup`),
+    with any identical copy of it. SetupClash, changing nothing, when the stored keys of the year differ
+    (`find_setup`). A new dict; the one given is not changed."""
     setups = setups if isinstance(setups, dict) else {}
     want = canonical_key(key)
-    find_setup(setups, want)                        # refuses to write over setups that differ
-    gone = set(_aliases(setups, want))              # the one found, and copies identical to it
+    find_setup(setups, want, names)                 # refuses to write over setups that differ
+    gone = set(_aliases(setups, want, names))       # the one found, and copies identical to it
     out = {k: v for k, v in setups.items() if k not in gone}
     out[want] = setup
     return out

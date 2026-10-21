@@ -581,33 +581,59 @@ def _taught_words(subject: dict) -> str:
     return subject["taught_as"].capitalize()
 
 
+def _stored_year_combinations(context, level) -> list[dict]:
+    """The combinations stored for the year of `level` as written, the ones a combination without a Code keeps
+    its code from (R23): those of a combinations file read before in the same drop
+    (`context["year_combinations"]`, by year), else the setup option blocks keeps for that year
+    (`blocks.find_setup` on `context["setups"]` with `context["names"]`), so "3E" and "3N" each keep their own.
+    Without stored setups in the context, those of the level (`context["combinations"]`, by `level_key`)."""
+    context = context or {}
+    by_year = context.get("year_combinations") or {}
+    if SP.stage_key(level) in by_year:
+        found = by_year[SP.stage_key(level)]
+    elif context.get("setups") is None:
+        found = (context.get("combinations") or {}).get(SP.level_key(level))
+    else:
+        try:
+            found = (BK.find_setup(context["setups"], BK.setup_key_for(level), context.get("names"))[1] or {}
+                     ).get("combinations")
+        except BK.SetupClash:                       # the card says so; Apply refuses it
+            found = None
+    return [c for c in found or [] if isinstance(c, dict) and c.get("code")]
+
+
+def combination_levels(rows, header) -> list[str]:
+    """The levels a combinations file writes, each as first written, in file order."""
+    cols, _, _ = _columns("combinations", header)
+    out: dict[str, str] = {}
+    for _, row in rows:
+        level = _getter(cols, row)("level")
+        if level:
+            out.setdefault(SP.stage_key(level), level)
+    return list(out.values())
+
+
 def read_combinations(rows, header, context, file: str | None = None) -> tuple[dict, list[dict]]:
-    """{level_key: [{code, name, subjects, places}]} in file order. Code is optional (R23): without one a
-    combination keeps the code of the combination stored at its level (`context["combinations"]`) with the
-    same subject set (`students.norm` on each subject), so a file given again with a row inserted leaves
-    every student's choice on the same subjects; a new set is C<n>, n its place among its level's rows or
-    the next number no stored or written code has. A code written in the file is used as it is. Every
-    subject must be a Banded requirement row at that level (Calls §8), written as the requirement writes
-    it; two combinations of one subject set at a level are a problem; then B2's `check_combinations` rules
-    hold for the level's list."""
+    """{year: [{code, name, subjects, places}]} in file order. `year` is the level as written folded as option
+    blocks folds a year key (`specialisation.stage_key`: "Sec 3", "S3", "3" -> "3"; "1st Year" -> "1styear";
+    "3E" -> "3e", its own year), so "level:" + it (`blocks.setup_key_for`) is the key option blocks gives
+    the classes formed for that level. The level's requirement rows (the levels store) are matched by its
+    `level_key`. Code is optional (R23): without one a combination keeps the code of the combination stored
+    for its year (`_stored_year_combinations`) with the same subject set (`students.norm` on each subject),
+    so a file given again with a row inserted leaves every student's choice on the same subjects; a new set is C<n>, n its place among its year's rows or the next number no
+    stored or written code has. A code written in the file is used as it is. Every subject must be a Banded
+    requirement row at that level (Calls §8), written as the requirement writes it; two combinations of one
+    subject set in a year are a problem; then B2's `check_combinations` rules hold for the year's list."""
     out = _Out(file or FILES["combinations"])
     cols, label, numbered = _columns("combinations", header)
     levels = (context or {}).get("levels") or {}
-    used: dict[str, set] = {}                       # level key -> codes taken: written in the file, or stored
-    in_file: dict[str, set] = {}                    # level key -> codes written in the file
+    in_file: dict[str, set] = {}                    # year -> codes written in the file
     for _, row in rows:
         get = _getter(cols, row)
         if get("level") and get("code"):
-            in_file.setdefault(SP.level_key(get("level")), set()).add(ST.norm(get("code")))
-    stored: dict[str, dict] = {}                    # level key -> {subject set: its stored code}
-    for key, combos in ((context or {}).get("combinations") or {}).items():
-        for c in combos or []:
-            if isinstance(c, dict) and c.get("code"):
-                used.setdefault(key, set()).add(ST.norm(c["code"]))
-                stored.setdefault(key, {}).setdefault(frozenset(ST.norm(x) for x in c.get("subjects") or []),
-                                                      str(c["code"]))
-    for key, codes in in_file.items():
-        used.setdefault(key, set()).update(codes)
+            in_file.setdefault(SP.stage_key(get("level")), set()).add(ST.norm(get("code")))
+    stored: dict[str, dict] = {}                    # year -> {subject set: its stored code}
+    used: dict[str, set] = {}                       # year -> codes taken: written in the file, or stored
     place: dict[str, int] = {}
     found: dict[str, list] = {}
     sets: dict[str, dict] = {}
@@ -619,10 +645,16 @@ def read_combinations(rows, header, context, file: str | None = None) -> tuple[d
         if not level:
             out.add(n, f"no {label['level']}")
             continue
-        key = SP.level_key(level)
+        key, lkey = SP.stage_key(level), SP.level_key(level)
+        if key not in used:
+            mine = _stored_year_combinations(context, level)
+            stored[key] = {}
+            for c in mine:
+                stored[key].setdefault(frozenset(ST.norm(x) for x in c.get("subjects") or []), str(c["code"]))
+            used[key] = {ST.norm(c["code"]) for c in mine} | in_file.get(key, set())
         place[key] = place.get(key, 0) + 1
         code = get("code")
-        rows_of_level = {ST.norm(s["subject"]): s for s in (levels.get(key) or {}).get("subjects") or []}
+        rows_of_level = {ST.norm(s["subject"]): s for s in (levels.get(lkey) or {}).get("subjects") or []}
         errors, subjects = [], []
         for i, _ in numbered:
             written = cell(row[i]) if i < len(row) else ""
@@ -647,13 +679,13 @@ def read_combinations(rows, header, context, file: str | None = None) -> tuple[d
             continue
         same = frozenset(ST.norm(s) for s in subjects)
         if not code:
-            code = stored.get(key, {}).get(same)
+            code = stored[key].get(same)
             if code is None or ST.norm(code) in in_file.get(key, set()):
                 k = place[key]
-                while f"c{k}" in used.setdefault(key, set()):
+                while f"c{k}" in used[key]:
                     k += 1
                 code = f"C{k}"
-            used.setdefault(key, set()).add(ST.norm(code))
+            used[key].add(ST.norm(code))
         if same in sets.setdefault(key, {}):
             first_row, first_code = sets[key][same]
             out.add(n, f"the same subjects as row {first_row} ({first_code}); "
