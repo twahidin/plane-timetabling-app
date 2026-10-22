@@ -709,6 +709,12 @@ The app persists its SQLite database (and, if `SECRET_KEY` is not set, a generat
 `DATA_DIR`. When running in a container, mount a persistent volume at `/data` (the image sets
 `DATA_DIR=/data`) so this state survives restarts and deploys.
 
+## Health check
+
+The app answers `GET /healthz`. On Railway, set it as the service's health check path
+(Settings → Deploy → Healthcheck Path: `/healthz`), so a deploy only goes live once the app is up.
+Railway finds the `Dockerfile` itself and restarts the service on failure by default.
+
 ## Running locally
 
 Start the engine first, then the app, pointing the app at the engine:
