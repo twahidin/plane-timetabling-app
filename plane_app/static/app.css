@@ -886,7 +886,11 @@
   .assistant-name { font-size: 13px; font-weight: 500; }
   #assistant-collapse { margin-left: auto; }
   #assistant-panel { flex: 1; min-height: 0; overflow: auto; padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
-  #assistant-panel .chat { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+  #assistant-panel .chat { display: flex; flex-direction: column; gap: 8px; flex: 1 0 auto; min-height: 50%; }
+  /* The wizard card (its week editor is tall) stops at half the panel and scrolls inside itself, so the chat
+     below always keeps at least the other half */
+  #assistant-panel #wizard:not([hidden]) { flex: none; max-height: 50%; overflow: auto; }
+  #assistant-panel #wizard:not([hidden]) > * { flex-shrink: 0; }              /* its parts scroll, never squash */
   #assistant-panel .chat-log { flex: 1; min-height: 160px; overflow: auto; }
   #assistant-rail { width: 36px; flex: none; border: 0; background: var(--surface); color: var(--color-accent); cursor: pointer;
                     display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 14px; box-shadow: -1px 0 0 var(--color-neutral-900); }
