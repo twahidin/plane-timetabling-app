@@ -7,7 +7,8 @@ student list → a students reading, read exactly by students.read_rows (one tha
 exactly is a failed card: a student list never reaches the AI); a workbook's Combinations sheet →
 its own combinations reading, read exactly (never by the AI) and applied into `blocks_setup`; one of the five
 CSV files (staff, venues, requirements, combinations, the level students list: csv-pack spec) → its own exact
-reading, a drop's read in dependency order whatever the upload order; any other .xlsx/.csv → the smart
+reading, a drop's read in dependency order whatever the upload order; a drop's generic CSV files (staff, venues,
+units, duties: per-template spec) → one exact reading of the workbook they make; any other .xlsx/.csv → the smart
 reader; .docx and other PDFs → the document reader; anything else → a failed card that says why. A file the model could not read now (or read as nothing) is kept
 on disk for Try again. Nothing here writes the plan or the draft."""
 from __future__ import annotations
@@ -30,7 +31,8 @@ from ... import levels as LV
 from .. import importer as IMP
 from .. import model as M
 from .. import specialisation as SP
-from . import csvpack as CP, document, packmerge as PM, routes as RR, sections as S, writer
+from ...wizard import library as WL
+from . import csvpack as CP, document, generic_csv as GC, packmerge as PM, routes as RR, sections as S, writer
 from . import recipes as R
 from .render import WorkbookError
 from .tabular import cell as _cell, decoded as _decoded, delimiters as _delimiters, head as _head
@@ -1294,13 +1296,79 @@ def _folding(items: list[tuple[str, bytes]]) -> tuple[int | None, list[int]]:
     return book, [i for i, (n, d) in enumerate(items) if ok(i, n, d, lambda n, d: sizes_text(n, d) is not None)]
 
 
+def _generic_shaped(db, tid: str | None) -> bool:
+    """Whether timetable `tid` may take a drop of only some generic CSV files: its wizard record names a
+    template whose sheets are generic, or its stored plan has no divisions, no bands and no class with a level
+    (nothing a generic reading could undo). Otherwise such a drop's files are a school's ordinary CSVs
+    (a room list headed Name, Size): each keeps its old route. Never raises: a record or plan that does not
+    read is not generic."""
+    try:
+        record = db.get_value("wizard", tid)
+        template_id = record.get("template") if isinstance(record, dict) else None
+        if isinstance(template_id, str) and template_id:
+            kept = record.get("shared_template")
+            try:
+                template = (kept if isinstance(kept, dict) and kept.get("id") == template_id
+                            else WL.get(template_id, db) if not template_id.startswith(WL.SHARED_PREFIX) else {})
+            except Exception:               # noqa: BLE001 - a template no longer offered: the plan decides
+                template = {}
+            if template.get("sheets") == "generic":
+                return True
+        plan = _current(db, tid)
+        return (not plan.get("divisions") and not plan.get("bands")
+                and all(not str(c.get("level") or "") for c in plan.get("classes") or []))
+    except Exception:                       # noqa: BLE001 - its old route says what is wrong
+        return False
+
+
+def _generic(db, items: list[tuple[str, bytes]], found: dict[str, int], tid: str | None) -> dict[int, dict]:
+    """A drop's generic CSV files ({kind: position}, `GC.drop_set`) as one exact reading of the workbook they
+    make, or each refused (`GC.sort_out`): {position: result}. The first file read carries the reading; the
+    others say they were read with it, and carry its id. Never the AI, whatever goes wrong."""
+    files = {kind: (items[i][0] or "upload", items[i][1]) for kind, i in found.items()}
+    try:
+        verdict = GC.sort_out(files, _current(db, tid))
+        if "refused" in verdict:
+            return {found[k]: _failed(db, files[k][0], text, tid) for k, text in verdict["refused"].items()}
+        out = _exact(db, verdict["name"], verdict["data"], tid, summary=GC.SUMMARY)
+    except M.PlanError as e:                # the stored plan itself does not read
+        return {i: _failed(db, files[k][0], f"{RR.PLAN_UNREADABLE} ({e})", tid) for k, i in found.items()}
+    except Exception as e:                  # the same files fail the same way: not worth trying again as they are
+        _log.warning("reading the generic CSV files failed (%s)", type(e).__name__)
+        return {i: _failed(db, files[k][0], f"{files[k][0]} could not be read as written; check its columns and "
+                                            "rows.", tid) for k, i in found.items()}
+    # the reading's card is a file whose part is stored: venues.csv only when nothing else was read
+    carrier = next((k for k in verdict["read"] if k != "venues"), verdict["read"][0])
+    results = {found[carrier]: out}
+    for kind, i in found.items():
+        name = files[kind][0]
+        if i in results:
+            continue
+        if out["status"] != "read":
+            results[i] = {**out, "name": name}
+        elif kind == "venues":              # read_generic_workbook keeps no Venues sheet: the card says so
+            results[i] = {"name": name, "status": "read", "id": out["id"],
+                          "message": f"{name} was given with {out['name']}; venues are not stored from it yet."}
+        elif kind in verdict["read"]:
+            results[i] = {"name": name, "status": "read", "id": out["id"],
+                          "message": f"{name} was read with {out['name']}."}
+        else:
+            results[i] = {"name": name, "status": "read", "id": out["id"],
+                          "message": f"{name} holds only the example row, so the timetable keeps its own; "
+                                     f"the rest was read with {out['name']}."}
+    return results
+
+
 def read_files(db, provider_factory, items: list[tuple[str, bytes]], tid: str | None = None) -> list[dict]:
     """Blocking. Each file of `items` ((name, bytes), in order) as a stored reading of timetable `tid`
     (the working one when None); one result per file, {name, status: read | failed | retry, id, message}.
     Never raises: whatever goes wrong is that file's failed card, so one file never stops the others.
     A file past FILES_MAX gets a card only: no stored reading (it would push the drop's own readings out).
     A drop's sizes CSVs go into the reading of its first planning workbook (their sizes applied on top of
-    its merge, as the plan upload once took them); each says so, with that reading's id."""
+    its merge, as the plan upload once took them); each says so, with that reading's id. A drop's generic CSV
+    files are likewise one reading (`_generic`); mixed with school files, every one of both is refused. A drop
+    lacking a generic staff, units or duties file is generic only on a generic-shaped timetable
+    (`_generic_shaped`): on a school's, each of its files keeps its old route."""
     tid = tid or db.working_timetable()     # pinned: the selection may change while the model reads
     try:
         sweep(db)
@@ -1319,6 +1387,24 @@ def read_files(db, provider_factory, items: list[tuple[str, bytes]], tid: str | 
     drop = _new_drop()
     drop["staff"] = _preread_staff(items, [i for i in rank if rank[i] == PACK_ORDER.index("staff")])
     results: dict[int, dict] = {}
+    generic = GC.drop_set(items[:FILES_MAX])
+    if generic and not set(GC.REQUIRED) <= set(generic) and not _generic_shaped(db, tid):
+        generic = {}                        # part of a set, on a school's timetable: each file its old route
+    seconds = {}                            # a second file of one generic kind: refused, never the AI
+    if generic:
+        seconds = {i: k for i, k in GC.generic_files(items[:FILES_MAX]).items() if i not in generic.values()}
+    if generic and rank:                    # generic and school files in one drop: every one of both refused
+        everyone = sorted([*generic.values(), *seconds])
+        names = {"generic": [items[i][0] or "upload" for i in everyone],
+                 "school": [items[i][0] or "upload" for i in sorted(rank)]}
+        for which, positions in (("generic", everyone), ("school", sorted(rank))):
+            for i, name in zip(positions, names[which]):
+                results[i] = _failed(db, name, GC.separate(name, which, names["generic"], names["school"]), tid)
+    else:
+        for i, kind in seconds.items():
+            name = items[i][0] or "upload"
+            results[i] = _failed(db, name, GC.second(name, kind), tid)
+    settled = set(results)                  # refused before the reading: skipped below
     also: list[dict] = []                   # a planning workbook's Students sheet: after every file's own result
     asc: list[tuple[int, str, bytes]] = []
     timetables: list = []                   # ([positions], body) of timetable readings, stored last
@@ -1331,8 +1417,11 @@ def read_files(db, provider_factory, items: list[tuple[str, bytes]], tid: str | 
                               "message": f"Up to {FILES_MAX} files at a time: give {name} again on its own."}
             elif len(data) > MAX_UPLOAD:
                 results[i] = _failed(db, name, f"{name} is over 20 MB", tid)
-            elif i in folded:
-                continue                    # read with the workbook, after it
+            elif i in folded or i in settled:
+                continue                    # read with the workbook, after it; or refused already
+            elif i in generic.values():
+                if i == min(generic.values()):      # the drop's generic files: one reading, at the first
+                    results.update(_generic(db, items, generic, tid))
             elif name.lower().endswith(".pdf") and asc_import.is_asc_pdf(data):
                 asc.append((i, name, data))
             else:

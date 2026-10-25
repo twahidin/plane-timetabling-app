@@ -113,7 +113,7 @@ def _split_top(text: str, sep: str) -> list[str]:
     return parts
 
 
-def _levels_of(bracket: str, subject: str) -> tuple[list[str], str | None]:
+def levels_of(bracket: str, subject: str) -> tuple[list[str], str | None]:
     """The level keys a bracket names, or (levels, problem). A range such as "Sec 1–2" or
     "Sec 1-Sec 3" expands to every numbered level between."""
     keys: list[str] = []
@@ -147,6 +147,9 @@ def _levels_of(bracket: str, subject: str) -> tuple[list[str], str | None]:
     return list(dict.fromkeys(keys)), None
 
 
+_levels_of = levels_of                      # the old name
+
+
 def parse_subjects(text) -> tuple[list[dict], list[str]]:
     """(entries, problems) for the text form. An entry is {subject, levels}; `levels` is a list of
     `level_key` values and [] means every level. An entry that cannot be read is not kept, and says
@@ -174,12 +177,59 @@ def parse_subjects(text) -> tuple[list[dict], list[str]]:
         if not bracket.strip():
             problems.append(f"{subject}: the brackets are empty; leave them out for every level")
             continue
-        levels, problem = _levels_of(bracket, subject)
+        levels, problem = levels_of(bracket, subject)
         if problem:
             problems.append(problem)
         else:
             entries.append({"subject": subject, "levels": levels})
     return entries, problems
+
+
+def entries_from_pairs(pairs: list[tuple]) -> tuple[list[dict], list[str]]:
+    """(entries, problems) for Subject/Levels pairs, (subject, levels text) or (subject, levels text, N),
+    one subject a pair; N is the pair's number in the header (its place in `pairs` when not given), named
+    by a problem. The subject is taken as written, so brackets in it are part of the name; the levels text
+    reads as a bracket does, a ";" in it being a problem, never part of a level. A blank subject is skipped,
+    a blank levels text means every level, and an entry that cannot be read says why."""
+    entries: list[dict] = []
+    problems: list[str] = []
+    for place, pair in enumerate(pairs, 1):
+        subject, levels_text = pair[0], pair[1]
+        n = pair[2] if len(pair) > 2 else place
+        subject = " ".join(str(subject or "").split())
+        if not subject:
+            continue
+        if ";" in subject:
+            problems.append(f"Subject {n}: one subject a cell; give {subject!r} its own pair")
+            continue
+        if not str(levels_text or "").strip():
+            entries.append({"subject": subject, "levels": []})
+            continue
+        if ";" in str(levels_text):
+            problems.append(f"{subject}: Levels {n} {str(levels_text).strip()!r} has a ';'; "
+                            f"separate the levels with commas (Sec 3, Sec 4)")
+            continue
+        levels, problem = levels_of(str(levels_text), subject)
+        if problem:
+            problems.append(problem)
+        else:
+            entries.append({"subject": subject, "levels": levels})
+    return entries, problems
+
+
+def merge_entries(entries: list[dict]) -> list[dict]:
+    """`entries` with one entry a subject (compared with `norm`), at the first one's place. Levels are
+    joined in first-seen order; [] (every level) wins over any list."""
+    merged: dict[str, dict] = {}
+    for entry in entries:
+        key = norm(entry["subject"])
+        if key not in merged:
+            merged[key] = {"subject": entry["subject"], "levels": list(entry["levels"])}
+        elif not merged[key]["levels"] or not entry["levels"]:
+            merged[key]["levels"] = []
+        else:
+            merged[key]["levels"] += [k for k in entry["levels"] if k not in merged[key]["levels"]]
+    return list(merged.values())
 
 
 def _runs(keys: list[str]) -> list[str]:

@@ -26,7 +26,7 @@
   // The three links the wizard hands out (routes.py's DOWNLOADS): fixed paths, always the same
   // once a template has been chosen for this timetable.
   const DOWNLOADS = { workbook: '/api/wizard/workbook.xlsx', sample: '/api/wizard/sample.pdf', guide: '/api/wizard/guide' };
-  // The five blank CSV files (a zip), the same for every school; it is not part of a chosen template's downloads.
+  // The blank CSV files (a zip) for the chosen template, or the secondary school's before one is chosen; not part of a template's downloads.
   const CSV_PACK = '/api/wizard/csv-pack.zip';
 
   // "cycle_days" -> "cycle days": a knob's key read as plain words, never shown as an identifier.
@@ -133,11 +133,11 @@
     sample.addEventListener('click', () => { window.location = downloads.sample; });
     const guide = node('button', 'btn', 'Guide'); guide.type = 'button';
     guide.addEventListener('click', () => { window.open(downloads.guide, '_blank'); });
-    const csvs = node('button', 'btn', 'Download the five CSV files'); csvs.type = 'button';
+    const csvs = node('button', 'btn', 'Download the CSV files'); csvs.type = 'button';
     csvs.addEventListener('click', () => { window.location = CSV_PACK; });
     row.appendChild(wb); row.appendChild(csvs); row.appendChild(sample); row.appendChild(guide);
     box.appendChild(row);
-    box.appendChild(node('p', 'wizard-note', 'Fill in the workbook, or the five CSV files, then drop them on the Assistant or in the Intake box'));
+    box.appendChild(node('p', 'wizard-note', 'Fill in the workbook, or the CSV files, then drop them on the Assistant or in the Intake box'));
     box.hidden = false;
   }
 

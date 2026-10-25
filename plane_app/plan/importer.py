@@ -17,6 +17,7 @@ from .. import names as names_mod
 from .. import week
 from . import model as M
 from . import specialisation as SP
+from .reader import csvpack as CP
 from .issues import Issue
 
 #  README is skipped on both shapes of workbook: the start wizard's `wizard.instantiate.workbook_bytes`
@@ -28,6 +29,9 @@ _SPECIAL_SHEETS = {"groups", "control", "load"}
 
 _NEEDED_HEADERS = {"subject", "single", "double", "grouping", "class 1"}
 _GENERIC_SHEETS = {"staff", "venues", "units", "duties"}
+# the sheet `reader.generic_csv.assemble` adds to a drop of generic CSV files: a sheet the drop lacks is the
+# stored plan's (`read_generic_workbook`), not an empty one
+_CSV_FILES_SHEET = "csv files"
 
 _LESSON_COLS = (("single", "1"), ("double", "2"), ("triple", "3"), ("quadruple", "4"))
 
@@ -146,14 +150,15 @@ def openpyxl_load(data: bytes):
 
 def is_generic_workbook(data: bytes) -> bool:
     """A duties workbook (spec §5): Staff, Venues, Units and Duties sheets, by name — the same
-    shape `wizard.instantiate.workbook_bytes` writes for every non-education template."""
+    shape `wizard.instantiate.workbook_bytes` writes for every non-education template — or a drop of
+    generic CSV files assembled into one, told by its `CSV files` sheet."""
     try:
         wb = openpyxl_load(data)
     except Exception:
         return False
     try:
         titles = {ws.title.strip().lower() for ws in wb.worksheets}
-        return _GENERIC_SHEETS <= titles
+        return _GENERIC_SHEETS <= titles or _CSV_FILES_SHEET in titles
     finally:
         wb.close()
 
@@ -240,10 +245,13 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None,
     rows = list(ws.iter_rows(values_only=True))
     header = None
     header_idx = None
+    pairs: list[tuple[int, int | None, int]] = []
     for i, row in enumerate(rows):
         hm = _header_map(row)
         if any(k in hm for k in _STAFF_NAME_KEYS) and any(k in hm for k in _STAFF_SIGNAL_KEYS):
             header, header_idx = hm, i
+            # the Subject N / Levels N pairs, found as a staff CSV header finds them
+            pairs = CP.staff_pairs(["" if c is None else str(c) for c in row])
             break
     if header is None:
         return staff
@@ -286,11 +294,32 @@ def _read_staff_sheet(ws, org: dict | None, issues: list[Issue] | None = None,
             "shares": _read_shares(_cell(row, shares_col), name, issues),
             "source_hash": _row_hash(row),
         })
-        if subjects_col is not None:
-            subjects = _read_subjects(_cell(row, subjects_col), f"{ws.title} row {i}: {name}", name, issues)
-            if subjects:
+        if subjects_col is not None or pairs:
+            at = f"{ws.title} row {i}: {name}"
+            subjects = _read_subjects(_cell(row, subjects_col), at, name, issues)
+            subjects = SP.merge_entries(subjects + _read_pairs(row, pairs, at, name, issues))
+            if subjects:             # every cell blank: no key, so the plan's stored subjects stay
                 staff[-1]["subjects"] = subjects
     return staff
+
+
+def _typed(row, col) -> str:
+    """A pair cell as a person typed it: a number that is whole reads as that whole number (3.0 is "3",
+    so a Levels cell of 3 names level 3, not "3.0"). Only the pair cells; `_text` is unchanged."""
+    v = _cell(row, col)
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return str(v).strip() if v is not None else ""
+
+
+def _read_pairs(row, pairs: list[tuple[int, int | None, int]], at: str, who: str, issues: list[Issue]) -> list[dict]:
+    """The Subject N / Levels N pairs of a row (spec 2026-10-25-per-template-csv-files-design.md): one
+    subject a pair, read as specialisation.entries_from_pairs reads a staff CSV's. A pair that does not
+    read is left out and is an issue naming the sheet's row."""
+    entries, problems = SP.entries_from_pairs([(_typed(row, s), _typed(row, v), n) for s, v, n in pairs])
+    for problem in problems:
+        issues.append(Issue("warn", who, f"{at}: {problem}, left out"))
+    return entries
 
 
 def _read_subjects(raw, at: str, who: str, issues: list[Issue]) -> list[dict]:
@@ -1016,6 +1045,12 @@ def _read_generic_staff(ws, org: dict | None, cycle: tuple[int, int, int] | None
         if pid is None:
             pid = M.slug(name)
         load_raw = _cell(row, load_col)
+        try:
+            load = float(load_raw) if load_raw not in (None, "") else 1.0
+        except (TypeError, ValueError):     # a row's doubt, never the whole sheet refused
+            issues.append(Issue("warn", name, f"{ws.title}: {name}'s Load factor {load_raw!r} is not a number; "
+                                              f"1 is used"))
+            load = 1.0
         staff.append({
             "id": pid,
             "name": name,
@@ -1023,7 +1058,7 @@ def _read_generic_staff(ws, org: dict | None, cycle: tuple[int, int, int] | None
             # `dept` doubles as the row's "Role" here: `_role_index` groups staff by it so
             # "Who can do it" can name a role instead of listing everyone in it.
             "dept": _text(row, role_col),
-            "load_factor": float(load_raw) if load_raw not in (None, "") else 1.0,
+            "load_factor": load,
             "avail": _parse_availability(_text(row, avail_col), cycle, name, issues),
             "max_periods_day": None,
             "source_hash": _row_hash(row),
@@ -1040,7 +1075,7 @@ def _role_index(staff: list[dict]) -> dict[str, list[str]]:
     return index
 
 
-def _read_generic_units(ws) -> list[dict]:
+def _read_generic_units(ws, issues: list[Issue]) -> list[dict]:
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return []
@@ -1054,7 +1089,13 @@ def _read_generic_units(ws) -> list[dict]:
         if not name:
             continue
         size_val = _cell(row, size_col)
-        units.append({"code": name, "level": "", "size": int(size_val) if size_val not in (None, "") else None})
+        try:
+            size = int(size_val) if size_val not in (None, "") else None
+        except (TypeError, ValueError):     # a row's doubt, never the whole sheet refused
+            issues.append(Issue("warn", name, f"{ws.title}: {name}'s Size {size_val!r} is not a whole number; "
+                                              f"left blank"))
+            size = None
+        units.append({"code": name, "level": "", "size": size})
     return units
 
 
@@ -1186,7 +1227,9 @@ def read_generic_workbook(data: bytes, org: dict | None, existing: dict | None,
     """The generic duties workbook (spec §5): Staff, Venues, Units and Duties sheets, detected by
     name (`is_generic_workbook`) rather than by header cells. `Venues` only needs to exist for the
     shape to be recognised — a duty names its venue kind directly, the same field every requirement
-    already carries."""
+    already carries. A drop of CSV files (its `CSV files` sheet) lacking a sheet takes that section from
+    `existing`: its staff (also the pool the duties are read against), its classes as the units, its
+    requirements as the duties — so one file can be given on its own."""
     issues: list[Issue] = []
     try:
         wb = openpyxl_load(data)
@@ -1198,11 +1241,14 @@ def read_generic_workbook(data: bytes, org: dict | None, existing: dict | None,
     try:
         sheets = {ws.title.strip().lower(): ws for ws in wb.worksheets}
         cycle = cycle_shape(org, settings)
-        staff = _read_generic_staff(sheets["staff"], org, cycle, issues) if "staff" in sheets else []
+        stored = copy.deepcopy(existing or {}) if _CSV_FILES_SHEET in sheets else {}
+        staff = (_read_generic_staff(sheets["staff"], org, cycle, issues) if "staff" in sheets
+                 else stored.get("staff") or [])
         role_index = _role_index(staff)
-        units = _read_generic_units(sheets["units"]) if "units" in sheets else []
+        units = (_read_generic_units(sheets["units"], issues) if "units" in sheets
+                 else [{"code": c["code"], "level": "", "size": c.get("size")} for c in stored.get("classes") or []])
         requirements = (_read_generic_duties(sheets["duties"], org, staff, role_index, issues)
-                        if "duties" in sheets else [])
+                        if "duties" in sheets else stored.get("requirements") or [])
 
         unit_sizes = {u["code"]: u["size"] for u in units}
         unit_codes = sorted({u["code"] for u in units} | {c for r in requirements for c in r["classes"]})

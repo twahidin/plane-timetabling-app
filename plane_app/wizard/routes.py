@@ -8,6 +8,7 @@ chat tools (`chat.py`), so the route handlers and the tools write the same thing
 from __future__ import annotations
 
 import copy
+import re
 import time as _time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
@@ -160,10 +161,21 @@ def make_router(db, templates, engine) -> APIRouter:
 
     @r.get("/api/wizard/csv-pack.zip")
     def csv_pack(sid: str = Depends(auth.require_session)):
-        """The five blank CSV files (staff, venues, requirements, combinations, students), admin only. They
-        need no chosen template: the same files for every school."""
-        return Response(I.csv_pack_zip(), media_type="application/zip",
-                        headers={"Content-Disposition": 'attachment; filename="csv-files.zip"'})
+        """The chosen template's blank CSV files and a README, admin only. Before a template is chosen (or when
+        it, or its stored knobs, no longer resolve or validate) the secondary school's five files: never a 500."""
+        record = db.get_value("wizard")
+        template, data = None, None
+        if isinstance(record, dict) and record.get("template"):
+            try:
+                template = _template(record["template"])
+                data = I.csv_pack_zip(template, L.check_knobs(template, record.get("knobs") or {}))
+            except (HTTPException, L.WizardError):
+                template = None
+        if template is None:
+            data = I.csv_pack_zip(None, {})
+        name = "csv-files.zip" if template is None else f"csv-files-{re.sub(r'[^A-Za-z0-9._-]', '-', template['id'])}.zip"
+        return Response(data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @r.get("/api/wizard/sample.pdf")
     def sample_pdf(sid: str = Depends(auth.require_session)):

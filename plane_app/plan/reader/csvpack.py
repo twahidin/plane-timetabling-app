@@ -38,18 +38,74 @@ FILES = {"staff": "staff.csv", "venues": "venues.csv", "requirements": "requirem
 # it stands, without a problem, so a blank file reads as nothing and the example can stay beside real rows.
 EXAMPLE_MARK = "e.g."
 HEADERS = {
-    "staff": ["Name", "Short", "Department", "Load", "Subjects"],
+    "staff": ["Name", "Short", "Department", "Load", "Subject 1", "Levels 1", "Subject 2", "Levels 2",
+              "Subject 3", "Levels 3"],
     "venues": ["Room", "Kind", "Capacity"],
     "requirements": ["Level", "Subject", "Periods a week", "Taught as", "Room kind", "Department"],
     "combinations": ["Level", "Code", "Name", "Subject 1", "Subject 2", "Subject 3", "Places"],
     "level_students": ["Student ID", "Name", "Level", "Merit", "Choice 1", "Choice 2", "Choice 3"],
 }
 EXAMPLES = {
-    "staff": ["e.g. Teacher Name", "TN", "Science", "24", "Physics (Sec 1\u20132); Chemistry"],
+    "staff": ["e.g. Teacher Name", "TN", "Science", "24", "Physics", "Sec 3, Sec 4", "Science", "Sec 1, Sec 2", "", ""],
     "venues": ["e.g. Lab 1", "Lab", "32"],
     "requirements": ["e.g. Sec 3", "Physics", "4", "Banded", "Lab", "Science"],
     "combinations": ["e.g. Sec 3", "", "Pure Sciences", "Physics", "Chemistry", "Biology", "30"],
     "level_students": ["e.g. S0001", "Student Name", "Sec 3", "1", "Physics, Chemistry, Biology", "", ""],
+}
+
+# What each file is for and what each column holds, for the README that goes in the download. Written with
+# the template's own words as {person}, {group}, {requirement} and {venue}; the headers themselves never change.
+PURPOSES = {
+    "staff": "Who teaches: each {person}, their teaching load and the {requirement}s they can take.",
+    "venues": "Where {group}s meet: each {venue}, its kind and its capacity.",
+    "requirements": "What each level needs: every {requirement}, how many periods a week and how it is taught.",
+    "combinations": "The subject combinations a level offers, for levels that split into options.",
+    "level_students": "Each student of a level, their merit rank and the combinations they would choose.",
+}
+DESCRIPTIONS = {
+    "staff": {
+        "Name": "The {person}'s full name, as it should print",
+        "Short": "A short code for the {person}, different for each (leave empty to have one made)",
+        "Department": "The department the {person} belongs to",
+        "Load": "The periods a week the {person} teaches (leave empty for the usual load)",
+        "Subject 1": "A {requirement} the {person} can take",
+        "Levels 1": "The levels they take it at, separated by commas (leave empty for every level)",
+        "Subject 2": "A second {requirement}, if there is one (leave empty when there is no more)",
+        "Levels 2": "The levels for the second {requirement} (leave empty for every level)",
+        "Subject 3": "A third {requirement}, if there is one (leave empty when there is no more)",
+        "Levels 3": "The levels for the third {requirement} (leave empty for every level)",
+    },
+    "venues": {
+        "Room": "The {venue}'s name",
+        "Kind": "What sort of {venue} it is, such as the kind a {requirement} asks for",
+        "Capacity": "How many people it holds",
+    },
+    "requirements": {
+        "Level": "The level the {requirement} is for",
+        "Subject": "The {requirement}'s name",
+        "Periods a week": "How many periods a week each {group} has it",
+        "Taught as": "Class (each {group} on its own), Combined N (N {group}s together) or Banded (split across options)",
+        "Room kind": "The kind of {venue} it needs (leave empty for any {venue})",
+        "Department": "The department that teaches it",
+    },
+    "combinations": {
+        "Level": "The level the combination belongs to",
+        "Code": "A short code for the combination, different within a level (leave empty to have one made)",
+        "Name": "What the combination is called",
+        "Subject 1": "A {requirement} in the combination",
+        "Subject 2": "A second {requirement} in the combination",
+        "Subject 3": "A third {requirement} in the combination (leave empty when there is no more)",
+        "Places": "How many students the combination can take",
+    },
+    "level_students": {
+        "Student ID": "The student's ID, different for each student",
+        "Name": "The student's name",
+        "Level": "The student's level",
+        "Merit": "The student's merit rank, 1 for the first place",
+        "Choice 1": "The student's first choice of combination, as its subjects separated by commas",
+        "Choice 2": "Their second choice (leave empty when there is none)",
+        "Choice 3": "Their third choice (leave empty when there is none)",
+    },
 }
 
 
@@ -125,9 +181,10 @@ _ALIASES = {
     },
 }
 # numbered columns, matched on `_key`: Subject 1, Subject 2... and Choice 1, Choice 2...
-_NUMBERED = {"combinations": re.compile(r"subject ?(\d+)"),
+_NUMBERED = {"combinations": re.compile(r"subject ?(\d+)"), "staff": re.compile(r"subject ?(\d+)"),
              "level_students": re.compile(r"(?:choice|preference|combination) ?(\d+)")}
-_FIRST = {"combinations": "subject 1", "level_students": "choice 1"}
+_STAFF_LEVELS = re.compile(r"levels? ?(\d+)")
+_FIRST = {"combinations": "subject 1", "staff": "subject 1", "level_students": "choice 1"}
 
 # What recognises a kind (spec §2), and what it must also have to be read; each entry is a set of
 # alternatives, one of which is enough. R25: staff.csv is Name + Department + (Subjects or Load), so a
@@ -137,7 +194,7 @@ _DETECT = {
     "level_students": [("student id",), ("level",), ("choice 1",)],
     "combinations": [("level",), ("subject 1",)],
     "requirements": [("level",), ("subject",), ("periods", "taught as")],
-    "staff": [("name",), ("department",), ("subjects", "load")],
+    "staff": [("name",), ("department",), ("subjects", "load", "subject 1")],
     "venues": [("room",), ("kind", "capacity")],
 }
 _REQUIRED = {**_DETECT, "combinations": [("level",), ("subject 1",), ("places",)],
@@ -170,6 +227,20 @@ def _columns(kind: str, header: list) -> tuple[dict, dict, list]:
     return cols, labels, numbered
 
 
+def staff_pairs(header: list) -> list[tuple[int, int | None, int]]:
+    """(Subject N column, its Levels N column or None, N) in number order, from a staff header; matched
+    on `_key`, and "Level N" is accepted for "Levels N". The first header with a number wins."""
+    keys = [_key(h) for h in header]
+    subjects: dict[int, int] = {}
+    levels: dict[int, int] = {}
+    for i, k in enumerate(keys):
+        for found, pattern in ((subjects, _NUMBERED["staff"]), (levels, _STAFF_LEVELS)):
+            m = pattern.fullmatch(k)
+            if m and int(m.group(1)) >= 1:
+                found.setdefault(int(m.group(1)), i)
+    return [(subjects[n], levels.get(n), n) for n in sorted(subjects)]
+
+
 def _lacking(kind: str, header: list, table: dict) -> list[str]:
     cols = _columns(kind, header)[0]
     return [" or ".join(_SHOWN[a] for a in alts) for alts in table[kind] if not any(a in cols for a in alts)]
@@ -193,10 +264,14 @@ def detect(header) -> str | None:
 _STUDENT_ID = _keys("Student ID", "Admission no", "Admission number", "Reg no")
 
 
+_CLASS_AS_WRITTEN = frozenset(head(n) for n in ("Class", "Form class", "Form", "Class code"))
+
+
 def names_a_class(header) -> bool:
     """Whether a header has a Class column. None of the five files has one: a file that does is B1's
-    student list, a home-room list or a per-class table, and keeps the route it had before them."""
-    return bool({_key(h) for h in header or []} & _CLASS)
+    student list, a home-room list or a per-class table, and keeps the route it had before them. The
+    plural is not one: a "Classes" column lists several classes on a row, beside a requirement's teachers."""
+    return bool({head(h) for h in header or []} & _CLASS_AS_WRITTEN)
 
 
 def names_students(header) -> bool:
@@ -334,6 +409,10 @@ def _getter(cols: dict, row: list):
     return get
 
 
+def _cell(row: list, i: int | None) -> str:
+    return cell(row[i]) if i is not None and i < len(row) else ""
+
+
 def _number(text: str) -> float | None:
     """A typed number; "0,5" is 0.5 (a decimal comma, as a `;` file from Excel writes it)."""
     text = text.strip()
@@ -388,6 +467,7 @@ def read_staff(rows, header, context, file: str | None = None) -> tuple[list[dic
     requirements don't have is listed and the teacher kept with it (R11): never "can't teach"."""
     out = _Out(file or FILES["staff"])
     cols, label, _ = _columns("staff", header)
+    pairs = staff_pairs(header)
     subjects_known, levels_known = _known_subjects(context), _known_levels(context)
     items, kept, unchecked = [], {}, False
     for n, row in rows:
@@ -415,7 +495,10 @@ def read_staff(rows, header, context, file: str | None = None) -> tuple[list[dic
             else:
                 item["load_factor"] = value
         entries, unread = SP.parse_subjects(get("subjects"))
-        errors += unread
+        paired, unpaired = SP.entries_from_pairs([
+            (_cell(row, s), _cell(row, v), n) for s, v, n in pairs])
+        entries = SP.merge_entries(entries + paired)
+        errors += unread + unpaired
         item["subjects"] = entries
         if errors:
             for text in errors:

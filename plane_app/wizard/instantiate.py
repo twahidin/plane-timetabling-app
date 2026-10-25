@@ -34,6 +34,7 @@ from ..plan import model as M
 from ..plan.generate import generate
 from ..plan.reader import csvpack as CP
 from ..print import grid as G, pdf as P
+from . import library as LIB
 from .library import WizardError
 
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -717,7 +718,7 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                    "rows": groups_rows})
 
     staff_rows = [[float(i + 1), name, list(families)[i % len(families)][:2].upper(), "Full time",
-                   1.0 if i < len(teachers) - 1 else 0.5, _initials(name), None]
+                   1.0 if i < len(teachers) - 1 else 0.5, _initials(name), *[None] * 6]
                   for i, name in enumerate(teachers)]
     sheets.append({"name": "Control", "purpose": f"One row per {v['person']}: who they are and how much they teach.",
                    "preamble": [["STAFF"]],
@@ -727,11 +728,15 @@ def _deployment_sheets(template: dict, knobs: dict) -> list[dict]:
                                _column("Profile", "Full time, part time, and so on", "Full time"),
                                _column("Teaching Load Factor", "1 for full time, 0.5 for half, and so on", 1.0),
                                _column("Short", "A short form for the printed timetable", _initials(teachers[0])),
-                               _column("Subjects", f"Optional: what the {v['person']} teaches, separated by ';', "
-                                                   "each with its levels in brackets when not every level, e.g. "
-                                                   "Physics (Sec 1–2); Chemistry. An empty cell keeps the subjects "
-                                                   "the app has; remove them in the staff form", "")],
-                   "head": ["S/N", "Staff", "Dept", "Profile", "Teaching Load Factor", "Short", "Subjects"],
+                               *(c for n in (1, 2, 3) for c in (
+                                   _column(f"Subject {n}", f"Optional: a subject the {v['person']} can teach "
+                                                           "(leave empty when there is nothing to list; empty "
+                                                           "cells keep the subjects the app has, remove them in "
+                                                           "the staff form)", ""),
+                                   _column(f"Levels {n}", "The levels they can teach it at, separated by commas; "
+                                                          "empty for every level", "")))],
+                   "head": ["S/N", "Staff", "Dept", "Profile", "Teaching Load Factor", "Short",
+                            "Subject 1", "Levels 1", "Subject 2", "Levels 2", "Subject 3", "Levels 3"],
                    "rows": staff_rows})
 
     # one example student in the first class, taking the first option group of each banded subject: the
@@ -806,25 +811,119 @@ def chosen_knobs(template: dict, knobs: dict) -> list[dict]:
     return out
 
 
-def csv_pack_files() -> dict[str, bytes]:
-    """The five blank CSV files (csv-pack spec §4), {file name: bytes}: each has the exact headers the
-    readers detect and one example row, which the readers skip as an example, so a blank file reads as
-    nothing. UTF-8 with a byte-order mark, so a spreadsheet shows the en dash of a level range."""
-    out: dict[str, bytes] = {}
-    for kind in CP.KINDS:
-        buf = io.StringIO()
-        writer = csv.writer(buf, lineterminator="\r\n")
-        writer.writerow(CP.HEADERS[kind])
-        writer.writerow(CP.EXAMPLES[kind])
-        out[CP.FILES[kind]] = buf.getvalue().encode("utf-8-sig")
+# The CSV files each education template gets, in download order; a deployment template not listed gets all
+# five. Primary and college leave out the two files only a banded secondary school fills in.
+EDU_FILES = {
+    "edu-secondary-bands": ("staff", "venues", "requirements", "combinations", "level_students"),
+    "edu-primary-class-teacher": ("staff", "venues", "requirements"),
+    "edu-college-modules": ("staff", "venues", "requirements"),
+}
+# A generic template's files, in order: one per workbook sheet, named for it.
+GENERIC_FILES = ("staff", "venues", "units", "duties")
+# Each template's own example rows where they differ from `CP.EXAMPLES` (the secondary school's): its level
+# names, subjects and room kinds, so a primary file never shows "Sec 3, Physics, Lab".
+EDU_EXAMPLES = {
+    "edu-primary-class-teacher": {
+        "requirements": ["e.g. Year 1", "Literacy", "8", "Class", "Classroom", "Literacy"],
+        "staff": ["e.g. Teacher Name", "TN", "Literacy", "24", "Literacy", "Year 1, Year 2", "Numeracy", "", "", ""],
+        "venues": ["e.g. Room 1", "Classroom", "30"],
+    },
+    "edu-college-modules": {
+        "requirements": ["e.g. Year 1", "Module A lecture", "2", "Class", "Lecture theatre", "Module A"],
+        "staff": ["e.g. Lecturer Name", "LN", "Module A", "18", "Module A lecture", "Year 1",
+                  "Module A tutorial", "Year 1", "", ""],
+        "venues": ["e.g. Lecture theatre 1", "Lecture theatre", "120"],
+    },
+}
+
+
+def _csv_bytes(header: list[str], example: list[str]) -> bytes:
+    """One CSV file: UTF-8 with a byte-order mark, so a spreadsheet shows the en dash of a level range."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(header)
+    writer.writerow(example)
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def _readme_text(template: dict, sections: list[tuple[str, str, list[tuple[str, str, str]]]]) -> bytes:
+    """README.txt for the CSV files: per file its name, what it is for, and each column with what it holds and
+    an example. `sections` is [(file name, purpose, [(header, what it holds, example cell)])]."""
+    lines = [f"{template['name']} - the CSV files", "",
+             "Fill in the files you need, then drop them on the Assistant or in the Intake box. Each file has one",
+             f"example row whose first cell starts with {CP.EXAMPLE_MARK!r}: it is skipped, so leave it or delete it.", ""]
+    for file_name, purpose, columns in sections:
+        lines += [file_name, "  " + purpose]
+        for header, what, example in columns:
+            shown = example[len(CP.EXAMPLE_MARK):].strip() if CP.is_example([example]) else example
+            lines.append(f"  {header}: {what}" + (f". For example: {shown}" if shown else ""))
+        lines.append("")
+    return "\n".join(lines).encode("utf-8")
+
+
+def csv_readme(template: dict, kinds, examples: dict[str, list[str]]) -> bytes:
+    """The education templates' README, worded with the template's own vocabulary (the headers stay the same
+    words everywhere)."""
+    words = template["vocabulary"]
+    return _readme_text(template, [
+        (CP.FILES[kind], CP.PURPOSES[kind].format(**words),
+         [(header, CP.DESCRIPTIONS[kind][header].format(**words), example)
+          for header, example in zip(CP.HEADERS[kind], examples[kind])])
+        for kind in kinds])
+
+
+def _generic_csv_files(template: dict, knobs: dict) -> dict[str, bytes]:
+    """The four files of a generic template, one per workbook sheet (`GENERIC_FILES`, in sheet order), then a
+    README: headers, purposes and column descriptions all come from `sheets_for`, so the workbook and the CSV
+    files cannot drift apart. The example row of each file is the one that agrees with the first duty: its
+    unit, the first venue of its kind, and the first person who can take it."""
+    sheets = {sheet["name"].lower(): sheet for sheet in sheets_for(template, LIB.check_knobs(template, knobs))}
+    duty = dict(zip(sheets["duties"]["head"], sheets["duties"]["rows"][0]))
+
+    def pick(name: str, column: str, wanted: str) -> list:
+        rows = sheets[name]["rows"]
+        index = list(sheets[name]["head"]).index(column)
+        return next((row for row in rows if row[index] == wanted), rows[0])
+
+    examples = {
+        "duties": sheets["duties"]["rows"][0],
+        "units": pick("units", "Name", duty["Unit"]),
+        "venues": pick("venues", "Kind", duty["Venue kind"]),
+        "staff": pick("staff", "Name", str(duty["Who can do it"]).split(",")[0].strip()),
+    }
+    out, sections = {}, []
+    for name in GENERIC_FILES:
+        sheet = sheets[name]
+        cells = [str(cell) for cell in examples[name]]
+        cells[0] = f"{CP.EXAMPLE_MARK} {cells[0]}"
+        out[f"{name}.csv"] = _csv_bytes([str(h) for h in sheet["head"]], cells)
+        sections.append((f"{name}.csv", sheet["purpose"],
+                         [(str(h), column["what"], cell) for h, column, cell in zip(sheet["head"], sheet["columns"], cells)]))
+    out["README.txt"] = _readme_text(template, sections)
     return out
 
 
-def csv_pack_zip() -> bytes:
-    """The five blank CSV files in one zip, built in memory."""
+def csv_files(template: dict | None, knobs: dict) -> dict[str, bytes]:
+    """The blank CSV files a template hands out, {file name: bytes} in download order and ending with
+    README.txt (csv-pack spec §4; per-template spec §6). Each has the exact headers the readers detect and one
+    example row the readers skip, so a blank file reads as nothing. `None` is the secondary school's, loaded
+    from the library. A generic template gets one file per workbook sheet."""
+    if template is None:
+        template = LIB.get("edu-secondary-bands")
+    if template["sheets"] == "generic":
+        return _generic_csv_files(template, knobs)
+    kinds = EDU_FILES.get(template["id"], CP.KINDS)
+    examples = {k: EDU_EXAMPLES.get(template["id"], {}).get(k, CP.EXAMPLES[k]) for k in kinds}
+    out = {CP.FILES[k]: _csv_bytes(CP.HEADERS[k], examples[k]) for k in kinds}
+    out["README.txt"] = csv_readme(template, kinds, examples)
+    return out
+
+
+def csv_pack_zip(template: dict | None, knobs: dict) -> bytes:
+    """A template's CSV files and README in one zip, built in memory."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for name, data in csv_pack_files().items():
+        for name, data in csv_files(template, knobs).items():
             z.writestr(name, data)
     return buf.getvalue()
 
