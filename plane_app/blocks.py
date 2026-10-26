@@ -405,8 +405,83 @@ def allowance_left(plan: dict, settings: dict, year: str) -> dict[str, float]:
 _FIT = {True: 0, None: 1, False: 2}           # specialisation.covers: covers, lists nothing, outside
 
 
+def _deployed(plan: dict, levels: dict | None, level: str, code: str, name: str) -> dict:
+    """What a deployment file names for a subject: {"ids": staff ids, "written": {id: the name as written}, "unfound": [(written, why)], "level":
+    the level's name, "subject": the row's subject as written}, from the `deploy` teachers of the level's
+    Banded row for it (matched on the code or the name by `students.norm`), each through `classes._resolve`
+    (why "tie" for a name two staff share, else "missing"). A blank teacher names no one."""
+    from . import classes as C          # not at module level: a circular import
+
+    entry = (levels or {}).get(SP.level_key(level)) if level else None
+    wanted = {norm(code), norm(name)}
+    out = {"ids": [], "written": {}, "unfound": [], "level": (entry or {}).get("name") or "", "subject": ""}
+    for row in (entry or {}).get("subjects") or []:
+        if row.get("taught_as") != "banded" or norm(row.get("subject")) not in wanted:
+            continue
+        out["subject"] = out["subject"] or row["subject"]
+        for d in row.get("deploy") or []:
+            if not d.get("teacher"):
+                continue
+            pid, why = C._resolve(plan, d["teacher"])
+            if pid:
+                if pid not in out["ids"]:
+                    out["ids"].append(pid)
+                    out["written"][pid] = d["teacher"]
+            elif (d["teacher"], why) not in out["unfound"]:
+                out["unfound"].append((d["teacher"], why))
+    return out
+
+
+def deployed_ids(plan: dict, levels: dict | None, year_classes: list[str], code: str, meta: dict) -> list[str]:
+    """The staff ids the stored levels' deployment names for one subject of the year (its level's Banded row)."""
+    level = level_of(plan, year_classes[0]) if year_classes else ""
+    return _deployed(plan, levels, level, code, _meta(meta, code).get("name") or code)["ids"]
+
+
+def named_sets(sets: list[dict], teachers: dict, plan: dict, meta: dict, year_classes: list[str],
+               levels: dict | None) -> set[tuple[str, int]]:
+    """The (subject, set) whose suggested teacher is one the deployment file names for that subject."""
+    ids = {code: deployed_ids(plan, levels, year_classes, code, meta) for code in {st["subject"] for st in sets}}
+    return {(code, k) for (code, k), pid in teachers.items() if pid and pid in ids.get(code, ())}
+
+
+def deploy_notes(sets: list[dict], teachers: dict, plan: dict, meta: dict, year_classes: list[str],
+                 levels: dict | None) -> dict[tuple[str, int], list[dict]]:
+    """What the proposal says about a deployment file's teachers: {(subject, set): [{"teacher": staff id or
+    None, "text"}]}, only for sets that have something to say. A name that matches no one or more than one
+    teacher is said once per subject, on its first set (teacher None: shown whoever the set has); a named
+    teacher picked from another department than the subject's is said on their set (shown while the set has
+    them): "{level}: {subject}: {written} is in {dept}, not {dept}; kept as named"."""
+    level = level_of(plan, year_classes[0]) if year_classes else ""
+    dept_of = {p["id"]: p.get("dept") or "" for p in plan.get("staff") or []}
+    written_of = {}
+    out: dict[tuple[str, int], list[dict]] = {}
+    first: dict[str, int] = {}
+    for st in sorted(sets, key=lambda st: (st["subject"], int(st["set"]))):
+        if _has_students(st):
+            first.setdefault(st["subject"], int(st["set"]))
+    for code, k0 in first.items():
+        m = _meta(meta, code)
+        found = _deployed(plan, levels, level, code, m.get("name") or code)
+        for written, why in found["unfound"]:
+            said = "matches more than one teacher" if why == "tie" else "is not on the staff list"
+            out.setdefault((code, k0), []).append(
+                {"teacher": None, "text": f"{found['level']}: {found['subject']}: {written} {said}"})
+        written_of[code] = found
+    for (code, k), pid in sorted(teachers.items()):
+        found = written_of.get(code)
+        dept = _dept_of(plan, code, meta)
+        if pid and found and pid in found["ids"] and dept and dept_of.get(pid) != dept:
+            out.setdefault((code, k), []).append(
+                {"teacher": pid, "text": f"{found['level']}: {found['subject']}: "
+                                         f"{found['written'][pid]} is in {dept_of.get(pid) or 'no department'}, "
+                                         f"not {dept}; kept as named"})
+    return out
+
+
 def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes: list[str],
-                     subjects_meta: dict, year: str | None = None) -> dict[tuple[str, int], str | None]:
+                     subjects_meta: dict, year: str | None = None,
+                     levels: dict | None = None) -> dict[tuple[str, int], str | None]:
     """A teacher for each set, {(subject, set): staff id or None}, the school to confirm.
 
     Candidates are the staff of the subject's department (`_dept_of`) not already given a set of the same
@@ -422,7 +497,13 @@ def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes:
     Subject specialisation (spec 2026-10-20-csv-pack-design.md §1) goes before all of that, once anyone in
     the department lists subjects: a teacher whose subjects cover the set's subject (its name) at the year's
     level (`students.level_of` of its first class) first, then one who lists none, then one placed outside
-    their list. While nobody in the department lists subjects the order is the one above, unchanged."""
+    their list. While nobody in the department lists subjects the order is the one above, unchanged.
+
+    Given the timetable's `levels` store, a teacher the year's level names on the subject's Banded row
+    (`deploy`, deployment file) goes before all of that, while their allowance left still holds the set's
+    periods; past it, or named by no one, the order is the one above. A named teacher of another
+    department than the subject's joins the candidates too, but only within their allowance; `deploy_notes`
+    says so ("kept as named"), and a name that matches no one or more than one."""
     load, teaching = _loads(plan, year, year_classes)
     level = level_of(plan, year_classes[0]) if year_classes else ""
     staff = sorted(plan.get("staff") or [], key=lambda p: p["id"])
@@ -441,10 +522,16 @@ def suggest_teachers(sets: list[dict], plan: dict, settings: dict, year_classes:
         listing = bool(dept) and any(p.get("subjects") for p in staff if p.get("dept") == dept)
         subject = meta.get("name") or code
         fit = {p["id"]: _FIT[SP.covers(p, subject, level)] for p in staff if listing and p["id"] in free}
+        named = set(_deployed(plan, levels, level, code, subject)["ids"])
+        left_of = {pid: allowance[pid] - load.get(pid, 0) - given.get(pid, 0) for pid in named}
+        # a named teacher of another department joins the candidates, within their allowance only
+        free += [pid for pid in sorted(named) if pid not in free and (pid, block) not in busy
+                 and left_of[pid] >= periods]
 
         def rank(pid: str):
             left = allowance[pid] - load.get(pid, 0) - given.get(pid, 0)
-            return (fit.get(pid, 0), left < periods, (pid, name) not in teaching, -left, pid)
+            return (not (pid in named and left >= periods), fit.get(pid, 0), left < periods,
+                    (pid, name) not in teaching, -left, pid)
 
         pick = min(free, key=rank) if free else None
         out[code, int(st["set"])] = pick
@@ -547,8 +634,9 @@ def apply_plan(plan: dict, year: str, year_classes: list[str], answer: dict,
     trip regroups the sets into untagged bands per subject, and keeps the requirements' tag).
     Then each set with students becomes one option requirement over the untagged division whose classes
     are the year's (one is added, tagged with the year, when the plan has none; a division tagged with
-    another year key is never adopted), and each block one band of that block's sets, all tagged with the
-    year. Other years' output and untagged entries stay as they are. ValueError (codes only) when one of this
+    another year key is never adopted), its lessons the subject's lesson pattern (`subjects_meta`'s
+    `lessons`) while it adds up to its periods, else single periods, and each block one band of that block's
+    sets, all tagged with the year. Other years' output and untagged entries stay as they are. ValueError (codes only) when one of this
     year's earlier sets is locked (nothing is removed past a lock), or when a set's grouping would share an
     option group with another requirement (`_check_groupings`)."""
     if not year_classes:
@@ -594,13 +682,15 @@ def apply_plan(plan: dict, year: str, year_classes: list[str], answer: dict,
         meta = _meta(subjects_meta, code)
         dept, name = _dept_of(plan, code, subjects_meta), meta.get("name") or code
         periods = int(meta.get("periods") or 0)
+        pattern = meta.get("lessons") or {}
+        lessons = pattern if sum(int(n) * int(c) for n, c in pattern.items()) == periods > 0 else {"1": periods}
         grouping = groupings[code, k]
         rid = M.requirement_id_for(dept, level, grouping, classes, name, taken)
         taken.add(rid)
         teacher = teachers.get((code, k))
         out["requirements"].append({
             "id": rid, "dept": dept, "level": level, "subject": name, "periods": periods,
-            "lessons": {"1": periods}, "grouping": grouping, "classes": list(classes),
+            "lessons": dict(lessons), "grouping": grouping, "classes": list(classes),
             "teachers": [teacher] if teacher else [], "size": int(st["size"]),
             "venue": {"kind": meta.get("room_kind"), "room": None}, "sync_with": None, "locked": False,
             "blocks": year})
@@ -840,11 +930,12 @@ def _setup_level(plan: dict, setup: dict) -> str:
 
 
 def subjects_meta(plan: dict, setup: dict, levels: dict | None = None) -> tuple[dict[str, dict], list[dict]]:
-    """Each combination subject's {name, dept, periods, room_kind}, and the blocking checks it raises.
+    """Each combination subject's {name, dept, periods, room_kind, lessons (only with a lesson pattern)}, and
+    the blocking checks it raises.
 
     The setup's own value first; then, given the timetable's `levels` store, the year's level's Banded row for
-    the subject (`levels.banded_meta`, matched on the code or the name by `students.norm`), its dept, periods
-    and room kind (csv-pack Calls §1); else, from the plan requirement that matches (`_plan_requirement`),
+    the subject (`levels.banded_meta`, matched on the code or the name by `students.norm`), its dept, periods,
+    room kind and lesson pattern (csv-pack Calls §1); else, from the plan requirement that matches (`_plan_requirement`),
     its dept, periods and venue kind; the name defaults to the code. A subject with no periods a cycle any
     way is a blocking `periods_missing` check naming the code, and one with no department any way a blocking
     `dept_missing` (no teacher could be counted or suggested for it)."""
@@ -865,6 +956,8 @@ def subjects_meta(plan: dict, setup: dict, levels: dict | None = None) -> tuple[
                          "periods": given.get("periods") or b.get("periods") or r.get("periods") or None,
                          "room_kind": given.get("room_kind") or b.get("room_kind")
                          or (r.get("venue") or {}).get("kind") or None}
+            if b.get("lessons"):                # the deployment file's pattern; apply_plan checks it adds up
+                out[code]["lessons"] = dict(b["lessons"])
             if out[code]["periods"] is None:
                 found.append({"kind": "periods_missing", "text": f"{code} has no periods a cycle", "blocking": True})
             if not out[code]["dept"]:
@@ -944,10 +1037,15 @@ def named_answer(answer: dict, mapping: dict[str, str]) -> dict:
 
 
 def proposal(answer: dict, teachers: dict[tuple[str, int], str | None], plan: dict, settings: dict,
-             meta: dict[str, dict], year: str, placed: int = 0, unplaced: int = 0) -> dict:
+             meta: dict[str, dict], year: str, placed: int = 0, unplaced: int = 0,
+             notes: dict[tuple[str, int], list[dict]] | None = None,
+             named: set[tuple[str, int]] | None = None) -> dict:
     """What the page shows of a run: {status, reasons, blocks: [[set]], summary: {sets, students, unplaced}},
     one column per block, each set {subject, set, name ("Physics A"), size, teacher, teacher_name,
-    suggested, warnings}. Sets of size 0 are left out (apply skips them). Warnings come from `rewarn`."""
+    suggested, warnings}. Sets of size 0 are left out (apply skips them). Warnings come from `rewarn`; a
+    set also carries `notes` when given some (`deploy_notes`), which `rewarn` keeps as warnings, and
+    `named: True` when its teacher is one the deployment file names (`named_sets`): Apply keeps such a
+    teacher whatever their department."""
     sets = [st for st in answer.get("sets") or [] if _has_students(st)]
     letters = _letters(sets)
     width = max((int(st["block"]) + 1 for st in answer.get("sets") or []), default=0)
@@ -955,9 +1053,14 @@ def proposal(answer: dict, teachers: dict[tuple[str, int], str | None], plan: di
     for st in sets:
         code, k = st["subject"], int(st["set"])
         name = (meta.get(code) or {}).get("name") or code
-        blocks[int(st["block"])].append({"subject": code, "set": k, "name": f"{name} {letters[code, k]}",
-                                         "size": int(st["size"]), "teacher": teachers.get((code, k)),
-                                         "teacher_name": None, "suggested": True, "warnings": []})
+        entry = {"subject": code, "set": k, "name": f"{name} {letters[code, k]}",
+                 "size": int(st["size"]), "teacher": teachers.get((code, k)),
+                 "teacher_name": None, "suggested": True, "warnings": []}
+        if (code, k) in (named or ()):
+            entry["named"] = True
+        if (notes or {}).get((code, k)):
+            entry["notes"] = copy.deepcopy(notes[code, k])
+        blocks[int(st["block"])].append(entry)
     for column in blocks:
         column.sort(key=lambda s: (s["name"], s["subject"], s["set"]))
     out = {"status": answer.get("status"), "reasons": list(answer.get("reasons") or []), "blocks": blocks,
@@ -980,7 +1083,8 @@ def rewarn(prop: dict, plan: dict, settings: dict, meta: dict[str, dict], year: 
     """The proposal with each set's teacher name and warnings worked out again: a teacher in two sets of one
     block, a teacher whose allowance left (`allowance_left`) the proposal's sets go past, and a teacher who
     lists subjects placed outside them (`specialisation.outside`, the set's subject by name at the year's
-    level; the option blocks' own subjects count as subjects, not as names that match nothing)."""
+    level; the option blocks' own subjects count as subjects, not as names that match nothing), after the
+    set's `notes` from a deployment file (`deploy_notes`) that still apply."""
     out = copy.deepcopy(prop)
     names = {p["id"]: p.get("name") or p["id"] for p in plan.get("staff") or []}
     staff_by_id = {p["id"]: p for p in plan.get("staff") or []}
@@ -999,7 +1103,8 @@ def rewarn(prop: dict, plan: dict, settings: dict, meta: dict[str, dict], year: 
         for s in column:
             t = s["teacher"]
             s["teacher_name"] = names.get(t, t) if t else None
-            s["warnings"] = []
+            # a deployment file's notes stay while the teacher they are about is the set's (any, if about none)
+            s["warnings"] = [n["text"] for n in s.get("notes") or [] if n["teacher"] in (None, t)]
             if not t:
                 continue
             others = [o["name"] for o in column if o is not s and o["teacher"] == t]

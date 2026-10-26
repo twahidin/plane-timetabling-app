@@ -391,10 +391,14 @@ def make_router(db, engine) -> APIRouter:
             record["reasons"] = [str(e)]
             return record
         plan, settings = _plan(tid), db.get_settings(tid)
+        levels = LV.get(db, tid)
         teachers = K.suggest_teachers(answer["sets"], plan, settings, record["classes"], record["meta"],
-                                      year=record["year"])
+                                      year=record["year"], levels=levels)
+        notes = K.deploy_notes(answer["sets"], teachers, plan, record["meta"], record["classes"], levels)
         proposal = K.proposal(answer, teachers, plan, settings, record["meta"], record["year"],
-                              placed=len(split), unplaced=record["unplaced"])
+                              placed=len(split), unplaced=record["unplaced"], notes=notes,
+                              named=K.named_sets(answer["sets"], teachers, plan, record["meta"], record["classes"],
+                                                 levels))
         return {**record, "status": answer["status"], "answer": answer, "split": split, "proposal": proposal}
 
     @r.get("/api/blocks/run")
@@ -457,9 +461,16 @@ def make_router(db, engine) -> APIRouter:
                 if person is None:
                     raise HTTPException(400, f"no teacher {teacher}")
                 dept = (record["meta"].get(subject) or {}).get("dept")
-                if dept and person.get("dept") != dept:
+                deployed = teacher in K.deployed_ids(plan, LV.get(db, tid), record["classes"], subject, record["meta"])
+                if dept and person.get("dept") != dept and not deployed:
                     raise HTTPException(400, f"{teacher} isn't in the {dept} department")
+            else:
+                deployed = False
+            # a hand choice is `named` (kept at Apply whatever its department) only if the deployment names it
             entry["teacher"], entry["suggested"] = teacher, False
+            entry.pop("named", None)
+            if deployed:
+                entry["named"] = True
             record = {**record, "proposal": K.rewarn(proposal, plan, db.get_settings(tid), record["meta"], key),
                       "applied": False}
             db.set_value(RUN, record, tid)
@@ -487,14 +498,16 @@ def make_router(db, engine) -> APIRouter:
             if K.setup_digest(_find(tid, key)) != record.get("setup_digest"):
                 raise HTTPException(409, SETUP_CHANGED)
             # each chosen teacher checked against the plan as it is now: one gone, or moved out of the
-            # subject's department, is dropped (the set gets no teacher) and named in the answer
+            # subject's department, is dropped (the set gets no teacher) and named in the answer; a `named`
+            # one (the deployment file's) is kept whatever its department while still on the staff list
             staff = {p["id"]: p for p in plan["staff"]}
             proposal = copy.deepcopy(record["proposal"])
             chosen, dropped = {}, []
             for col in proposal["blocks"]:
                 for s in col:
                     t, dept = s["teacher"], (record["meta"].get(s["subject"]) or {}).get("dept")
-                    if t and (t not in staff or (dept and staff[t].get("dept") != dept)):
+                    if t and (t not in staff or (dept and staff[t].get("dept") != dept
+                                                and not s.get("named"))):
                         dropped.append({"subject": s["subject"], "set": s["set"], "teacher": t})
                         s["teacher"] = t = None
                     chosen[s["subject"], s["set"]] = t

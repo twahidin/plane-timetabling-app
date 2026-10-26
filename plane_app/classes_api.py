@@ -64,11 +64,13 @@ def _key(level) -> str:
 
 
 def _digest(entry: dict, students: list[dict], setup: dict | None) -> str:
-    """What a proposal rests on: the level's `levels` entry, each of its students' ID, own level, choices
-    and merit (never a name, a class or takes, which Apply writes), and the level's option-block
-    combinations and overrides (the placement that groups the students)."""
+    """What a proposal rests on: the level's `levels` entry, each of its students' ID, own level, choices,
+    merit and Runs-with subjects (only when they have some, so an older digest still matches; never a name,
+    a class or takes, which Apply writes), and the level's option-block combinations and overrides (the
+    placement that groups the students)."""
     rows = sorted([str(s.get("id")), str(s.get("level") or ""), [str(c) for c in s.get("choices") or []],
-                   s.get("merit")] for s in students)
+                   s.get("merit"), *([[str(x) for x in s["subjects"]]] if s.get("subjects") else [])]
+                  for s in students)
     setup = setup or {}
     return applying._hash({"entry": entry, "students": rows, "combinations": setup.get("combinations"),
                            "overrides": setup.get("overrides") or {}})
@@ -224,11 +226,18 @@ def make_router(db) -> APIRouter:
                 if person is None:
                     raise HTTPException(400, f"no teacher {_shown(str(chosen))}")
                 dept = reqs[index].get("dept")
-                if dept and person.get("dept") != dept:
+                deployed = chosen in C.deployed_ids(plan, LV.get(db, tid).get(key), reqs[index]["subject"])
+                if dept and person.get("dept") != dept and not deployed:
                     raise HTTPException(400, f"{chosen} isn't in the {dept} department")
+            else:
+                deployed = False
             proposal = copy.deepcopy(record["proposal"])
             proposal["requirements"][index]["teacher"] = chosen
             proposal["requirements"][index]["suggested"] = False
+            # the school's own choice now: `named` (kept at Apply in another department) only if the file names them
+            proposal["requirements"][index].pop("named", None)
+            if deployed:
+                proposal["requirements"][index]["named"] = True
             proposal = C.rewarn(proposal, plan, db.get_settings(tid), key)
             record = {**record, "proposal": proposal, "applied": False}
             runs = _runs(tid)
@@ -261,13 +270,15 @@ def make_router(db) -> APIRouter:
                                         _setup(tid, key, plan, levels)) != record["digest"]:
                 raise HTTPException(409, CHANGED)
             # each chosen teacher checked against the plan as it is now, as option blocks' Apply does: one gone,
-            # or moved out of the requirement's department, is dropped (no teacher) and named in the answer
+            # or moved out of the requirement's department, is dropped (no teacher) and named in the answer;
+            # a teacher the deployment names is kept in another department (the proposal said so)
             staff = {p["id"]: p for p in plan["staff"]}
             proposal = copy.deepcopy(record["proposal"])
             dropped = []
             for i, q in enumerate(proposal["requirements"]):
                 t, dept = q.get("teacher"), q.get("dept")
-                if t and (t not in staff or (dept and staff[t].get("dept") != dept)):
+                elsewhere = dept and t in staff and staff[t].get("dept") != dept and not q.get("named")
+                if t and (t not in staff or elsewhere):
                     dropped.append({"index": i, "subject": q["subject"], "classes": list(q["classes"]), "teacher": t})
                     q["teacher"] = None
             unsaid = list(dict.fromkeys(q["subject"] for q in proposal["requirements"] if not q.get("dept")))

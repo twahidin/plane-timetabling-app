@@ -27,6 +27,7 @@ import re
 from ... import blocks as BK, levels as LV, students as ST
 from .. import model as M
 from .. import specialisation as SP
+from ..pattern import parse_pattern
 from .tabular import cell, decoded, delimiters, head
 
 KINDS = ("staff", "venues", "requirements", "combinations", "level_students")
@@ -41,14 +42,15 @@ HEADERS = {
     "staff": ["Name", "Short", "Department", "Load", "Subject 1", "Levels 1", "Subject 2", "Levels 2",
               "Subject 3", "Levels 3"],
     "venues": ["Room", "Kind", "Capacity"],
-    "requirements": ["Level", "Subject", "Periods a week", "Taught as", "Room kind", "Department"],
+    "requirements": ["Teacher", "Level", "Subject", "Classes", "Groups", "Periods a week", "Lesson pattern",
+                     "Runs with", "Taught as", "Room kind", "Department"],
     "combinations": ["Level", "Code", "Name", "Subject 1", "Subject 2", "Subject 3", "Places"],
     "level_students": ["Student ID", "Name", "Level", "Merit", "Choice 1", "Choice 2", "Choice 3"],
 }
 EXAMPLES = {
     "staff": ["e.g. Teacher Name", "TN", "Science", "24", "Physics", "Sec 3, Sec 4", "Science", "Sec 1, Sec 2", "", ""],
     "venues": ["e.g. Lab 1", "Lab", "32"],
-    "requirements": ["e.g. Sec 3", "Physics", "4", "Banded", "Lab", "Science"],
+    "requirements": ["e.g. Teacher Name", "Sec 3", "Physics", "2", "", "4", "2x2p", "", "Class", "Lab", "Science"],
     "combinations": ["e.g. Sec 3", "", "Pure Sciences", "Physics", "Chemistry", "Biology", "30"],
     "level_students": ["e.g. S0001", "Student Name", "Sec 3", "1", "Physics, Chemistry, Biology", "", ""],
 }
@@ -81,9 +83,14 @@ DESCRIPTIONS = {
         "Capacity": "How many people it holds",
     },
     "requirements": {
+        "Teacher": "The {person} who teaches it (leave empty to have one picked; one row for each {person})",
         "Level": "The level the {requirement} is for",
         "Subject": "The {requirement}'s name",
+        "Classes": "How many {group}s that {person} takes for it (leave empty for the rest)",
+        "Groups": "For a {requirement} that runs with others: how many groups that {person} takes (leave empty to work it out)",
         "Periods a week": "How many periods a week each {group} has it",
+        "Lesson pattern": "How the periods fall into lessons, such as 2x2p for two lessons of two periods (leave empty for the usual)",
+        "Runs with": "Another {requirement}, or a name for a set of them, that runs at the same time (leave empty when it runs alone)",
         "Taught as": "Class (each {group} on its own), Combined N (N {group}s together) or Banded (split across options)",
         "Room kind": "The kind of {venue} it needs (leave empty for any {venue})",
         "Department": "The department that teaches it",
@@ -143,6 +150,15 @@ def _keys(*names: str) -> frozenset:
     return frozenset(_key(n) for n in names)
 
 
+class _Exact(frozenset):
+    """Header words matched as written (`head`: case and punctuation aside), never plural-folded: for the
+    columns whose singular a school already uses for something else ("Group" holds group names)."""
+
+
+def _exact(*names: str) -> _Exact:
+    return _Exact(head(n) for n in names)
+
+
 # Each kind's columns: canonical name -> the header words that name it (compared by `_key`).
 _ALIASES = {
     "staff": {
@@ -162,6 +178,12 @@ _ALIASES = {
         "level": _keys("Level", "Year", "Year group"),
         "subject": _keys("Subject"),
         "periods": _keys("Periods", "Periods a week", "Periods per week", "Periods a cycle", "Periods per cycle"),
+        "teacher": _keys("Teacher", "Staff"),
+        "classes": _exact("Classes", "Number of classes"),
+        # as written: "Class", "Group", "Block" and "Band" are columns schools already have, holding names
+        "groups": _exact("Groups"),
+        "pattern": _exact("Lesson pattern", "Pattern", "Blocks"),
+        "runs with": _exact("Runs with"),
         "taught as": _keys("Taught as", "How taught"),
         "combine": _keys("Combine", "Classes combined", "Combined classes"),
         "room kind": _keys("Room kind", "Room type", "Venue kind", "Venue type"),
@@ -203,7 +225,9 @@ _SHOWN = {"name": "Name", "department": "Department", "subjects": "Subjects", "r
           "kind": "Kind", "capacity": "Capacity", "level": "Level", "subject": "Subject",
           "periods": "Periods a week", "subject 1": "Subject 1", "places": "Places", "student id": "Student ID",
           "choice 1": "Choice 1", "short": "Short", "load": "Load", "load factor": "Load factor",
-          "taught as": "Taught as", "combine": "Combine", "room kind": "Room kind", "code": "Code", "merit": "Merit"}
+          "taught as": "Taught as", "combine": "Combine", "teacher": "Teacher", "classes": "Classes",
+          "groups": "Groups", "pattern": "Lesson pattern", "runs with": "Runs with", "room kind": "Room kind",
+          "code": "Code", "merit": "Merit"}
 _CLASS = _keys("Class", "Form class", "Form", "Class code")      # a file with one is B1's list (Calls §4)
 _SERIAL = _keys("S/N", "SN", "S No", "Serial", "Serial no", "Serial number", "No")
 
@@ -213,8 +237,10 @@ def _columns(kind: str, header: list) -> tuple[dict, dict, list]:
     columns in number order). The first header naming a column wins."""
     keys = [_key(h) for h in header]
     cols: dict = {}
+    heads = [head(h) for h in header]
     for canon, names in _ALIASES[kind].items():
-        at = next((i for i, k in enumerate(keys) if k in names), None)
+        found = heads if isinstance(names, _Exact) else keys
+        at = next((i for i, k in enumerate(found) if k in names), None)
         if at is not None:
             cols[canon] = at
     numbered: list = []
@@ -248,17 +274,30 @@ def _lacking(kind: str, header: list, table: dict) -> list[str]:
 
 def detect(header) -> str | None:
     """The kind of pack file a header row names (spec §2), or None. A file with a Class column is B1's
-    student list, never the level students list; with a student ID column too it is no pack file at all."""
+    student list, never the level students list; with a student ID column too it is no pack file at all.
+    One that reads as staff.csv but has Level and Subject columns is requirements.csv lacking Periods,
+    unless its Subject is not a singular one (a staff list's own Subjects and Levels columns fold to it)."""
     header = list(header or [])
     keys = {_key(h) for h in header}
+    heads = {head(h) for h in header}
     if keys & _CLASS and keys & _ALIASES["level_students"]["student id"]:
         return None                         # a student list with a class: B1's, whatever else it has
     for kind in _DETECT:
         if kind == "level_students" and keys & _CLASS:
             continue
         if not _lacking(kind, header, _DETECT):
+            if (kind == "staff" and "subject" in heads and not heads & _STAFF_SUBJECTS
+                    and not _lacking("requirements", header, _LEVEL_SUBJECT)):
+                return "requirements"       # a deployment file lacking Periods: its card names the column
             return kind
     return None
+
+
+# A header with these is requirements.csv, never staff.csv (a Teacher, Department and Subject column read
+# as a staff list's too).
+_LEVEL_SUBJECT = {"requirements": [("level",), ("subject",)]}
+# ...but only with a Subject column written in the singular and none of the staff list's own, as written.
+_STAFF_SUBJECTS = frozenset(head(n) for n in ("Subjects", "Specialisation", "Specialization"))
 
 
 _STUDENT_ID = _keys("Student ID", "Admission no", "Admission number", "Reg no")
@@ -593,16 +632,50 @@ def _staff_departments(context) -> dict[str, set]:
     return found
 
 
+_NAME_SPLIT = re.compile(r"[;&/]")
+_CODE_SPLIT = re.compile(r"[;,&/+\s]+")
+_PLAIN_COUNT = re.compile(r"\d+(?:\.0+)?")
+# a range of class codes, "3A-3D" or "3E1 – 3E4": a code with a letter and a digit on each side of a dash
+_CODE = r"(?=[a-z0-9]*[a-z])(?=[a-z0-9]*\d)[a-z0-9]+"
+_RANGE = re.compile(rf"{_CODE}\s*[-\u2013]\s*{_CODE}")
+
+
+def _count(text: str, codes: bool) -> tuple[int | None, str | None]:
+    """(count, None) for a Classes or Groups cell that reads. A whole number from 1 is itself; with `codes`
+    (Classes) a list of class codes ("3A; 3B", "3A 3B", "3A+3B") is its number of different codes. Blank is
+    (None, None). One that does not read is (None, "range") for a range of codes ("3A-3D"), else (None,
+    "unread")."""
+    if not text:
+        return None, None
+    if _PLAIN_COUNT.fullmatch(text):
+        value = int(float(text))
+        return (value, None) if value >= 1 else (None, "unread")
+    if _number(text) is not None and not any(c.isalpha() for c in text):
+        return None, "unread"               # a number that is no count: 0, 1.5, -2 ("1E2" is a class code)
+    if codes and any(_RANGE.fullmatch(t.strip().lower()) for t in re.split(r"[;,&/+]", text)):
+        return None, "range"
+    tokens = {t.lower() for t in _CODE_SPLIT.split(text) if t} if codes else set()
+    if tokens and all(any(c.isdigit() for c in t) for t in tokens):
+        return len(tokens), None
+    return None, "unread"
+
+
 def read_requirements(rows, header, context, file: str | None = None) -> tuple[dict, list[dict]]:
     """The levels store's shape (`levels.normalise_levels`), grouped by level under the level's first
-    spelling: one subject row per level and subject. The department is the Department column, else the
-    one department whose staff list the subject (Calls §6); when none or several do, the row is kept
-    with dept "" and listed, "say which department" (R13)."""
+    spelling: one subject row per level and subject, built from the first row. The department is the
+    Department column, else the one department whose staff list the subject (Calls §6); when none or
+    several do, the row is kept with dept "" and listed, "say which department" (R13).
+
+    The deployment columns (Teacher, Classes, Groups, Lesson pattern, Runs with) are optional and stored
+    only when given: each row with a teacher or a count adds `{teacher, classes, groups}` to its subject's
+    `deploy`. A later row of a level and subject that says something else for Periods, Lesson pattern,
+    Taught as, Runs with, Room kind or Department is a kept doubt; the first row is kept. A later row's
+    blank cell states nothing, its Periods too."""
     out = _Out(file or FILES["requirements"])
     cols, label, _ = _columns("requirements", header)
     departments = _staff_departments(context)
     grouped: dict[str, dict] = {}
-    kept: dict[tuple, int] = {}
+    kept: dict[tuple, tuple[int, dict, dict]] = {}      # key -> (first row, its entry, its cells as written)
     for n, row in rows:
         if out.overflows(n, row, header):
             continue
@@ -614,8 +687,19 @@ def read_requirements(rows, header, context, file: str | None = None) -> tuple[d
         if not subject:
             out.add(n, f"no {label['subject']}")
             continue
+        key = (SP.level_key(level), ST.norm(subject))
+        repeat = key in kept
+        pattern = get("pattern")
+        if pattern and head(header[cols["pattern"]]) == "blocks" and (
+                not {"x", "p"} & set(pattern.lower()) or parse_pattern(pattern, None)[1]):
+            pattern = ""        # "Blocks" may hold block numbers or names (B1): not a pattern, so not read
+
+        def stated(canon: str) -> str:
+            """A compared cell as the row states it: a Blocks cell that is no pattern states nothing."""
+            return pattern if canon == "pattern" else get(canon)
+
         errors = []
-        if not periods:
+        if not periods and not repeat:          # a later row's blank Periods states nothing, as its other cells
             errors.append(f"no {label['periods']}")
         taught = get("taught as")
         taught_as, combine, problem = _taught_as(taught, get("combine"), label.get("taught as", "Taught as"))
@@ -629,9 +713,44 @@ def read_requirements(rows, header, context, file: str | None = None) -> tuple[d
             else:
                 why = f"staff in {_and(sorted(found))} list it" if found else "no staff list it"
                 unsaid = f"{subject} — say which department ({why})"
-        # a blank Periods is already listed above; "1" keeps it from being listed twice
+        # a blank Periods is already listed above (a later row's inherits the first's); "1" keeps it from
+        # being listed twice
         entry = {"subject": subject, "periods": periods or "1", "taught_as": taught_as, "combine": combine,
                  "room_kind": get("room kind") or None, "dept": dept}
+        doubts = []
+        # a later row's pattern is read for its form only: its periods are listed beside the first row's
+        lessons, problem = parse_pattern(pattern, None if repeat or not periods else _whole(periods))
+        if problem:
+            errors.append(problem)
+        elif lessons:
+            entry["lessons"] = lessons
+        runs_with = get("runs with")
+        banded = (kept[key][1]["taught_as"] if repeat else taught_as) == "banded"     # the kept subject decides
+        if runs_with and banded:
+            errors.append(f"{subject}: a row is Banded or runs with others, not both")
+        elif runs_with:
+            entry["runs_with"] = runs_with
+        # a count that does not read is ignored and said; the row is kept
+        classes, why = _count(get("classes"), codes=True)
+        if why == "range":
+            doubts.append(f"{subject} at {level}: {label['classes']} {get('classes')} is a range; name each class "
+                          f"or give the number, so it is ignored")
+        elif why:
+            doubts.append(f"{subject} at {level}: {label['classes']} {get('classes')} isn't a whole number from 1 "
+                          f"or a list of class codes, so it is ignored")
+        groups, why = _count(get("groups"), codes=False)
+        if why:
+            doubts.append(f"{subject} at {level}: {label['groups']} {get('groups')} isn't a whole number from 1, "
+                          f"so it is ignored")
+        elif groups and banded:
+            groups = None
+            doubts.append(f"{subject} at {level}: {label['groups']} is ignored — option blocks decide the sets")
+        names = [t.strip() for t in _NAME_SPLIT.split(get("teacher")) if t.strip()]
+        if len(names) > 1:
+            doubts.append(f"{subject} at {level}, row {n}: only {names[0]} is used — co-teaching comes later")
+        teacher = names[0] if names else None
+        if teacher or classes or groups:
+            entry["deploy"] = [{"teacher": teacher, "classes": classes, "groups": groups}]
         try:        # the store's own validation, its codes mapped to this row (codes only, never a value)
             entry = LV.normalise_levels({level: {"subjects": [entry]}})[SP.level_key(level)]["subjects"][0]
         except ValueError as e:
@@ -640,18 +759,43 @@ def read_requirements(rows, header, context, file: str | None = None) -> tuple[d
             errors.append({"periods_below_1": f"{label['periods']} {periods} isn't a whole number from 1",
                            "combine_below_2": f"{shown} needs 2 or more classes (Combined 2)"}
                           .get(str(e), f"this row doesn't read ({e})"))
-        key = (SP.level_key(level), ST.norm(subject))
         if errors:
             for text in dict.fromkeys(errors):
                 out.add(n, text)
         elif key in kept:
-            out.add(n, f"{subject} at {level} appears twice (row {kept[key]} is kept)")
+            first, first_entry, first_cells = kept[key]
+            if "deploy" not in entry:
+                out.add(n, f"{subject} at {level} appears twice (row {first} is kept)")
+                continue
+            for canon in _disagreements(entry, first_entry, stated):
+                out.add(n, f"{subject} at {level}: row {n} says {label.get(canon, _SHOWN[canon])} {stated(canon)}, "
+                           f"row {first} says {first_cells[canon] or 'nothing'}; row {first} is kept", dropped=False)
+            first_entry.setdefault("deploy", []).extend(entry["deploy"])
+            for text in doubts:
+                out.add(n, text, dropped=False)
         else:
-            kept[key] = n
+            cells = {canon: stated(canon) for canon in _COMPARED}
+            kept[key] = (n, entry, cells)
             grouped.setdefault(key[0], {"name": level, "subjects": []})["subjects"].append(entry)
-            if unsaid:
-                out.add(n, unsaid, dropped=False)
+            for text in ([unsaid] if unsaid else []) + doubts:
+                out.add(n, text, dropped=False)
     return LV.normalise_levels({g["name"]: g for g in grouped.values()}), out.sorted()
+
+
+# The columns a later row of a level and subject must agree with the first row on, and the stored value
+# each is compared by.
+_COMPARED = ("periods", "pattern", "taught as", "runs with", "room kind", "department")
+
+
+def _disagreements(entry: dict, first: dict, get) -> list[str]:
+    """The compared columns the row states and the first row's subject says otherwise for, in column
+    order. A blank cell states nothing."""
+    ways = {"periods": lambda e: e["periods"], "pattern": lambda e: e.get("lessons"),
+            "taught as": lambda e: (e["taught_as"], e["combine"]),
+            "runs with": lambda e: (e.get("runs_with") or "").casefold(),
+            "room kind": lambda e: (e.get("room_kind") or "").casefold(),
+            "department": lambda e: (e.get("dept") or "").casefold()}
+    return [canon for canon in _COMPARED if get(canon) and ways[canon](entry) != ways[canon](first)]
 
 
 # ---------------------------------------------------------------------------
@@ -796,10 +940,14 @@ def read_level_students(rows, header, context, file: str | None = None) -> tuple
     """Students as {id, name, level, merit?, choices}: `level` is the school's own name for the level,
     `merit` is kept only when the file has the column (B1's R6), and each choice, written as the subjects
     of an offered combination in any order, is that combination's code. No `class`: classes are formed
-    later. Problems name the row, the student ID and the column, never a name; a choice's words are
-    shown only when they are subjects the plan knows ("?" otherwise). A choice matching no combination
-    is listed and left out, the student kept with the other choices in order; a merit problem keeps the
-    student with merit None, as B1 does (R11)."""
+    later. A subject the level runs with others (a Runs-with row of the levels in the context, stored or in
+    the same drop: Chinese, Malay) named in a choice cell, as the whole cell or one of its comma items
+    (`students.norm`), is the student's: it goes into `subjects` (as the requirement writes it, each once;
+    the key only when there is one), is taken out of the cell before the rest is matched to a combination,
+    and is never a doubt. Problems name the row, the student ID and the column, never a name; a choice's
+    words are shown only when they are subjects the plan knows ("?" otherwise). A choice matching no
+    combination is listed and left out, the student kept with the other choices in order; a merit problem
+    keeps the student with merit None, as B1 does (R11)."""
     out = _Out(file or FILES["level_students"])
     cols, label, numbered = _columns("level_students", header)
     levels = (context or {}).get("levels") or {}
@@ -807,6 +955,8 @@ def read_level_students(rows, header, context, file: str | None = None) -> tuple
     level_keys = _known_levels(context) | {SP.level_key(k) for k in combinations}
     subject_words = _known_subjects(context) | {ST.norm(s) for combos in combinations.values()
                                                 for c in combos for s in c.get("subjects") or []}
+    runs_with = {k: {ST.norm(r["subject"]): r["subject"] for r in (entry or {}).get("subjects") or []
+                     if r.get("runs_with")} for k, entry in levels.items()}
     seen: set[str] = set()
     read: list[tuple[int, str, dict]] = []          # (row, level key, student) of each row read so far
     ranked: dict[str, list] = {}                     # level key -> merit cells, as students.read_rows keeps them
@@ -838,12 +988,19 @@ def read_level_students(rows, header, context, file: str | None = None) -> tuple
             ranked.setdefault(key, []).append((n, sid, raw, label["merit"]))
         offered = {frozenset(ST.norm(s) for s in c.get("subjects") or []): c["code"]
                    for c in combinations.get(key) or []}
-        choices = []
+        choices, subjects = [], []
+        running = runs_with.get(key) or {}          # norm(subject) -> the requirement's spelling
         for i, _ in numbered:
             text = cell(row[i]) if i < len(row) else ""
             if not text:
                 continue
-            parts = [" ".join(p.split()) for p in _CHOICE_SPLIT.split(text) if p.strip()]
+            whole = running.get(ST.norm(text))
+            parts = [] if whole else [" ".join(p.split()) for p in _CHOICE_SPLIT.split(text) if p.strip()]
+            mine = [whole] if whole else [running[ST.norm(p)] for p in parts if ST.norm(p) in running]
+            subjects += [s for s in mine if s not in subjects]
+            parts = [p for p in parts if ST.norm(p) not in running]
+            if not parts:                           # only Runs-with subjects: the student's, no choice
+                continue
             code = offered.get(frozenset(ST.norm(p) for p in parts))
             if code is not None:
                 choices.append(code)
@@ -851,6 +1008,8 @@ def read_level_students(rows, header, context, file: str | None = None) -> tuple
             shown = ", ".join(p if ST.norm(p) in subject_words else "?" for p in parts)
             out.add(n, f"{cell(header[i])} ({shown}) isn't an offered combination for {level}", dropped=False)
         student["choices"] = choices
+        if subjects:
+            student["subjects"] = subjects
         read.append((n, key, student))
     for key, cells in ranked.items():
         for p in ST._merit_problems([s for _, k, s in read if k == key], cells):

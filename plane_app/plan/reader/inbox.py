@@ -1297,11 +1297,12 @@ def _folding(items: list[tuple[str, bytes]]) -> tuple[int | None, list[int]]:
 
 
 def _generic_shaped(db, tid: str | None) -> bool:
-    """Whether timetable `tid` may take a drop of only some generic CSV files: its wizard record names a
-    template whose sheets are generic, or its stored plan has no divisions, no bands and no class with a level
-    (nothing a generic reading could undo). Otherwise such a drop's files are a school's ordinary CSVs
-    (a room list headed Name, Size): each keeps its old route. Never raises: a record or plan that does not
-    read is not generic."""
+    """Whether timetable `tid` may take a drop of only some generic CSV files. Its wizard record decides when it
+    names a template that resolves: generic sheets yes, a school's no, even on an empty timetable. Without one,
+    the stored facts decide: no divisions, no bands, no class or requirement with a level and no levels set up
+    (the five CSV files keep a school's levels there), so nothing a generic reading could undo. Otherwise such
+    a drop's files are a school's ordinary CSVs (a room list headed Name, Size): each keeps its old route.
+    Never raises: a record or plan that does not read is not generic."""
     try:
         record = db.get_value("wizard", tid)
         template_id = record.get("template") if isinstance(record, dict) else None
@@ -1310,13 +1311,14 @@ def _generic_shaped(db, tid: str | None) -> bool:
             try:
                 template = (kept if isinstance(kept, dict) and kept.get("id") == template_id
                             else WL.get(template_id, db) if not template_id.startswith(WL.SHARED_PREFIX) else {})
-            except Exception:               # noqa: BLE001 - a template no longer offered: the plan decides
+            except Exception:               # noqa: BLE001 - a template no longer offered: the facts decide
                 template = {}
-            if template.get("sheets") == "generic":
-                return True
+            if template.get("sheets"):
+                return template["sheets"] == "generic"
         plan = _current(db, tid)
-        return (not plan.get("divisions") and not plan.get("bands")
-                and all(not str(c.get("level") or "") for c in plan.get("classes") or []))
+        levelled = [*(plan.get("classes") or []), *(plan.get("requirements") or [])]
+        return (not plan.get("divisions") and not plan.get("bands") and not LV.get(db, tid)
+                and all(not str(item.get("level") or "") for item in levelled))
     except Exception:                       # noqa: BLE001 - its old route says what is wrong
         return False
 

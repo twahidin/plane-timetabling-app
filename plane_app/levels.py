@@ -6,6 +6,16 @@ Applying requirements.csv writes it, beside the plan rather than inside it. It i
     {level_key: {"name": "Sec 3", "students_expected": 120 | None, "class_size": 40, "naming": "",
                  "subjects": [{"subject", "periods", "taught_as", "combine", "room_kind", "dept"}]}}
 
+A subject row may also carry three optional keys from the deployment file, each present only when given
+non-empty (so an older row keeps exactly the six keys above):
+
+    "lessons":   {"2": 2, "1": 1}     the lesson pattern, {length: count}; lengths 1..LESSON_LENGTH_MAX,
+                                      counts at least 1, SPLIT_LESSONS_MAX lessons at most
+    "runs_with": "Mother Tongue"      the subject (or group) it runs at the same time as, trimmed
+    "deploy":    [{"teacher": str | None, "classes": int | None, "groups": int | None}]
+                                      who teaches it and how many classes / groups each; an entry
+                                      needs a teacher or a count, counts are whole numbers of 1 or more
+
 The Classes step reads it, and option blocks reads the periods and room kind of Banded subjects from it.
 No student data lives here, only counts and subject rows.
 
@@ -15,6 +25,7 @@ from __future__ import annotations
 
 import logging
 
+from .plan.model import PlanError, normalise_lessons
 from .plan.specialisation import level_key
 
 log = logging.getLogger("plane_app")
@@ -46,6 +57,37 @@ def _text(value) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _lessons(raw) -> dict:
+    """A stored lesson pattern `{length: count}` as `{str: int}`, zero-free; ValueError("bad_lessons").
+    The ranges are plan.model.normalise_lessons's, so a pattern kept here is one the plan accepts."""
+    if not isinstance(raw, dict):
+        raise ValueError("bad_lessons")
+    try:
+        lessons = {str(k): _whole(v, 1, "bad_lessons") for k, v in raw.items()}
+        normalise_lessons(lessons)
+    except PlanError:
+        raise ValueError("bad_lessons") from None
+    return lessons
+
+
+def _deploy(raw) -> list:
+    """The deployment entries as `{"teacher", "classes", "groups"}`; ValueError("bad_deploy")."""
+    if not isinstance(raw, list):
+        raise ValueError("bad_deploy")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("bad_deploy")
+        entry = {"teacher": _text(item.get("teacher")) or None}
+        for count in ("classes", "groups"):
+            value = item.get(count)
+            entry[count] = None if value is None else _whole(value, 1, "bad_deploy")
+        if entry["teacher"] is None and entry["classes"] is None and entry["groups"] is None:
+            raise ValueError("bad_deploy")
+        out.append(entry)
+    return out
+
+
 def _subject(raw) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("bad_subject")
@@ -58,8 +100,16 @@ def _subject(raw) -> dict:
         raise ValueError("bad_taught_as")
     # combine is how many classes share a lesson: required (2 or more) only for "combined", 1 otherwise
     combine = _whole(raw.get("combine"), 2, "combine_below_2") if taught_as == "combined" else 1
-    return {"subject": name, "periods": periods, "taught_as": taught_as, "combine": combine,
-            "room_kind": _text(raw.get("room_kind")) or None, "dept": _text(raw.get("dept"))}
+    subject = {"subject": name, "periods": periods, "taught_as": taught_as, "combine": combine,
+               "room_kind": _text(raw.get("room_kind")) or None, "dept": _text(raw.get("dept"))}
+    # the deployment fields are kept only when given, so a row from an older file stays as it was
+    if raw.get("lessons"):
+        subject["lessons"] = _lessons(raw["lessons"])
+    if _text(raw.get("runs_with")):
+        subject["runs_with"] = _text(raw["runs_with"])
+    if raw.get("deploy"):
+        subject["deploy"] = _deploy(raw["deploy"])
+    return subject
 
 
 def _level(key: str, raw) -> dict:
@@ -117,11 +167,13 @@ def put(db, tid: str | None, value) -> dict:
 
 
 def banded_meta(levels: dict, level) -> dict:
-    """The Banded subjects of one level as {subject: {"periods", "room_kind", "dept"}}. `level` is a level
-    name or a key; either goes through `level_key`. The result is keyed by the subject AS WRITTEN in the
-    file, so a caller matches it by `students.norm` of both sides ("Physics" and "physics" meet)."""
+    """The Banded subjects of one level as {subject: {"periods", "room_kind", "dept", "lessons" (only with a
+    lesson pattern)}}. `level` is a level name or a key; either goes through `level_key`. The result is keyed
+    by the subject AS WRITTEN in the file, so a caller matches it by `students.norm` of both sides ("Physics"
+    and "physics" meet)."""
     entry = (levels or {}).get(level_key(level))
     if not entry:
         return {}
-    return {s["subject"]: {"periods": s["periods"], "room_kind": s["room_kind"], "dept": s["dept"]}
+    return {s["subject"]: {"periods": s["periods"], "room_kind": s["room_kind"], "dept": s["dept"],
+                           **({"lessons": dict(s["lessons"])} if s.get("lessons") else {})}
             for s in entry["subjects"] if s["taught_as"] == "banded"}

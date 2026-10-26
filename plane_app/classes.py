@@ -2,7 +2,8 @@
 functions, no database or web imports.
 
 `propose` works out a level's form classes from its students (or the number the school typed), fills
-them, writes the requirements of its Class and Combined subjects and suggests a teacher for each; the
+them, writes the requirements of its Class and Combined subjects and suggests a teacher for each, and
+writes each Runs-with subject (Mother Tongue) as groups across the level, side by side in one band; the
 school reviews that, then `apply_proposal` writes it into the plan, tagged `formed` with the level key so
 forming the level again replaces it. `student_classes` gives each student's class from a proposal.
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import math
+from itertools import accumulate
 
 from . import blocks as B
 from .plan import model as M
@@ -151,34 +153,267 @@ def _placement(level_students: list[dict], setup: dict | None, name: str, warnin
     return result["placed"]
 
 
-def _requirements(entry: dict, key: str, classes: list[dict], warnings: list[str]) -> list[dict]:
-    """The requirements of the level's Class and Combined subjects, in the subject rows' order, then in code
-    order. Combined N groups the classes N at a time in code order; a short last group is taught on its own
-    (one class alone, or the few left together) and said in `warnings`. Banded subjects write nothing."""
+def taking(students: list[dict], level_key: str, subject: str, plan: dict | None = None) -> int:
+    """How many of level `level_key`'s students take `subject`: those with it (compared under `norm`) among
+    the comma-split cells of their `choices`, or of their `subjects`. A student's level is their class's
+    (in `plan`, else the digits its code starts with), or their own while they have no class. A count only:
+    no student is named."""
+    return sum(1 for s in _level_students(plan or {}, SP.level_key(level_key), students) if _lists(s, subject))
+
+
+def _lists(student: dict, subject: str) -> bool:
+    """Whether `student` has `subject` (under `norm`) among the comma-split cells of their `choices` or
+    `subjects`."""
+    want = norm(subject)
+    return bool(want) and any(norm(part) == want
+                              for cell in [*(student.get("choices") or []), *(student.get("subjects") or [])]
+                              for part in str(cell if cell is not None else "").split(","))
+
+
+def _requirements(entry: dict, key: str, classes: list[dict], plan: dict, warnings: list[str],
+                  students: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
+    """(requirements, bands) of the level's Class, Combined and Runs-with subjects, the requirements in the
+    subject rows' order. A Class or Combined row's are in code order (`_class_requirements`), with the
+    teachers the deployment names (`_named`); a Runs-with row's are its groups across the level
+    (`_runs_with`). Each Runs-with name is one band, {name, requirements: [indexes into the requirements]},
+    in the order the names first come; names that differ only in case and spaces ("MT", "m t") are one,
+    under its first spelling. A band whose subjects' lessons (a pattern, else single periods) share no length
+    cannot line up side by side, and is said. Banded subjects write nothing."""
     name = entry.get("name") or key
     size = {c["code"]: c["size"] for c in classes}
     codes = [c["code"] for c in classes]
     out: list[dict] = []
+    bands: dict[str, tuple[str, list[int]]] = {}       # norm(name) -> (first spelling, indexes)
+    lettered: dict[str, int] = {}               # Runs-with code -> groups lettered so far
     for row in entry.get("subjects") or []:
-        taught = row.get("taught_as") or "class"
-        if taught == "banded":
+        if (row.get("taught_as") or "class") == "banded":
             continue
-        n = int(row.get("combine") or 1) if taught == "combined" else 1
-        groups = [codes[i:i + n] for i in range(0, len(codes), n)]
-        if n > 1 and groups and len(groups[-1]) < n:
-            last = groups[-1]
-            if len(last) == 1:
-                warnings.append(f"{name}: {row['subject']} is combined {n} at a time; {last[0]} is taught alone")
-            else:
-                warnings.append(f"{name}: {row['subject']} is combined {n} at a time; "
-                                f"{'+'.join(last)} are taught together, {len(last)} classes")
-        for group in groups:
-            out.append({"subject": row["subject"], "classes": list(group),
-                        "grouping": "class" if len(group) == 1 else "+".join(group),
-                        "level": key, "periods": int(row["periods"]), "room_kind": row.get("room_kind"),
-                        "dept": row.get("dept") or "", "size": sum(size[c] or 0 for c in group),
-                        "teacher": None, "suggested": True, "warnings": []})
+        if row.get("runs_with"):
+            reqs = _runs_with(row, key, codes, entry, plan, students or [], name, warnings, lettered)
+            bands.setdefault(norm(row["runs_with"]), (row["runs_with"], []))[1].extend(
+                range(len(out), len(out) + len(reqs)))
+        else:
+            reqs = _class_requirements(row, key, codes, size, name, warnings)
+            _named(row, reqs, plan, name, warnings)
+        out += reqs
+    for band, ix in bands.values():
+        lengths: dict[str, set] = {}            # norm(subject) -> the lesson lengths its groups have
+        for i in ix:
+            lessons = out[i].get("lessons") or {"1": out[i]["periods"]}
+            lengths.setdefault(norm(out[i]["subject"]), set()).update(k for k, v in lessons.items() if v)
+        if len(lengths) > 1 and not set.intersection(*lengths.values()):
+            warnings.append(f"{name}: {band}: its subjects' lesson patterns differ, so they can't all run side by side")
+    return out, [{"name": n, "requirements": ix} for n, ix in bands.values()]
+
+
+def _runs_with(row: dict, key: str, codes: list[str], entry: dict, plan: dict, students: list[dict],
+               name: str, warnings: list[str], lettered: dict[str, int]) -> list[dict]:
+    """A Runs-with row's groups, each one requirement over all the level's classes, lettered by
+    `blocks.set_groupings` from the level's class prefix and the subject's code (its letters and digits,
+    upper case, the first four: Sec 3 Chinese gives 3CHINA, 3CHINB). A code an earlier row of the level
+    made too (Higher Chinese and Higher Malay both make HIGH) goes on from that row's letters (`lettered`,
+    updated), so no two groups share a grouping. The count is the sum of the row's
+    `deploy` groups when every entry gives one; else `class_count` of the level's students `taking` it
+    over the class size (one group when none does, and said). Each group's size is those students split
+    evenly, the larger groups first (None with no student). Lessons as `_pattern`. Teachers as `_grouped`;
+    no group is suggested (`suggested: False`): a group no one is named for stays unassigned."""
+    subject = row["subject"]
+    deploy = row.get("deploy") or []
+    n = taking(students, key, subject, plan)
+    if deploy and all(d.get("groups") for d in deploy):
+        g = sum(int(d["groups"]) for d in deploy)
+    else:
+        g = class_count(n, entry.get("class_size") or 40)
+        if not n:
+            warnings.append(f"{name}: no student lists {subject}; give Groups in requirements.csv, "
+                            f"or name the subject in each student's choices in students.csv")
+    code = "".join(ch for ch in subject.upper() if ch.isalnum())[:4]
+    first = lettered.get(code, 0)
+    lettered[code] = first + g
+    groupings = B.set_groupings([{"subject": code, "set": i} for i in range(first + g)], SP.class_prefix(name))
+    sizes = _sizes(n, g) if n else [None] * g
+    lessons = _pattern(row, name, warnings)
+    out = []
+    for i in range(g):
+        req = {"subject": subject, "classes": list(codes), "grouping": groupings[code, first + i],
+               "level": key, "periods": int(row["periods"]), "room_kind": row.get("room_kind"),
+               "dept": row.get("dept") or "", "size": sizes[i],
+               "teacher": None, "suggested": False, "warnings": []}
+        if lessons:
+            req["lessons"] = dict(lessons)
+        out.append(req)
+    _grouped(row, out, plan, name, warnings)
     return out
+
+
+def _grouped(row: dict, reqs: list[dict], plan: dict, name: str, warnings: list[str]) -> None:
+    """The teachers a Runs-with row's `deploy` names, set in place on its groups `reqs`, each then
+    `named: True`. In file order, a teacher takes their count of groups (one without a count), the next
+    starting after; a blank teacher takes nothing. A teacher with no group left, or fewer than their count
+    (trimmed), is said; groups left over
+    stay unassigned, and are said. A name `_resolve` finds no one for, or more than one, leaves its groups
+    unassigned; a teacher of another department is kept as named (`_said`)."""
+    subject, g = row["subject"], len(reqs)
+    dept_of = {p["id"]: p.get("dept") or "" for p in plan.get("staff") or []}
+    t = 0                                       # the groups named so far
+    for d in row.get("deploy") or []:
+        written = d.get("teacher")
+        if not written:
+            continue
+        count = int(d.get("groups") or 1)
+        share = range(min(t, g), min(t + count, g))
+        t += count
+        if not share:
+            warnings.append(f"{name}: {subject}: {written} has no group")
+            continue
+        if len(share) < count:
+            warnings.append(f"{name}: {subject}: {written}'s count is trimmed to {len(share)}")
+        pid, text = _said(plan, row, written, name, dept_of, f"so {len(share)} group(s) have no teacher")
+        if text and text not in warnings:
+            warnings.append(text)
+        for i in share if pid else ():
+            reqs[i].update(teacher=pid, named=True)
+    if t < g:
+        warnings.append(f"{name}: {subject} has {g} groups and teachers for {t}; {g - t} group(s) have no teacher")
+
+
+def _class_requirements(row: dict, key: str, codes: list[str], size: dict, name: str,
+                        warnings: list[str]) -> list[dict]:
+    """One subject row's requirements, in code order: one per class, or Combined N grouping the classes N at
+    a time; a short last group is taught on its own (one class alone, or the few left together) and said in
+    `warnings`. Each is unassigned and `suggested`, and carries the row's lesson pattern as `lessons` when
+    it has one that still adds up to the row's periods (none: `apply_proposal` writes single periods); one
+    that no longer does (the periods changed since) is left out, and said."""
+    taught = row.get("taught_as") or "class"
+    n = int(row.get("combine") or 1) if taught == "combined" else 1
+    groups = [codes[i:i + n] for i in range(0, len(codes), n)]
+    if n > 1 and groups and len(groups[-1]) < n:
+        last = groups[-1]
+        if len(last) == 1:
+            warnings.append(f"{name}: {row['subject']} is combined {n} at a time; {last[0]} is taught alone")
+        else:
+            warnings.append(f"{name}: {row['subject']} is combined {n} at a time; "
+                            f"{'+'.join(last)} are taught together, {len(last)} classes")
+    lessons = _pattern(row, name, warnings)
+    out = []
+    for group in groups:
+        req = {"subject": row["subject"], "classes": list(group),
+               "grouping": "class" if len(group) == 1 else "+".join(group),
+               "level": key, "periods": int(row["periods"]), "room_kind": row.get("room_kind"),
+               "dept": row.get("dept") or "", "size": sum(size[c] or 0 for c in group),
+               "teacher": None, "suggested": True, "warnings": []}
+        if lessons:
+            req["lessons"] = dict(lessons)
+        out.append(req)
+    return out
+
+
+def _pattern(row: dict, name: str, warnings: list[str]) -> dict | None:
+    """The row's lesson pattern while it still adds up to the row's periods; None without one, or for one
+    that no longer does (the periods changed since), which is said."""
+    lessons = row.get("lessons") or None
+    if lessons and _total(lessons) != int(row["periods"]):
+        warnings.append(f"{name}: {row['subject']}: the lesson pattern no longer adds up to {int(row['periods'])} "
+                        f"periods, so single periods are used")
+        lessons = None
+    return lessons
+
+
+def _total(lessons: dict) -> int:
+    """The periods a lesson pattern {length: count} makes."""
+    return sum(int(length) * int(n) for length, n in lessons.items())
+
+
+def resolve_teacher(plan: dict, written: str) -> str | None:
+    """The staff id of the teacher a file names as `written` (`_resolve`), else None."""
+    return _resolve(plan, written)[0]
+
+
+def deployed_ids(plan: dict, entry: dict | None, subject: str) -> list[str]:
+    """The staff ids the deployment of the level `entry` (a levels entry) names for `subject` (its subject
+    rows matched under `norm`), each as `_resolve` finds them; a name it finds no one for is left out."""
+    rows = [r for r in (entry or {}).get("subjects") or [] if norm(r.get("subject")) == norm(subject)]
+    found = (resolve_teacher(plan, d["teacher"]) for r in rows for d in r.get("deploy") or [] if d.get("teacher"))
+    return list(dict.fromkeys(pid for pid in found if pid))
+
+
+def _resolve(plan: dict, written: str) -> tuple[str | None, str | None]:
+    """(staff id, None) for the one teacher whose name matches `written` under `students.norm` (case and
+    spaces aside), else the one whose short name does; (None, "tie") when two people match at the first
+    that any does (a name two staff share is no one's); (None, "missing") when nobody's does."""
+    want = norm(written)
+    for field in ("name", "short"):
+        found = [p["id"] for p in plan.get("staff") or [] if want and norm(p.get(field)) == want]
+        if found:
+            return (found[0], None) if len(found) == 1 else (None, "tie")
+    return None, "missing"
+
+
+def _named(row: dict, reqs: list[dict], plan: dict, name: str, warnings: list[str]) -> None:
+    """The teachers the row's `deploy` names, set in place on its requirements `reqs` (code order), each
+    then `suggested: False` and `named: True`. In file order, a teacher with a count of classes takes that
+    many whole classes in code order, and so every group (Combined N) holding one of them; the next starts
+    after the last such group. A count past the classes left is trimmed and said: with how many classes the row
+    names in all when that is more than the level has, else (Combined N, whose groups round each count up)
+    as the groups running out. Teachers named without a count share the groups left in file order, as evenly
+    as they go, the larger shares first. A teacher whose share comes out empty is said ("has no class"). A
+    blank teacher takes nothing. A name `_resolve` finds no one for, or more than one,
+    keeps its share for the suggestion, and is said. A teacher of another department than the row's is
+    kept as named, and said. Whatever is not named stays for `_suggest`."""
+    deploy = [d for d in row.get("deploy") or [] if d.get("teacher")]
+    if not deploy or not reqs:
+        return
+    subject, k = row["subject"], sum(len(r["classes"]) for r in reqs)
+    starts = [0, *accumulate(len(r["classes"]) for r in reqs)]     # class position each group starts at
+    counted = [d for d in deploy if d.get("classes")]
+    asked = sum(d["classes"] for d in counted)
+    n_at_a_time = int(row.get("combine") or 1)  # Combined N: the classes a group holds
+    shares: list[tuple[str, range]] = []
+    g = 0                                       # the next group not yet named
+    for d in counted:
+        who = d["teacher"]
+        through = starts[g] + d["classes"]      # this teacher's classes end before this position
+        h = g
+        while h < len(reqs) and starts[h] < through:
+            h += 1
+        if through > k:
+            got = starts[h] - starts[g]
+            if asked > k:
+                said = f"so {who} has no class" if not got else f"{who}'s count is trimmed"
+                warnings.append(f"{name}: {subject} names {asked} classes for teachers but the level has {k}"
+                                f"{', ' if not got else '; '}{said}")
+            else:                               # the counts fit, but whole groups rounded them up
+                said = f"so {who} has no group left" if not got else f"so {who}'s count is trimmed to {got}"
+                warnings.append(f"{name}: {subject} is combined {n_at_a_time} at a time, {said}")
+        shares.append((who, range(g, h)))
+        g = h
+    rest = [d for d in deploy if not d.get("classes")]
+    for d, n in zip(rest, _sizes(len(reqs) - g, len(rest)) if rest else []):
+        if not n:
+            warnings.append(f"{name}: {subject}: {d['teacher']} has no class")
+        shares.append((d["teacher"], range(g, g + n)))
+        g += n
+    dept_of = {p["id"]: p.get("dept") or "" for p in plan.get("staff") or []}
+    for written, groups in shares:
+        pid, text = _said(plan, row, written, name, dept_of, "so a teacher is suggested")
+        if text and groups and text not in warnings:
+            warnings.append(text)
+        for i in groups if pid else ():
+            reqs[i].update(teacher=pid, suggested=False, named=True)
+
+
+def _said(plan: dict, row: dict, written: str, name: str, dept_of: dict, unfound: str) -> tuple[str | None, str | None]:
+    """(staff id or None, the warning or None) for a teacher the row's deployment names as `written`: one
+    `_resolve` finds no one for ("is not on the staff list") or more than one for ("matches more than one
+    teacher"), followed by `unfound`; one of another department than the row's ("kept as named")."""
+    pid, why = _resolve(plan, written)
+    if pid is None:
+        said = "matches more than one teacher" if why == "tie" else "is not on the staff list"
+        return None, f"{name}: {row['subject']}: {written} {said}, {unfound}"
+    if row.get("dept") and dept_of[pid] != row["dept"]:
+        return pid, (f"{name}: {row['subject']}: {written} is in {dept_of[pid] or 'no department'}, "
+                     f"not {row['dept']}; kept as named")
+    return pid, None
 
 
 def _without_own(plan: dict, key: str) -> dict:
@@ -192,7 +427,9 @@ def _allowance_left(plan: dict, settings: dict, key: str) -> dict[str, float]:
 
 
 def _suggest(reqs: list[dict], plan: dict, settings: dict, key: str) -> None:
-    """A teacher for each requirement, in order, set in place. Candidates are the staff of its department.
+    """A teacher for each requirement still `suggested`, in order, set in place; one the deployment names
+    keeps its teacher, whose periods count against their allowance first. Candidates are the staff of its
+    department.
     They rank by `specialisation.covers` (True, then None for a teacher who lists no subjects, then False);
     then whether their allowance left (less what this call has given them) still holds the periods; then
     whether they were already suggested this subject on another class of the level, so one teacher keeps a
@@ -202,9 +439,14 @@ def _suggest(reqs: list[dict], plan: dict, settings: dict, key: str) -> None:
     staff = sorted(plan.get("staff") or [], key=lambda p: p["id"])
     left = _allowance_left(plan, settings, key)
     given: dict[str, float] = {}
+    for r in reqs:
+        if not r["suggested"] and r["teacher"]:
+            given[r["teacher"]] = given.get(r["teacher"], 0) + r["periods"]
     kept: set[tuple[str, str]] = set()              # (teacher, subject) suggested so far
     fit_cache: dict[tuple[str, str], int] = {}
     for r in reqs:
+        if not r["suggested"]:
+            continue
         dept, subject, periods = r["dept"], r["subject"], r["periods"]
         free = [p for p in staff if dept and p.get("dept") == dept]
 
@@ -267,15 +509,20 @@ def propose(plan: dict, settings: dict, level_key: str, levels_entry: dict, stud
             setup: dict | None = None, *, count: int | None = None) -> dict:
     """A level's classes, requirements and suggested teachers, for the school to review:
     {level, classes: [{code, size, students: [sid]}], requirements: [{subject, classes, grouping, level,
-    periods, room_kind, dept, size, teacher, suggested, warnings}], warnings: [str]}.
+    periods, room_kind, dept, size, teacher, suggested, warnings, lessons (only with a pattern), named
+    (only on a teacher the deployment names)}],
+    bands: [{name, requirements: [index]}] (only when a subject runs with others),
+    warnings: [str]}.
 
     The student count is that of the level's students in `students` (their class's level, or their own
     while they have no class) when there are any, else the entry's `students_expected`; with neither,
     no classes and the warning "<level>: no students and no expected number". The classes are
     `class_count` of the class size (or `count`, the school's own number), coded by `class_codes`, filled
     by `fill`. When `setup` (the level's option-blocks setup: combinations and overrides) has combinations
-    and the students carry choices, `blocks.place` gives the placement `fill` groups by. Requirements are
-    `_requirements`'; teachers are `_suggest`'s, with `rewarn`'s warnings."""
+    and the students carry choices, `blocks.place` gives the placement `fill` groups by. Requirements and
+    bands are `_requirements`', with the teachers the deployment names (a Runs-with subject's groups sized
+    from the level's students' choices); the rest are `_suggest`'s; `rewarn` gives
+    each its warnings (a named teacher past allowance or outside their subjects among them)."""
     key = SP.level_key(level_key)
     entry = levels_entry or {}
     name = entry.get("name") or key
@@ -295,10 +542,12 @@ def propose(plan: dict, settings: dict, level_key: str, levels_entry: dict, stud
         classes = [{"code": c, "size": len(filled[c]), "students": filled[c]} for c in codes]
     else:
         classes = [{"code": c, "size": n, "students": []} for c, n in zip(codes, _sizes(total, k))]
-    reqs = _requirements(entry, key, classes, warnings)
+    reqs, bands = _requirements(entry, key, classes, plan, warnings, mine)
     _suggest(reqs, plan, settings, key)
-    return rewarn({"level": key, "classes": classes, "requirements": reqs, "warnings": warnings},
-                  plan, settings, key)
+    prop = {"level": key, "classes": classes, "requirements": reqs, "warnings": warnings}
+    if bands:
+        prop["bands"] = bands
+    return rewarn(prop, plan, settings, key)
 
 
 def student_classes(prop: dict) -> dict[str, str]:
@@ -323,13 +572,16 @@ def _list(items: list[str]) -> str:
 def apply_proposal(plan: dict, level_key: str, prop: dict, *, name: str | None = None) -> dict:
     """The plan with the proposal written in, normalised; neither input is changed.
 
-    This level's earlier output (classes, division and requirements tagged `formed` == the level key) goes
-    first, and leaves any band that listed one of those requirements (a band it leaves empty goes too). Then
-    the proposal's classes are added as {code, level, size}, one division over them, and each requirement,
-    all tagged. `level` is `name`, the level's display name ("Sec 3", "P4", "Year Seven"; the key when not
-    given), R27(a): every comparison of levels goes through `level_key`/`stage_key`, and the `formed` tag
-    keeps the key. Everything else stays as it is, including option blocks' output for the level
-    (it is applied again after the classes are formed).
+    This level's earlier output (classes, division, requirements and bands tagged `formed` == the level key)
+    goes first, and leaves any band that listed one of those requirements (a band it leaves empty goes too).
+    Then the proposal's classes are added as {code, level, size}, one division over them, and each
+    requirement, all tagged, its lessons the requirement's `lessons` (the lesson pattern) while they add up
+    to its periods, else single periods; then one band over that division per proposal band (a Runs-with
+    name), its options the requirements written for it, tagged too. `level`
+    is `name`, the level's display name ("Sec 3", "P4", "Year Seven"; the key when not given), R27(a):
+    every comparison of levels goes through `level_key`/`stage_key`, and the `formed` tag keeps the key.
+    Everything else stays as it is, including option blocks' output for the level (it is applied again
+    after the classes are formed).
 
     ValueError (codes, groupings and subject words only) when an earlier requirement of this level is
     locked, naming each; when a class code or a grouping is already used by other plan data (option blocks'
@@ -352,6 +604,8 @@ def apply_proposal(plan: dict, level_key: str, prop: dict, *, name: str | None =
         out[section] = [x for x in out.get(section) or [] if x.get("formed") != key]
     bands = []
     for b in out.get("bands") or []:
+        if b.get("formed") == key:
+            continue
         options = [o for o in b.get("options") or [] if o not in removed]
         if len(options) == len(b.get("options") or []):
             bands.append(b)
@@ -383,36 +637,77 @@ def apply_proposal(plan: dict, level_key: str, prop: dict, *, name: str | None =
 
     shown = " ".join(str(name or "").split()) or key
     out["classes"] += [{"code": c["code"], "level": shown, "size": c["size"], "formed": key} for c in classes]
-    division_ids = {d["id"] for d in out["divisions"]}
-    out["divisions"].append({"id": M.unique_id(M.division_id(codes), division_ids), "classes": list(codes),
-                             "formed": key})
+    division_id = M.unique_id(M.division_id(codes), {d["id"] for d in out["divisions"]})
+    out["divisions"].append({"id": division_id, "classes": list(codes), "formed": key})
     taken = {r["id"] for r in out["requirements"]}
-    for r in prop.get("requirements") or []:
-        dept, periods = r.get("dept") or "", int(r["periods"])
+    written: dict[int, str] = {}                # proposal index -> the requirement id written for it
+    for i, r in enumerate(prop.get("requirements") or []):
+        dept, periods, lessons = r.get("dept") or "", int(r["periods"]), r.get("lessons")
         rid = M.requirement_id_for(dept, key, r["grouping"], r["classes"], r["subject"], taken)
         taken.add(rid)
+        written[i] = rid
         out["requirements"].append({
             "id": rid, "dept": dept, "level": shown, "subject": r["subject"], "periods": periods,
-            "lessons": {"1": periods}, "grouping": r["grouping"], "classes": list(r["classes"]),
+            "lessons": dict(lessons if lessons and _total(lessons) == periods else {"1": periods}),
+            "grouping": r["grouping"],
+            "classes": list(r["classes"]),
             "teachers": [r["teacher"]] if r.get("teacher") else [], "size": r.get("size"),
             "venue": {"kind": r.get("room_kind"), "room": None}, "sync_with": None, "locked": False,
             "formed": key})
+    band_ids = {b["id"] for b in out["bands"]}
+    for band in prop.get("bands") or []:        # a Runs-with name: its groups side by side
+        options = [written[i] for i in band.get("requirements") or [] if i in written]
+        if not options:
+            continue
+        bid = M.unique_id(M.band_id(division_id, str(band["name"])), band_ids)
+        band_ids.add(bid)
+        out["bands"].append({"id": bid, "division": division_id, "options": options, "formed": key})
     return M.normalise(out)
 
 
 def _combined(plan: dict, key: str) -> list[dict]:
     """This level's formed requirements taught to two or more classes together ("1A+1B"): each is an option
-    group in generate and B1, so its students need a take for it."""
+    group in generate and B1, so its students need a take for it. A Runs-with group (one a band of this
+    level's lists) is not one: only some of the classes' students take it."""
+    grouped = {r["id"] for r in _run_groups(plan, key)}
     return [r for r in plan.get("requirements") or []
-            if r.get("formed") == key and r.get("grouping") not in (None, "", "class")]
+            if r.get("formed") == key and r.get("grouping") not in (None, "", "class") and r["id"] not in grouped]
+
+
+def _run_groups(plan: dict, key: str) -> list[dict]:
+    """This level's Runs-with groups: the formed requirements a band of this level's lists, in the bands'
+    id order, each band's in its options' order (the proposal's: A, B, C per subject)."""
+    by_id = {r["id"]: r for r in plan.get("requirements") or [] if r.get("formed") == key}
+    return [by_id[o] for b in sorted(plan.get("bands") or [], key=lambda b: b["id"]) if b.get("formed") == key
+            for o in b.get("options") or [] if o in by_id]
+
+
+def _run_takes(students: list[dict], placed: dict[str, str], after: dict, key: str) -> dict[str, list[dict]]:
+    """{sid: [take]}: each placed student who lists a Runs-with subject (`_lists`, as `taking` counts them)
+    gets one take of exactly one of its groups. A subject's takers, in student-ID order, fill its groups in
+    order to the sizes `_sizes` gives (the proposal's own), the larger groups first. Counts only."""
+    by_subject: dict[str, list[dict]] = {}
+    for r in _run_groups(after, key):
+        by_subject.setdefault(r["subject"], []).append(r)
+    mine = sorted((s for s in students if str(s.get("id")) in placed), key=lambda s: _id_key(str(s["id"])))
+    out: dict[str, list[dict]] = {}
+    for subject, groups in by_subject.items():
+        takers = [str(s["id"]) for s in mine if _lists(s, subject)]
+        queue = iter(takers)
+        for r, n in zip(groups, _sizes(len(takers), len(groups))):
+            take = {"division": option_division(after, r), "grouping": r["grouping"]}
+            for _ in range(n):
+                out.setdefault(next(queue), []).append(dict(take))
+    return out
 
 
 def students_after(students: list[dict], before: dict, after: dict, level_key: str, prop: dict) -> list[dict]:
     """The students once `after` (the plan `apply_proposal` wrote from `before`) is stored: each student the
-    proposal places gets its class, and loses the takes of this level's earlier combined groups (in `before`)
-    and gains one take {division, grouping} per combined requirement of its new class in `after`, its
-    division `generate.option_division`, so it is exactly the option group the plan has. A student holding
-    an earlier combined take but not placed loses it only. Every other student, and every other take
+    proposal places gets its class, and loses the takes of this level's earlier combined and Runs-with groups
+    (in `before`) and gains one take {division, grouping} per combined requirement of its new class in
+    `after`, and one of one group of each Runs-with subject it lists (`_run_takes`), its division
+    `generate.option_division`, so it is exactly the option group the plan has. A student holding an earlier
+    such take but not placed loses it only. Every other student, and every other take
     (option blocks' sets, another level's), is as it was; `placed_by_app` is not touched (these takes follow
     from the class, not a choice). A new list; the one given is not changed.
 
@@ -420,7 +715,8 @@ def students_after(students: list[dict], before: dict, after: dict, level_key: s
     one pairing ("1A+1B" for PE and Music) read as one group in B1's subject lookups."""
     key = SP.level_key(level_key)
     placed = student_classes(prop)
-    old = {option_group_id(before, r) for r in _combined(before, key)}
+    old = {option_group_id(before, r) for r in _combined(before, key) + _run_groups(before, key)}
+    runs = _run_takes(students, placed, after, key)
     by_class: dict[str, list[dict]] = {}
     for r in _combined(after, key):
         take = {"division": option_division(after, r), "grouping": r["grouping"]}
@@ -439,5 +735,6 @@ def students_after(students: list[dict], before: dict, after: dict, level_key: s
         if code is not None:
             new["class"] = code
             new["takes"] = keep + [dict(t) for t in by_class.get(code, []) if t not in keep]
+            new["takes"] += [t for t in runs.get(str(s.get("id")), []) if t not in new["takes"]]
         out.append(new)
     return out

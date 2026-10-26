@@ -824,12 +824,13 @@ GENERIC_FILES = ("staff", "venues", "units", "duties")
 # names, subjects and room kinds, so a primary file never shows "Sec 3, Physics, Lab".
 EDU_EXAMPLES = {
     "edu-primary-class-teacher": {
-        "requirements": ["e.g. Year 1", "Literacy", "8", "Class", "Classroom", "Literacy"],
+        "requirements": ["e.g. Teacher Name", "Year 1", "Literacy", "1", "", "8", "", "", "Class", "Classroom", "Literacy"],
         "staff": ["e.g. Teacher Name", "TN", "Literacy", "24", "Literacy", "Year 1, Year 2", "Numeracy", "", "", ""],
         "venues": ["e.g. Room 1", "Classroom", "30"],
     },
     "edu-college-modules": {
-        "requirements": ["e.g. Year 1", "Module A lecture", "2", "Class", "Lecture theatre", "Module A"],
+        "requirements": ["e.g. Lecturer Name", "Year 1", "Module A lecture", "1", "", "2", "1x2p", "", "Class", "Lecture theatre",
+                         "Module A"],
         "staff": ["e.g. Lecturer Name", "LN", "Module A", "18", "Module A lecture", "Year 1",
                   "Module A tutorial", "Year 1", "", ""],
         "venues": ["e.g. Lecture theatre 1", "Lecture theatre", "120"],

@@ -52,7 +52,9 @@
   };
   const current = () => levels.find((l) => l.level === level) || null;
   const levelName = () => { const l = current(); return l ? (l.name || l.level) : level; };
-  const reqLabel = (q) => `${q.subject} · ${(q.classes || []).join(' + ')}`;
+  // a Runs-with group (Mother Tongue) spans every class: its grouping code (3CHINA) says which group it is
+  const runsWith = (q) => q.grouping && q.grouping !== 'class' && q.grouping !== (q.classes || []).join('+');
+  const reqLabel = (q) => `${q.subject} · ${runsWith(q) ? q.grouping : (q.classes || []).join(' + ')}`;
   const studentsOf = (p) => (p.classes || []).reduce((n, c) => n + (c.students || []).length, 0);
   const staffName = (id) => {
     const who = staff.find((p) => p.id === id);
@@ -197,7 +199,10 @@
     sel.appendChild(option('', 'no teacher'));
     const people = staff.filter((p) => !q.dept || p.dept === q.dept);
     people.forEach((p) => sel.appendChild(option(p.id, p.name || p.id)));
-    if (q.teacher && !people.some((p) => p.id === q.teacher)) sel.appendChild(option(q.teacher, q.teacher));
+    if (q.teacher && !people.some((p) => p.id === q.teacher)) {     // one of another department, as named
+      const who = staff.find((p) => p.id === q.teacher);
+      sel.appendChild(option(q.teacher, (who && who.name) || q.teacher));
+    }
     sel.value = q.teacher || '';
     sel.disabled = !proposal.can_apply;
     sel.addEventListener('change', () => { setTeacher(i, sel.value).catch(swallow); });
