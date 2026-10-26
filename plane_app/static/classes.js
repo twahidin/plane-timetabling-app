@@ -5,7 +5,10 @@
 // banner when a formed level's requirements or students have changed since. Admin only: /api/me says who is
 // asking, a department account never has the card shown nor a classes route called. Every code, name, warning
 // and teacher is set with textContent, never as HTML. Loads on the Requirements tab (shell.js's plane:tab
-// event); opening the card only reads (GET), nothing is written until Save, Propose, a teacher, Apply or Undo.
+// event); opening the card only reads (GET), nothing is written until Save, Propose, a teacher, Apply or Undo,
+// or an option picked for a deployment conflict and "Yes, do this" pressed (spec docs/superpowers/specs/
+// 2026-10-25-deployment-file-design.md goal 3: the conflicts above the requirements, one block each, the
+// recommended option first and checked; a settled one is a single line, "kept").
 (function () {
   'use strict';
 
@@ -23,6 +26,7 @@
     if (!r.ok) {
       const e = new Error(typeof data.detail === 'string' ? data.detail : (r.statusText || 'The request failed'));
       e.status = r.status;
+      e.stale = (r.headers && r.headers.get('X-Stale')) || '';     // a stale pick: "version" or "facts"
       throw e;
     }
     return data;
@@ -44,6 +48,8 @@
   let dirty = false;                        // the level's fields edited and not saved
   let shown = PAGE, shownReqs = PAGE;
   let announcing = false;                   // our own plane:students event is not a reason to reload
+  let settling = false;                     // a conflict's option is being sent: every "Yes, do this" waits
+  let picks = {};                           // conflict id -> the option id picked and not yet sent
 
   const say = (text, cls) => {
     const m = el('classes-msg');
@@ -246,12 +252,103 @@
     more.textContent = moreText(rest);
   }
 
+  // ---------- the deployment conflicts ----------
+  function conflictBlock(c, n) {
+    const options = c.options || [];
+    const block = node('fieldset', 'classes-conflict');
+    block.appendChild(node('legend', 'classes-conflict-text', c.text));
+    const chosen = options.some((o) => o.id === picks[c.id]) ? picks[c.id] : (options[0] || {}).id;
+    options.forEach((o) => {
+      const label = node('label', 'classes-option');
+      const radio = node('input');
+      radio.type = 'radio';
+      radio.name = 'classes-conflict-' + n;
+      radio.value = o.id;
+      radio.checked = o.id === chosen;
+      radio.addEventListener('change', () => { picks[c.id] = o.id; });
+      label.appendChild(radio);
+      label.appendChild(node('span', 'classes-option-text', o.text));
+      if (o.recommended) {
+        label.appendChild(document.createTextNode(' '));                // the name reads "… recommended", not "…recommended"
+        label.appendChild(node('span', 'classes-recommended', 'recommended'));
+      }
+      block.appendChild(label);
+    });
+    const yes = node('button', 'btn primary', 'Yes, do this');
+    yes.type = 'button';
+    yes.disabled = settling;
+    yes.addEventListener('click', () => {
+      const on = Array.from(block.querySelectorAll('input')).find((r) => r.checked);
+      settle(options.find((o) => on && o.id === on.value) || options[0], c).catch(swallow);
+    });
+    block.appendChild(yes);
+    return block;
+  }
+
+  function renderConflicts() {
+    const box = el('classes-conflicts');
+    box.textContent = '';
+    const list = (proposal && proposal.conflicts) || [];
+    box.hidden = !list.length;
+    if (!list.length) return;
+    box.appendChild(node('h3', 'classes-step', 'Conflicts'));
+    list.forEach((c, n) => {
+      if (c.settled) box.appendChild(node('p', 'classes-conflict-kept', `${c.text} — kept`));
+      else if ((c.options || []).length) box.appendChild(conflictBlock(c, n));
+    });
+  }
+
+  // The school's yes to one option, sent with the version of the proposal it was picked from, so a yes sent twice
+  // (or from an older page) is refused. Nothing is sent before this; the answer is the level's new proposal. A 409
+  // (the conflict changed, or was already dealt with) shows the server's words and then looks again, so a stale
+  // view never leaves the school stuck: stale by "version" (the stored proposal is current, this page's copy is
+  // older, say another tab changed a teacher) reads the stored proposal again; otherwise ("facts": the level's
+  // requirements or students changed) it proposes the level again with its count, as Propose does, keeping the
+  // teachers the school chose by hand (keep).
+  async function settle(o, c) {
+    if (settling || !level || !proposal) return;
+    const mine = level;
+    settling = true;
+    renderConflicts();                       // the buttons go grey while the request runs: a double click sends once
+    try {
+      let answer, done = true;
+      try {
+        answer = await api('/api/classes/conflicts/apply', { method: 'POST',
+          body: JSON.stringify({ level: mine, conflict: c.id, option: o.id, version: proposal.version }) });
+      } catch (e) {
+        say(e.message, 'bad');
+        if (e.status !== 409) return;
+        done = false;
+        if (e.stale === 'version') {
+          answer = await send('/api/classes/proposal?level=' + enc(mine), 'GET');
+        } else {
+          const count = String(el('classes-count').value).trim();
+          answer = await send('/api/classes/propose', 'POST',
+            { level: mine, count: count === '' ? null : num(count), keep: true });
+        }
+      }
+      if (mine !== level) return;            // another level was opened meanwhile: its page is not this answer's
+      proposal = answer;
+      picks = {};
+      if (done) say(`Done: ${o.text}`, 'ok');
+    } finally {
+      settling = false;
+      if (mine === level) {
+        el('classes-count').value = proposal && proposal.count ? String(proposal.count) : '';
+        renderProposal();
+      } else {
+        renderConflicts();                   // the other level's buttons were drawn grey while this one ran
+      }
+    }
+  }
+
   function renderProposal() {
     const box = el('classes-proposal');
     const p = proposal;
     box.hidden = !p;
     if (!p) {
-      ['classes-summary', 'classes-warnings', 'classes-classes', 'classes-roster', 'classes-reqs'].forEach((id) => { el(id).textContent = ''; });
+      ['classes-summary', 'classes-warnings', 'classes-conflicts', 'classes-classes', 'classes-roster', 'classes-reqs'].forEach((id) => { el(id).textContent = ''; });
+      el('classes-conflicts').hidden = true;
       el('classes-more').hidden = true;
       el('classes-reqs-more').hidden = true;
     } else {
@@ -262,6 +359,7 @@
       const warnings = el('classes-warnings');
       warnings.textContent = '';
       (p.warnings || []).forEach((w) => warnings.appendChild(node('li', 'classes-warning', w)));
+      renderConflicts();
       renderClasses();
       renderRoster();
       renderReqs();
@@ -373,6 +471,7 @@
 
   async function openLevel(mine) {
     proposal = null;
+    picks = {};
     shown = PAGE;
     shownReqs = PAGE;
     render();                                // the last level's proposal goes at once, even if this load fails

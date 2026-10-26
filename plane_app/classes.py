@@ -426,7 +426,7 @@ def _allowance_left(plan: dict, settings: dict, key: str) -> dict[str, float]:
     return B.allowance_left(_without_own(plan, key), settings, "")
 
 
-def _suggest(reqs: list[dict], plan: dict, settings: dict, key: str) -> None:
+def _suggest(reqs: list[dict], plan: dict, settings: dict, key: str, left: dict[str, float] | None = None) -> None:
     """A teacher for each requirement still `suggested`, in order, set in place; one the deployment names
     keeps its teacher, whose periods count against their allowance first. Candidates are the staff of its
     department.
@@ -435,9 +435,9 @@ def _suggest(reqs: list[dict], plan: dict, settings: dict, key: str) -> None:
     whether they were already suggested this subject on another class of the level, so one teacher keeps a
     set of classes; then the most allowance left; then staff id. A teacher past their allowance, or outside
     their subjects, is still suggested when no one better fits (`rewarn` says so); None when the department
-    has no staff or none is given."""
+    has no staff or none is given. `left` is `_allowance_left`'s answer when the caller already has it."""
     staff = sorted(plan.get("staff") or [], key=lambda p: p["id"])
-    left = _allowance_left(plan, settings, key)
+    left = _allowance_left(plan, settings, key) if left is None else left
     given: dict[str, float] = {}
     for r in reqs:
         if not r["suggested"] and r["teacher"]:
@@ -469,19 +469,19 @@ def _num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else f"{x:g}"
 
 
-def rewarn(prop: dict, plan: dict, settings: dict, key: str) -> dict:
+def rewarn(prop: dict, plan: dict, settings: dict, key: str, left: dict[str, float] | None = None) -> dict:
     """The proposal with each requirement's warnings worked out again from its teacher (the school may have
     changed one): "say which department for <subject>" when the row names none, no teacher when its
     department has none to give, a teacher the proposal takes past their allowance left (this level's own
     earlier output aside: on each requirement, in the proposal's order, from the one that goes past it,
     giving how far over the whole proposal takes them), and a teacher placed outside their subjects
-    (`specialisation.outside`)."""
+    (`specialisation.outside`). `left` is `_allowance_left`'s answer when the caller already has it."""
     out = copy.deepcopy(prop)
     key = SP.level_key(key)
     staff_by_id = {p["id"]: p for p in plan.get("staff") or []}
     names = {pid: str(p.get("name") or "").strip() or pid for pid, p in staff_by_id.items()}
     known = SP.plan_subjects(plan) | {norm(r["subject"]) for r in out["requirements"]}
-    left = _allowance_left(plan, settings, key)
+    left = _allowance_left(plan, settings, key) if left is None else left
     total: dict[str, float] = {}
     for r in out["requirements"]:
         if r.get("teacher"):
@@ -505,8 +505,25 @@ def rewarn(prop: dict, plan: dict, settings: dict, key: str) -> dict:
     return out
 
 
+def keep_chosen(old: dict, new: dict, plan: dict, settings: dict, key: str,
+                left: dict[str, float] | None = None) -> dict:
+    """`new` (a proposal made again) with the teachers the school chose by hand in `old` carried over: each
+    requirement of `old` with `suggested` False and not `named` (a teacher picked, or cleared, on the page)
+    gives its teacher to the requirement of `new` with the same subject, classes and grouping that the
+    deployment does not name, which is then `suggested` False too; `rewarn` then gives every requirement its
+    warnings again, so a carried choice is still warned about (`left` as `rewarn`). `new` is not changed."""
+    chosen = {(norm(r["subject"]), tuple(r["classes"]), r.get("grouping")): r.get("teacher")
+              for r in (old or {}).get("requirements") or [] if not r.get("suggested") and not r.get("named")}
+    out = copy.deepcopy(new)
+    for r in out.get("requirements") or []:
+        k = (norm(r["subject"]), tuple(r["classes"]), r.get("grouping"))
+        if k in chosen and not r.get("named"):
+            r["teacher"], r["suggested"] = chosen[k], False
+    return rewarn(out, plan, settings, key, left)
+
+
 def propose(plan: dict, settings: dict, level_key: str, levels_entry: dict, students,
-            setup: dict | None = None, *, count: int | None = None) -> dict:
+            setup: dict | None = None, *, count: int | None = None, left: dict[str, float] | None = None) -> dict:
     """A level's classes, requirements and suggested teachers, for the school to review:
     {level, classes: [{code, size, students: [sid]}], requirements: [{subject, classes, grouping, level,
     periods, room_kind, dept, size, teacher, suggested, warnings, lessons (only with a pattern), named
@@ -522,7 +539,9 @@ def propose(plan: dict, settings: dict, level_key: str, levels_entry: dict, stud
     and the students carry choices, `blocks.place` gives the placement `fill` groups by. Requirements and
     bands are `_requirements`', with the teachers the deployment names (a Runs-with subject's groups sized
     from the level's students' choices); the rest are `_suggest`'s; `rewarn` gives
-    each its warnings (a named teacher past allowance or outside their subjects among them)."""
+    each its warnings (a named teacher past allowance or outside their subjects among them). `left` is
+    `_allowance_left`'s answer when the caller already has it (it is the same for every proposal of the level
+    against one plan)."""
     key = SP.level_key(level_key)
     entry = levels_entry or {}
     name = entry.get("name") or key
@@ -543,11 +562,11 @@ def propose(plan: dict, settings: dict, level_key: str, levels_entry: dict, stud
     else:
         classes = [{"code": c, "size": n, "students": []} for c, n in zip(codes, _sizes(total, k))]
     reqs, bands = _requirements(entry, key, classes, plan, warnings, mine)
-    _suggest(reqs, plan, settings, key)
+    _suggest(reqs, plan, settings, key, left)
     prop = {"level": key, "classes": classes, "requirements": reqs, "warnings": warnings}
     if bands:
         prop["bands"] = bands
-    return rewarn(prop, plan, settings, key)
+    return rewarn(prop, plan, settings, key, left)
 
 
 def student_classes(prop: dict) -> dict[str, str]:

@@ -1,18 +1,23 @@
 """Forming classes over HTTP (spec docs/superpowers/specs/2026-10-20-csv-pack-design.md §3, Calls §1 and §2):
 each level's facts in the `levels` store (expected students, class size, naming), a proposal per level kept
 in `classes_run`, a teacher changed in it, and Apply / Undo of the classes, their requirements and the
-students' classes and combined-group takes. The pure work is in classes.py; this is the routes and their
-storage, following blocks_api.py.
+students' classes and combined-group takes. A proposal comes with the level's deployment conflicts
+(`deploy_conflicts.conflicts`), and the option the school picks for one is made to the `levels` entry and
+the level proposed again; a pick never writes the plan. The pure work is in classes.py and
+deploy_conflicts.py; this is the routes and their storage, following blocks_api.py.
 
 Admin only: every route is `Depends(auth.require_session)`, which answers a department account with 403.
 Names reach the page only, in a proposal's `names`; `classes_run` keeps student IDs, never a name. A reason
-for a 400 or 409 names codes, IDs, groupings and level names; the log carries counts only. Nothing is
-written to the plan or the students before Apply.
+for a 400 or 409 names codes, IDs, groupings and level names; the log carries counts and conflict kinds
+only. Nothing is written to the plan or the students before Apply.
 
-`classes_run` is {level_key: {level, proposal, digest, count, applied, undo?, applied_entry?}}. `digest`
-is what the proposal rests on (the level's `levels` entry, its students' IDs, levels, choices and merit,
-and its option-block combinations and overrides); `applied_entry` is the digest of the `levels` entry the
-last Apply used, so a formed level whose entry has changed since reads as stale."""
+`classes_run` is {level_key: {level, proposal, digest, count, applied, undo?, applied_entry?, accepted?}}.
+`digest` is what the proposal rests on (the level's `levels` entry, its students' IDs, levels, choices and
+merit, and its option-block combinations and overrides); `applied_entry` is the digest of the `levels`
+entry the last Apply used, so a formed level whose entry has changed since reads as stale; `accepted` is
+{conflict id: its text} of the conflicts the school chose to leave as they are: one stays settled while a
+conflict of that id reads the same, whatever else changes, and is asked again when its text changes (an
+older store's list of ids reads as none)."""
 from __future__ import annotations
 
 import copy
@@ -21,13 +26,14 @@ import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from . import auth, blocks as K, classes as C, levels as LV, students as S
+from . import auth, blocks as K, classes as C, deploy_conflicts as D, levels as LV, students as S
 from .plan import model as M
 from .plan import specialisation as SP
 from .plan.reader import applying
 
 RUN = "classes_run"
 CHANGED = "requirements or students changed since this proposal; propose again"
+STALE = "this conflict has changed — look again"
 MAX_EXPECTED, MAX_CLASS_SIZE, MAX_CLASSES, MAX_NAMING = 100_000, 1_000, 100, 40
 
 log = logging.getLogger("plane_app")
@@ -74,6 +80,30 @@ def _digest(entry: dict, students: list[dict], setup: dict | None) -> str:
     setup = setup or {}
     return applying._hash({"entry": entry, "students": rows, "combinations": setup.get("combinations"),
                            "overrides": setup.get("overrides") or {}})
+
+
+def _version(record: dict) -> str:
+    """The token a page holds for the proposal it shows: the hash of the run record's digest, count and
+    proposal, so any new proposal, teacher change or pick gives a new one. A pick sent with another is
+    refused (409 STALE): sent twice, or from a second tab, it is made once."""
+    return applying._hash({"digest": record.get("digest"), "count": record.get("count"),
+                           "proposal": record.get("proposal")})
+
+
+def _stale(why: str) -> HTTPException:
+    """409 STALE, with the header X-Stale saying why, so the page knows how to look again: "version" when
+    the stored proposal is still what the facts give and only the page's copy is older (the page reads it
+    again), "facts" when the stored facts no longer match it (the page proposes again)."""
+    return HTTPException(409, STALE, headers={"X-Stale": why})
+
+
+def _accepted(record: dict) -> dict[str, str]:
+    """The record's accepted conflicts, {id: text}; an older store's list of ids is none (its texts are not
+    known, so each is asked again)."""
+    found = record.get("accepted")
+    if not isinstance(found, dict):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def make_router(db) -> APIRouter:
@@ -128,17 +158,67 @@ def make_router(db) -> APIRouter:
                 "stale": bool(formed) and bool(applied) and applied != applying._hash(entry),
                 "proposed": bool(record.get("proposal")), "can_undo": bool(record.get("undo"))}
 
+    def _conflicts(tid: str, record: dict, prop: dict, plan: dict, levels: dict, students: list[dict],
+                   only: str | None = None) -> list[dict]:
+        """The level's deployment conflicts, worked out from its `levels` entry and `prop` (its proposal as the
+        page sees it: warned against the plan as it is now), each `settled` when the school accepted it as it reads now.
+        None for a level no longer in the store, and none for one whose rows carry no `deploy`. With `only`, the
+        conflict of that id alone (`deploy_conflicts.conflicts`' `only`), as it reads in the full list."""
+        key = record["level"]
+        if key not in levels:
+            return []
+        accepted = _accepted(record)
+        return [{**c, "settled": accepted.get(c["id"]) == c["text"]}
+                for c in D.conflicts(plan, db.get_settings(tid), key, levels[key], prop,
+                                     C._level_students(plan, key, students), only=only)]
+
     def _view(tid: str, record: dict, plan: dict | None = None) -> dict:
-        """What the page sees of a proposal: its warnings worked out against the plan as it is now, and the
-        names of its students (for the page only; never stored with it)."""
+        """What the page sees of a proposal: its warnings worked out against the plan as it is now, its
+        deployment conflicts, and the names of its students (for the page only; never stored with it)."""
         plan = plan if plan is not None else _plan(tid)
         key = record["level"]
         prop = C.rewarn(record["proposal"], plan, db.get_settings(tid), key)
+        students = _students(tid)
         sids = {sid for c in prop.get("classes") or [] for sid in c.get("students") or []}
-        names = {s["id"]: s.get("name") or "" for s in _students(tid) if s.get("id") in sids}
-        return {**prop, "count": record.get("count"), "names": names,
+        names = {s["id"]: s.get("name") or "" for s in students if s.get("id") in sids}
+        return {**prop, "count": record.get("count"), "version": _version(record), "names": names,
                 "can_apply": not record.get("applied") and bool(prop.get("classes")),
-                "can_undo": bool(record.get("undo"))}
+                "can_undo": bool(record.get("undo")),
+                "conflicts": _conflicts(tid, record, prop, plan, LV.get(db, tid), students)}
+
+    def _propose(tid: str, key: str, count: int | None, plan: dict, levels: dict, students: list[dict],
+                 expect: str | None = None, store_levels: bool = False, keep: dict | None = None) -> dict:
+        """The level proposed (`classes.propose`) and stored with the digest of what it rests on, keeping the
+        last Apply's Undo and entry, and the accepted conflicts (each settled while it reads the same); the record.
+        With `expect` (a pick's version), 409 STALE ("version") when the stored record no longer has it,
+        nothing stored;
+        with `store_levels`, `levels` (a pick's changed entry) is stored with the record, under the same check;
+        with `keep` (the proposal a pick was made on), the teachers the school chose there by hand are carried
+        over (`classes.keep_chosen`)."""
+        entry = levels[key]
+        setup = _setup(tid, key, plan, levels)
+        prop = C.propose(plan, db.get_settings(tid), key, entry, students, setup, count=count)
+        if keep:
+            prop = C.keep_chosen(keep, prop, plan, db.get_settings(tid), key)
+        record = {"level": key, "proposal": prop, "count": count, "applied": False,
+                  "digest": _digest(entry, C._level_students(plan, key, students), setup)}
+        with lock:
+            runs = _runs(tid)
+            old = runs.get(key) if isinstance(runs.get(key), dict) else {}
+            if expect is not None and _version(old) != expect:
+                raise _stale("version")
+            if store_levels:
+                LV.put(db, tid, levels)
+            for k in ("undo", "applied_entry"):     # the last Apply's Undo and its entry outlive a new proposal
+                if old.get(k):
+                    record[k] = old[k]
+            if _accepted(old):                      # the school's say stands while its conflict reads the same
+                record["accepted"] = _accepted(old)
+            runs[key] = record
+            db.set_value(RUN, runs, tid)
+        log.info("classes proposed: %d classes, %d requirements, %d students", len(prop["classes"]),
+                 len(prop["requirements"]), sum(c["size"] for c in prop["classes"]))
+        return record
 
     @r.get("/api/classes/levels")
     def levels_view(sid: str = Depends(auth.require_session)):
@@ -183,26 +263,72 @@ def make_router(db) -> APIRouter:
     def propose(body: dict, sid: str = Depends(auth.require_session)):
         """A level's classes, requirements and suggested teachers (`classes.propose`), stored with the digest
         of what they rest on; nothing written to the plan or the students. `count` is the school's own number
-        of classes."""
+        of classes. With `keep` true (the page proposing again after a stale pick), the teachers the school
+        chose by hand in the stored proposal are carried over (`classes.keep_chosen`); without, every teacher
+        not named by the deployment is suggested afresh."""
         tid = db.working_timetable()
         plan, levels, students = _plan(tid), LV.get(db, tid), _students(tid)
-        key, entry = _entry(levels, (body or {}).get("level"))
+        key, _ = _entry(levels, (body or {}).get("level"))
         count = body.get("count")
         count = None if count in (None, "") else _int(count, "the number of classes", 1, MAX_CLASSES)
-        setup = _setup(tid, key, plan, levels)
-        prop = C.propose(plan, db.get_settings(tid), key, entry, students, setup, count=count)
-        record = {"level": key, "proposal": prop, "count": count, "applied": False,
-                  "digest": _digest(entry, C._level_students(plan, key, students), setup)}
-        with lock:
-            runs = _runs(tid)
-            old = runs.get(key) if isinstance(runs.get(key), dict) else {}
-            for k in ("undo", "applied_entry"):     # the last Apply's Undo and its entry outlive a new proposal
-                if old.get(k):
-                    record[k] = old[k]
-            runs[key] = record
-            db.set_value(RUN, runs, tid)
-        log.info("classes proposed: %d classes, %d requirements, %d students", len(prop["classes"]),
-                 len(prop["requirements"]), sum(c["size"] for c in prop["classes"]))
+        stored = _runs(tid).get(key) if body.get("keep") is True else None
+        keep = stored.get("proposal") if isinstance(stored, dict) else None
+        return _view(tid, _propose(tid, key, count, plan, levels, students, keep=keep), plan)
+
+    @r.post("/api/classes/conflicts/apply")
+    def apply_conflict(body: dict, sid: str = Depends(auth.require_session)):
+        """The option the school picked for one of the level's deployment conflicts, after its yes. The
+        conflicts are worked out again from the stored facts and the option looked up there by id (a change
+        the page sends is never used); 409 STALE when the proposal no longer rests on the stored facts or
+        the conflict or option is gone. "accept" records the conflict as settled; "count" proposes again
+        with that number of classes; any other change is made to the `levels` entry (`apply_option`) and
+        the level proposed again. Either way the teachers the school chose by hand are kept
+        (`classes.keep_chosen`). The body carries the `version` of the view the pick was made on; another
+        (sent twice, or from an older page) is 409 STALE. A 409 STALE says why in its X-Stale header
+        (`_stale`): "facts" when the stored facts no longer match the proposal, else "version". The plan is
+        never written."""
+        tid = db.working_timetable()
+        body = body if isinstance(body, dict) else {}
+        with db.plan_lock(tid):                     # the levels store is written under the plan lock (as Apply does)
+            plan, levels, students = _plan(tid), LV.get(db, tid), _students(tid)
+            key, entry = _entry(levels, body.get("level"))
+            record = _runs(tid).get(key)
+            if not isinstance(record, dict) or not record.get("proposal"):
+                raise HTTPException(409, "No proposal for this level: propose first.")
+            version = body.get("version")
+            if _digest(entry, C._level_students(plan, key, students),
+                       _setup(tid, key, plan, levels)) != record["digest"]:
+                raise _stale("facts")               # the proposal no longer rests on the stored facts
+            if not isinstance(version, str) or version != _version(record):
+                raise _stale("version")             # sent twice, or from a page showing an older proposal
+            prop = C.rewarn(record["proposal"], plan, db.get_settings(tid), key)
+            cid = body.get("conflict")              # the picked conflict alone is weighed: the new view weighs all
+            conflict = next((c for c in _conflicts(tid, record, prop, plan, levels, students, only=cid)
+                             if c["id"] == cid), None) if isinstance(cid, str) else None
+            option = next((o for o in (conflict or {}).get("options") or [] if o["id"] == body.get("option")), None)
+            if option is None:
+                raise _stale("version")
+            op = option["change"]["op"]
+            if op == "accept":
+                with lock:
+                    runs = _runs(tid)
+                    if not isinstance(runs.get(key), dict) or _version(runs[key]) != version:
+                        raise _stale("version")             # proposed again or changed meanwhile
+                    record = runs[key]
+                    record = {**record, "accepted": {**_accepted(record), conflict["id"]: conflict["text"]}}
+                    runs[key] = record
+                    db.set_value(RUN, runs, tid)
+            elif op == "count":
+                count = _int(option["change"]["count"], "the number of classes", 1, MAX_CLASSES)
+                record = _propose(tid, key, count, plan, levels, students, expect=version, keep=record["proposal"])
+            else:
+                try:
+                    levels = LV.normalise_levels({**levels, key: D.apply_option(entry, option)})
+                except ValueError as e:             # a code, never a value
+                    raise HTTPException(409, f"the deployment could not be changed ({e})")
+                record = _propose(tid, key, record.get("count"), plan, levels, students, expect=version,
+                                  store_levels=True, keep=record["proposal"])
+        log.info("classes conflict applied: %s %s", conflict["kind"], op)
         return _view(tid, record, plan)
 
     @r.put("/api/classes/teacher")

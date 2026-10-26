@@ -233,7 +233,7 @@ def create_app(config: Config, db: Db, engine_factory=None, provider_factory=Non
     async def _http_exc(request: Request, exc: HTTPException):
         if exc.status_code == 303:
             return RedirectResponse(exc.headers["Location"], status_code=303)
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
     # ---- health and auth ---------------------------------------------------
     @app.get("/healthz")
